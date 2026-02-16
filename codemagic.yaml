@@ -36,7 +36,9 @@ workflows:
       - name: Static analysis
         script: flutter analyze
       - name: Run tests
-        script: flutter test --reporter expanded
+        script: flutter test --coverage --reporter expanded
+      - name: Coverage summary
+        script: python3 tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json
       - name: Build release APK
         script: flutter build apk --release
       - name: Build release AAB
@@ -44,3 +46,6 @@ workflows:
     artifacts:
       - build/app/outputs/flutter-apk/app-release.apk
       - build/app/outputs/bundle/release/app-release.aab
+      - coverage/lcov.info
+      - coverage/summary.txt
+      - coverage/summary.json
