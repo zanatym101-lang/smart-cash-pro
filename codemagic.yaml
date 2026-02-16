@@ -1,0 +1,32 @@
+workflows:
+  android_ci:
+    name: Android CI (Analyze + Test + Build)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      java: 17
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+    scripts:
+      - name: Flutter version
+        script: flutter --version
+      - name: Install dependencies
+        script: flutter pub get
+      - name: Static analysis
+        script: flutter analyze
+      - name: Run tests
+        script: flutter test --reporter expanded
+      - name: Build release APK
+        script: flutter build apk --release
+      - name: Build release AAB
+        script: flutter build appbundle --release
+    artifacts:
+      - build/app/outputs/flutter-apk/app-release.apk
+      - build/app/outputs/bundle/release/app-release.aab
