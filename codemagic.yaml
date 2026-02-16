@@ -6,6 +6,8 @@ workflows:
     environment:
       flutter: stable
       java: 17
+      android_signing:
+        - upload_keystore
     triggering:
       events:
         - push
@@ -19,6 +21,18 @@ workflows:
         script: flutter --version
       - name: Install dependencies
         script: flutter pub get
+      - name: Prepare Android signing config
+        script: |
+          if [ -n "$CM_KEYSTORE_PATH" ] && [ -n "$CM_KEYSTORE_PASSWORD" ] && [ -n "$CM_KEY_ALIAS" ] && [ -n "$CM_KEY_PASSWORD" ]; then
+            printf "storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=%s\n" \
+              "$CM_KEYSTORE_PASSWORD" \
+              "$CM_KEY_PASSWORD" \
+              "$CM_KEY_ALIAS" \
+              "$CM_KEYSTORE_PATH" > android/key.properties
+            echo "Android signing is configured from Codemagic keystore."
+          else
+            echo "Codemagic keystore env vars are missing; build will use fallback signing."
+          fi
       - name: Static analysis
         script: flutter analyze
       - name: Run tests
