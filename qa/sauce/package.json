@@ -1,0 +1,13 @@
+{
+  "name": "smart-cash-pro-sauce-smoke",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Sauce Labs Appium smoke test for Smart Cash Pro",
+  "scripts": {
+    "smoke:android": "node smoke_android.js"
+  },
+  "dependencies": {
+    "webdriverio": "^9.19.2"
+  }
+}
+

@@ -40,19 +40,19 @@ class _TransferScreenState extends State<TransferScreen> {
   final _clientFeeCtrl = TextEditingController(text: '4');
   final _networkFeeCtrl = TextEditingController(text: '1');
   final _noteCtrl = TextEditingController();
+  final _partyNameCtrl = TextEditingController();
   final _customerPhoneCtrl = TextEditingController();
 
-  String _transferType = 'type1'; // type1 | type2
-  bool _instantApprove = false;
+  String _transferType = 'type1';
   bool _viaPhone = false;
 
   @override
   void initState() {
     super.initState();
-    _instantApprove = AppSession.isAdmin && !widget.forcePendingDefault;
     final initialParty = widget.initialParty?.trim();
     if (initialParty != null && initialParty.isNotEmpty) {
       _selectedContactName = initialParty;
+      _partyNameCtrl.text = initialParty;
     }
     final initialPhone = normalizePhone(widget.initialPhone ?? '');
     if (initialPhone.isNotEmpty) {
@@ -67,6 +67,7 @@ class _TransferScreenState extends State<TransferScreen> {
     _clientFeeCtrl.dispose();
     _networkFeeCtrl.dispose();
     _noteCtrl.dispose();
+    _partyNameCtrl.dispose();
     _customerPhoneCtrl.dispose();
     super.dispose();
   }
@@ -102,6 +103,7 @@ class _TransferScreenState extends State<TransferScreen> {
   }
 
   double _toDouble(String s) => double.tryParse(s.trim()) ?? 0;
+  String _fmtMoney(double v) => v.toStringAsFixed(2);
 
   String _fmtDate(DateTime d) {
     final y = d.year.toString().padLeft(4, '0');
@@ -119,6 +121,7 @@ class _TransferScreenState extends State<TransferScreen> {
     setState(() {
       _customerPhoneCtrl.text = picked.phone;
       _selectedContactName = picked.name;
+      _partyNameCtrl.text = picked.name;
     });
   }
 
@@ -147,13 +150,13 @@ class _TransferScreenState extends State<TransferScreen> {
     );
   }
 
-  Future<bool> _confirmSuccess() async {
+  Future<bool> _confirmPhoneSuccess() async {
     final res = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        title: const Text('تأكيد نتيجة العملية'),
-        content: const Text('هل تمت عملية التحويل بنجاح؟'),
+        title: const Text('تأكيد نتيجة التنفيذ'),
+        content: const Text('هل نجحت عملية التحويل عبر الهاتف؟'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -169,10 +172,96 @@ class _TransferScreenState extends State<TransferScreen> {
     return res == true;
   }
 
+  Future<_TransferReviewResult?> _confirmTransferSubmit({
+    required Wallet wallet,
+    required String partyName,
+    required String partyPhone,
+    required double amount,
+    required double clientFee,
+    required double networkFee,
+    required bool viaPhone,
+    String? note,
+  }) async {
+    final sentAmount = _transferType == 'type2'
+        ? (amount - clientFee - networkFee)
+        : amount;
+    final walletDebit = _transferType == 'type2'
+        ? (amount - clientFee)
+        : (amount + networkFee);
+    final drawerIn = _transferType == 'type2' ? amount : (amount + clientFee);
+
+    bool markPending = AppSession.isAdmin ? widget.forcePendingDefault : true;
+
+    return showDialog<_TransferReviewResult>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text('مراجعة عملية التحويل'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('المحفظة: ${wallet.name}'),
+                Text(
+                  'نوع التحويل: ${_transferType == 'type1' ? 'Type 1' : 'Type 2'}',
+                ),
+                Text('المبلغ المدخل: ${_fmtMoney(amount)}'),
+                Text('CF (ربحك): ${_fmtMoney(clientFee)}'),
+                Text('NF (رسوم شبكة): ${_fmtMoney(networkFee)}'),
+                Text('المبلغ المحول للعميل: ${_fmtMoney(sentAmount)}'),
+                Text('الخصم من المحفظة: ${_fmtMoney(walletDebit)}'),
+                Text('الداخل للدرج: ${_fmtMoney(drawerIn)}'),
+                Text('تنفيذ عبر الهاتف: ${viaPhone ? 'نعم' : 'لا'}'),
+                if (partyName.trim().isNotEmpty) Text('الطرف: $partyName'),
+                if (partyPhone.trim().isNotEmpty)
+                  Text('رقم الطرف: $partyPhone'),
+                if (note != null && note.trim().isNotEmpty)
+                  Text('ملاحظة: ${note.trim()}'),
+                const SizedBox(height: 8),
+                if (AppSession.isAdmin)
+                  CheckboxListTile(
+                    value: markPending,
+                    onChanged: (v) => setState(() => markPending = v ?? false),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('تسجيل العملية كمعلقة'),
+                    subtitle: const Text('إذا لم تحددها سيتم تنفيذها فورًا.'),
+                  )
+                else
+                  const Text(
+                    'كمستخدم عادي سيتم تسجيل العملية كمعلقة تلقائيًا.',
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(
+                  ctx,
+                ).pop(_TransferReviewResult(isPending: markPending));
+              },
+              child: const Text('تنفيذ'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String? _composeNote(String? base, String customerPhone) {
     final parts = <String>[];
-    if (base != null && base.trim().isNotEmpty) parts.add(base.trim());
-    if (customerPhone.isNotEmpty) parts.add('رقم العميل: $customerPhone');
+    if (base != null && base.trim().isNotEmpty) {
+      parts.add(base.trim());
+    }
+    if (customerPhone.isNotEmpty) {
+      parts.add('رقم الطرف: $customerPhone');
+    }
     return parts.isEmpty ? null : parts.join(' - ');
   }
 
@@ -189,6 +278,9 @@ class _TransferScreenState extends State<TransferScreen> {
     final cf = _toDouble(_clientFeeCtrl.text);
     final nf = _toDouble(_networkFeeCtrl.text);
     final note = _noteCtrl.text.trim();
+    final partyName = _partyNameCtrl.text.trim().isEmpty
+        ? (_selectedContactName ?? '')
+        : _partyNameCtrl.text.trim();
     final customerPhone = normalizePhone(_customerPhoneCtrl.text);
 
     if (amt <= 0) {
@@ -203,27 +295,61 @@ class _TransferScreenState extends State<TransferScreen> {
       );
       return;
     }
+    if (_transferType == 'type2' && amt <= (cf + nf)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('في Type 2 يجب أن يكون المبلغ أكبر من CF + NF'),
+        ),
+      );
+      return;
+    }
+
+    final wallet = _selectedWallet();
+    if (wallet == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('اختر محفظة صحيحة')));
+      return;
+    }
+
+    final review = await _confirmTransferSubmit(
+      wallet: wallet,
+      partyName: partyName,
+      partyPhone: customerPhone,
+      amount: amt,
+      clientFee: cf,
+      networkFee: nf,
+      viaPhone: _viaPhone,
+      note: note,
+    );
+    if (review == null || !mounted) return;
+
+    if (_viaPhone && review.isPending) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('التنفيذ عبر الهاتف يتطلب تنفيذًا فوريًا وليس معلقًا'),
+        ),
+      );
+      return;
+    }
 
     if (_viaPhone) {
-      if (!AppSession.isAdmin || !_instantApprove) {
+      if (!AppSession.isAdmin) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('التنفيذ عبر الهاتف يتطلب اعتماد فوري من الأدمن.'),
-          ),
+          const SnackBar(content: Text('التنفيذ عبر الهاتف متاح للأدمن فقط')),
         );
         return;
       }
       if (customerPhone.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('رقم هاتف العميل مطلوب للتنفيذ عبر الهاتف'),
+            content: Text('رقم هاتف الطرف مطلوب للتنفيذ عبر الهاتف'),
           ),
         );
         return;
       }
 
-      final wallet = _selectedWallet();
-      if (wallet == null || wallet.phone.trim().isEmpty) {
+      if (wallet.phone.trim().isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('رقم المحفظة مطلوب لتحديد كود التحويل')),
         );
@@ -231,6 +357,7 @@ class _TransferScreenState extends State<TransferScreen> {
       }
 
       final provider = providerFromPhone(wallet.phone);
+      final providerName = providerDisplayName(provider);
       final defaultCode = defaultTransferCode(
         provider: provider,
         customerPhone: customerPhone,
@@ -238,12 +365,14 @@ class _TransferScreenState extends State<TransferScreen> {
       );
       if (defaultCode == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('لا يوجد كود افتراضي للمزوّد: $provider')),
+          SnackBar(
+            content: Text('لا يوجد كود تحويل افتراضي للمزوّد: $providerName'),
+          ),
         );
         return;
       }
 
-      final code = await _editTransferCode(defaultCode, provider);
+      final code = await _editTransferCode(defaultCode, providerName);
       if (code == null || code.isEmpty) return;
 
       final telUri = Uri.parse('tel:${_encodeDialCode(code)}');
@@ -259,7 +388,7 @@ class _TransferScreenState extends State<TransferScreen> {
         return;
       }
 
-      if (!await _confirmSuccess()) {
+      if (!await _confirmPhoneSuccess()) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('تم إلغاء العملية بعد الاتصال')),
@@ -271,7 +400,6 @@ class _TransferScreenState extends State<TransferScreen> {
         return;
       }
     }
-
     setState(() => _saving = true);
     try {
       final id = await AppDb.instance.addTransfer(
@@ -280,12 +408,10 @@ class _TransferScreenState extends State<TransferScreen> {
         clientFee: cf,
         networkFee: nf,
         transferType: _transferType,
-        isPending: !_instantApprove,
-        note: _composeNote(note, _viaPhone ? customerPhone : ''),
-        party: _selectedContactName,
+        isPending: review.isPending,
+        note: _composeNote(note, customerPhone),
+        party: partyName.isEmpty ? null : partyName,
       );
-
-      if (!mounted) return;
 
       if (_viaPhone) {
         await NotificationService.show(
@@ -294,24 +420,25 @@ class _TransferScreenState extends State<TransferScreen> {
         );
         await AppDb.instance.addRecentNumber(
           phone: customerPhone,
-          name: _selectedContactName,
+          name: partyName.isEmpty ? null : partyName,
         );
         await _loadRecentNumbers();
       }
 
       if (!mounted) return;
-      if (_instantApprove) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم اعتماد التحويل فورًا (ID=$id)')),
-        );
-        Navigator.of(context).pop(true);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم إنشاء تحويل معلّق (ID=$id)')),
-        );
-        Navigator.of(
+      if (review.isPending) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('تم تسجيل تحويل معلق (ID=$id)')));
+        await Navigator.of(
           context,
         ).push(MaterialPageRoute(builder: (_) => const PendingScreen()));
+        if (mounted) Navigator.of(context).pop(true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم تنفيذ التحويل بنجاح (ID=$id)')),
+        );
+        Navigator.of(context).pop(true);
       }
     } catch (e) {
       if (!mounted) return;
@@ -325,11 +452,14 @@ class _TransferScreenState extends State<TransferScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final title = _instantApprove ? 'تحويل (اعتماد فوري)' : 'تحويل (طلب معلّق)';
+    final title = AppSession.isAdmin ? 'تحويل' : 'تحويل (كمعلقة للمستخدم)';
     final wallet = _selectedWallet();
     final provider = wallet == null || wallet.phone.trim().isEmpty
-        ? 'غير محدد'
+        ? 'unknown'
         : providerFromPhone(wallet.phone);
+    final providerName = provider == 'unknown'
+        ? 'غير محدد'
+        : providerDisplayName(provider);
 
     return Scaffold(
       appBar: AppBar(
@@ -347,51 +477,24 @@ class _TransferScreenState extends State<TransferScreen> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
-                _headerCard(title),
-                const SizedBox(height: 12),
-                if (AppSession.isAdmin)
-                  _sectionCard(
-                    title: 'الاعتماد والتنفيذ',
-                    child: Column(
-                      children: [
-                        SwitchListTile(
-                          value: _instantApprove,
-                          onChanged: _saving
-                              ? null
-                              : (v) => setState(() => _instantApprove = v),
-                          title: const Text('اعتماد فوري (بدون تعليق)'),
-                          subtitle: const Text('استخدمها فقط للمشرف/الإدارة.'),
-                        ),
-                        SwitchListTile(
-                          value: _viaPhone,
-                          onChanged: _saving
-                              ? null
-                              : (v) => setState(() => _viaPhone = v),
-                          title: const Text('تنفيذ العملية عبر الهاتف'),
-                          subtitle: const Text(
-                            'فتح لوحة الاتصال بكود التحويل ثم تأكيد النتيجة.',
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                else
-                  _sectionCard(
-                    title: 'طريقة التنفيذ',
-                    child: SwitchListTile(
-                      value: _viaPhone,
-                      onChanged: _saving
-                          ? null
-                          : (v) => setState(() => _viaPhone = v),
-                      title: const Text('تنفيذ العملية عبر الهاتف'),
-                      subtitle: const Text(
-                        'يتطلب اعتماد فوري من الأدمن عند التنفيذ.',
-                      ),
-                    ),
-                  ),
+                _headerCard('تحويل من محفظة مع مراجعة قبل التنفيذ'),
                 const SizedBox(height: 12),
                 _sectionCard(
-                  title: 'المحفظة والعميل',
+                  title: 'طريقة التنفيذ',
+                  child: SwitchListTile(
+                    value: _viaPhone,
+                    onChanged: _saving
+                        ? null
+                        : (v) => setState(() => _viaPhone = v),
+                    title: const Text('تنفيذ العملية عبر الهاتف'),
+                    subtitle: const Text(
+                      'يفتح لوحة الاتصال بكود التحويل ثم تؤكد نجاح العملية قبل تسجيلها.',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _sectionCard(
+                  title: 'المحفظة والطرف',
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -410,62 +513,66 @@ class _TransferScreenState extends State<TransferScreen> {
                             ? null
                             : (v) => setState(() => _walletId = v),
                         decoration: const InputDecoration(
-                          labelText: 'المحفظة (خصم منها)',
+                          labelText: 'المحفظة (يُخصم منها)',
                         ),
                       ),
                       const SizedBox(height: 6),
-                      _infoPill('مزوّد المحفظة: $provider'),
-                      if (_viaPhone) ...[
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: _customerPhoneCtrl,
-                          keyboardType: TextInputType.phone,
-                          enabled: !_saving,
-                          decoration: InputDecoration(
-                            labelText: 'رقم هاتف العميل',
-                            suffixIcon: IconButton(
-                              onPressed: _saving ? null : _pickContact,
-                              icon: const Icon(Icons.contacts),
-                              tooltip: 'اختر من جهات الاتصال',
-                            ),
+                      _infoPill('مزوّد المحفظة: $providerName'),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _partyNameCtrl,
+                        enabled: !_saving,
+                        decoration: const InputDecoration(
+                          labelText: 'اسم الطرف (اختياري)',
+                        ),
+                        onChanged: (v) {
+                          _selectedContactName = v.trim().isEmpty
+                              ? null
+                              : v.trim();
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: _customerPhoneCtrl,
+                        keyboardType: TextInputType.phone,
+                        enabled: !_saving,
+                        decoration: InputDecoration(
+                          labelText: 'رقم الطرف (اختياري)',
+                          suffixIcon: IconButton(
+                            onPressed: _saving ? null : _pickContact,
+                            icon: const Icon(Icons.contacts),
+                            tooltip: 'اختيار من جهات الاتصال',
                           ),
                         ),
-                        if (_selectedContactName != null &&
-                            _selectedContactName!.trim().isNotEmpty) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            'الاسم المختار: $_selectedContactName',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                        if (_recentNumbers.isNotEmpty) ...[
-                          const SizedBox(height: 12),
-                          const Text('أحدث الأرقام'),
-                          const SizedBox(height: 6),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: _recentNumbers.map((r) {
-                              final label = (r.name == null || r.name!.isEmpty)
-                                  ? r.phone
-                                  : '${r.name} • ${r.phone}';
-                              return ActionChip(
-                                label: Text(label),
-                                onPressed: () {
-                                  setState(() {
-                                    _customerPhoneCtrl.text = r.phone;
-                                    _selectedContactName = r.name;
-                                  });
-                                },
-                              );
-                            }).toList(),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'آخر استخدام: ${_fmtDate(_recentNumbers.first.lastUsed)}',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
+                      ),
+                      if (_recentNumbers.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        const Text('آخر الأرقام المستخدمة'),
+                        const SizedBox(height: 6),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _recentNumbers.map((r) {
+                            final label = (r.name == null || r.name!.isEmpty)
+                                ? r.phone
+                                : '${r.name} | ${r.phone}';
+                            return ActionChip(
+                              label: Text(label),
+                              onPressed: () {
+                                setState(() {
+                                  _customerPhoneCtrl.text = r.phone;
+                                  _selectedContactName = r.name;
+                                  _partyNameCtrl.text = r.name ?? '';
+                                });
+                              },
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          'آخر استخدام: ${_fmtDate(_recentNumbers.first.lastUsed)}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ],
                     ],
                   ),
@@ -489,7 +596,7 @@ class _TransferScreenState extends State<TransferScreen> {
                         keyboardType: TextInputType.number,
                         enabled: !_saving,
                         decoration: const InputDecoration(
-                          labelText: 'CF العمولة/الربح (EGP)',
+                          labelText: 'CF (العمولة/الربح) (EGP)',
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -498,7 +605,7 @@ class _TransferScreenState extends State<TransferScreen> {
                         keyboardType: TextInputType.number,
                         enabled: !_saving,
                         decoration: const InputDecoration(
-                          labelText: 'NF رسوم الشبكة (EGP)',
+                          labelText: 'NF (رسوم الشبكة) (EGP)',
                         ),
                       ),
                     ],
@@ -521,7 +628,7 @@ class _TransferScreenState extends State<TransferScreen> {
                         ),
                         RadioListTile<String>(
                           value: 'type2',
-                          title: Text('Type 2: العمولة تخصم من مبلغ التحويل'),
+                          title: Text('Type 2: العمولة تُخصم من المبلغ'),
                         ),
                       ],
                     ),
@@ -547,16 +654,14 @@ class _TransferScreenState extends State<TransferScreen> {
                           height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.send),
-                  label: Text(
-                    _instantApprove ? 'اعتماد الآن' : 'إرسال كعملية معلّقة',
-                  ),
+                      : const Icon(Icons.play_arrow),
+                  label: const Text('تنفيذ'),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  _instantApprove
-                      ? 'ملاحظة: الاعتماد الفوري يغيّر الأرصدة مباشرة.'
-                      : 'ملاحظة: العملية المعلّقة تُعرض في الرصيد المتاح وتنتظر الاعتماد النهائي.',
+                  AppSession.isAdmin
+                      ? 'يمكنك من نافذة المراجعة تحديد العملية كمعلقة أو تنفيذها فورًا.'
+                      : 'كمستخدم عادي، أي عملية جديدة تُسجل كمعلقة وتظهر في شاشة المعلقة.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
@@ -619,4 +724,10 @@ class _TransferScreenState extends State<TransferScreen> {
       child: Text(text, style: Theme.of(context).textTheme.bodySmall),
     );
   }
+}
+
+class _TransferReviewResult {
+  final bool isPending;
+
+  const _TransferReviewResult({required this.isPending});
 }

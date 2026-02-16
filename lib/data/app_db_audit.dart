@@ -1,6 +1,84 @@
-﻿part of 'app_db.dart';
+part of 'app_db.dart';
 
 extension AppDbAudit on AppDb {
+  List<Map<String, dynamic>> _auditListFromRaw(Object? raw) {
+    final list = <Map<String, dynamic>>[];
+    if (raw is! List) return list;
+    for (final e in raw) {
+      if (e is Map) {
+        list.add(
+          Map<String, dynamic>.from(e.map((k, v) => MapEntry(k.toString(), v))),
+        );
+      }
+    }
+    return list;
+  }
+
+  int _auditInt(Object? raw, {required int fallback}) {
+    if (raw is int) return raw;
+    if (raw is num) return raw.toInt();
+    return int.tryParse(raw?.toString() ?? '') ?? fallback;
+  }
+
+  String _auditPayload(Map<String, dynamic> e) {
+    final fields = <String>[
+      'seq=${_auditInt(e['seq'], fallback: 0)}',
+      'type=${(e['type'] ?? '').toString()}',
+      'at=${(e['at'] ?? '').toString()}',
+      'by=${(e['by'] ?? '').toString()}',
+      'role=${(e['role'] ?? '').toString()}',
+      'dateKey=${(e['dateKey'] ?? '').toString()}',
+      'note=${(e['note'] ?? '').toString()}',
+      'txnId=${(e['txnId'] ?? '').toString()}',
+      'claimId=${(e['claimId'] ?? '').toString()}',
+      'walletId=${(e['walletId'] ?? '').toString()}',
+      'amount=${(e['amount'] ?? '').toString()}',
+    ];
+    return fields.join('|');
+  }
+
+  String _auditHash({
+    required String prevHash,
+    required Map<String, dynamic> entry,
+  }) {
+    final payload = _auditPayload(entry);
+    return sha256
+        .convert(utf8.encode('$prevHash|$payload'))
+        .toString()
+        .toUpperCase();
+  }
+
+  void _seedAuditChainInMemory(List<Map<String, dynamic>> list) {
+    var prev = 'GENESIS';
+    for (var i = 0; i < list.length; i++) {
+      final e = list[i];
+      e['seq'] = i + 1;
+      e['prevHash'] = prev;
+      final hash = _auditHash(prevHash: prev, entry: e);
+      e['hash'] = hash;
+      prev = hash;
+    }
+  }
+
+  bool _hasAuditChain(List<Map<String, dynamic>> list) {
+    if (list.isEmpty) return true;
+    return list.every(
+      (e) =>
+          (e['hash'] ?? '').toString().trim().isNotEmpty &&
+          (e['prevHash'] ?? '').toString().trim().isNotEmpty &&
+          _auditInt(e['seq'], fallback: 0) > 0,
+    );
+  }
+
+  Future<void> ensureAuditChainInitialized() async {
+    final m = await _readSettingsMap();
+    final list = _auditListFromRaw(m['audit']);
+    if (list.isEmpty || _hasAuditChain(list)) return;
+    _seedAuditChainInMemory(list);
+    m['audit'] = list;
+    await _writeSettingsMap(m);
+  }
+
   Future<void> appendAudit({
     required String type,
     String? dateKey,
@@ -11,20 +89,23 @@ extension AppDbAudit on AppDb {
     double? amount,
   }) async {
     final m = await _readSettingsMap();
-    final raw = m['audit'];
-    final list = <Map<String, dynamic>>[];
-    if (raw is List) {
-      for (final e in raw) {
-        if (e is Map) {
-          list.add(Map<String, dynamic>.from(e.map((k, v) => MapEntry(k.toString(), v))));
-        }
-      }
+    final list = _auditListFromRaw(m['audit']);
+    if (!_hasAuditChain(list)) {
+      _seedAuditChainInMemory(list);
     }
+    final last = list.isEmpty ? null : list.last;
+    final seq = (last == null)
+        ? 1
+        : (_auditInt(last['seq'], fallback: list.length) + 1);
+    final prevHash = (last?['hash'] ?? 'GENESIS').toString();
+
     final entry = <String, dynamic>{
       'type': type,
       'at': DateTime.now().toIso8601String(),
       'by': _actorName(),
       'role': _actorRole(),
+      'seq': seq,
+      'prevHash': prevHash,
     };
     if (dateKey != null) entry['dateKey'] = dateKey;
     if (note != null && note.trim().isNotEmpty) entry['note'] = note.trim();
@@ -32,9 +113,11 @@ extension AppDbAudit on AppDb {
     if (claimId != null) entry['claimId'] = claimId;
     if (walletId != null) entry['walletId'] = walletId;
     if (amount != null) entry['amount'] = amount;
+    entry['hash'] = _auditHash(prevHash: prevHash, entry: entry);
+
     list.add(entry);
-    if (list.length > 200) {
-      list.removeRange(0, list.length - 200);
+    if (list.length > 1000) {
+      list.removeRange(0, list.length - 1000);
     }
     m['audit'] = list;
     await _writeSettingsMap(m);
@@ -42,24 +125,87 @@ extension AppDbAudit on AppDb {
 
   Future<List<Map<String, dynamic>>> listAudit({int limit = 200}) async {
     final m = await _readSettingsMap();
-    final raw = m['audit'];
-    final list = <Map<String, dynamic>>[];
-    if (raw is List) {
-      for (final e in raw) {
-        if (e is Map) {
-          list.add(Map<String, dynamic>.from(e.map((k, v) => MapEntry(k.toString(), v))));
-        }
-      }
-    }
+    final list = _auditListFromRaw(m['audit']);
     list.sort((a, b) {
-      final aAt = DateTime.tryParse(a['at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bAt = DateTime.tryParse(b['at']?.toString() ?? '') ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final aAt =
+          DateTime.tryParse(a['at']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bAt =
+          DateTime.tryParse(b['at']?.toString() ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0);
       return bAt.compareTo(aAt);
     });
     if (list.length > limit) {
       return list.sublist(0, limit);
     }
     return list;
+  }
+
+  Future<AuditChainStatus> verifyAuditChain() async {
+    final m = await _readSettingsMap();
+    final list = _auditListFromRaw(m['audit']);
+    if (list.isEmpty) {
+      return const AuditChainStatus(
+        ok: true,
+        count: 0,
+        headHash: null,
+        tailHash: null,
+        error: null,
+        brokenIndex: null,
+      );
+    }
+
+    if (!_hasAuditChain(list)) {
+      return AuditChainStatus(
+        ok: false,
+        count: list.length,
+        headHash: null,
+        tailHash: null,
+        error: 'audit_chain_missing_fields',
+        brokenIndex: null,
+      );
+    }
+
+    for (var i = 0; i < list.length; i++) {
+      final current = list[i];
+      final prevHash = (current['prevHash'] ?? '').toString();
+      final expected = _auditHash(prevHash: prevHash, entry: current);
+      final actual = (current['hash'] ?? '').toString().toUpperCase();
+      if (expected != actual) {
+        return AuditChainStatus(
+          ok: false,
+          count: list.length,
+          headHash: list.first['hash']?.toString(),
+          tailHash: list.last['hash']?.toString(),
+          error: 'audit_hash_mismatch',
+          brokenIndex: i,
+        );
+      }
+
+      if (i > 0) {
+        final prev = list[i - 1];
+        final linked = (prev['hash'] ?? '').toString();
+        if (prevHash != linked) {
+          return AuditChainStatus(
+            ok: false,
+            count: list.length,
+            headHash: list.first['hash']?.toString(),
+            tailHash: list.last['hash']?.toString(),
+            error: 'audit_prev_link_mismatch',
+            brokenIndex: i,
+          );
+        }
+      }
+    }
+
+    return AuditChainStatus(
+      ok: true,
+      count: list.length,
+      headHash: list.first['hash']?.toString(),
+      tailHash: list.last['hash']?.toString(),
+      error: null,
+      brokenIndex: null,
+    );
   }
 
   Future<void> clearAudit() async {

@@ -1,4 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:printing/printing.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
@@ -143,14 +149,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
         range: _activeRange(),
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('تم تصدير PDF: $path')));
+      await _openExportedFile(path: path, typeLabel: 'PDF');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('فشل التصدير: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '\u0641\u0634\u0644 \u0627\u0644\u062a\u0635\u062f\u064a\u0631: $e',
+          ),
+        ),
+      );
     }
   }
 
@@ -165,14 +173,197 @@ class _ReportsScreenState extends State<ReportsScreen> {
         range: _activeRange(),
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('تم تصدير Excel: $path')));
+      await _openExportedFile(path: path, typeLabel: 'Excel');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '\u0641\u0634\u0644 \u0627\u0644\u062a\u0635\u062f\u064a\u0631: $e',
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _openExportedFile({
+    required String path,
+    required String typeLabel,
+  }) async {
+    final ok = await _openFileViaSystem(path);
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (ok) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            '\u062a\u0645 \u062a\u0635\u062f\u064a\u0631 $typeLabel \u0648\u0641\u062a\u062d \u0627\u0644\u0645\u0644\u0641 \u0645\u0628\u0627\u0634\u0631\u0629',
+          ),
+        ),
+      );
+      return;
+    }
+
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          '\u062a\u0645 \u0627\u0644\u062a\u0635\u062f\u064a\u0631: $path',
+        ),
+      ),
+    );
+  }
+
+  Future<bool> _openFileViaSystem(String path) async {
+    final result = await OpenFilex.open(path);
+    return result.type == ResultType.done;
+  }
+
+  Future<List<File>> _listExportedFiles() async {
+    final dir = await ReportExporter.exportDirectory();
+    final files = <File>[];
+    await for (final entity in dir.list()) {
+      if (entity is! File) continue;
+      final path = entity.path.toLowerCase();
+      if (path.endsWith('.pdf') ||
+          path.endsWith('.xlsx') ||
+          path.endsWith('.csv')) {
+        files.add(entity);
+      }
+    }
+    files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    return files;
+  }
+
+  Future<void> _showExportsSheet() async {
+    final dir = await ReportExporter.exportDirectory();
+    final files = await _listExportedFiles();
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'ملفات التقارير',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16),
+              ),
+              const SizedBox(height: 6),
+              SelectableText(
+                dir.path,
+                style: const TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: dir.path));
+                    if (!ctx.mounted) return;
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(content: Text('تم نسخ المسار')),
+                    );
+                  },
+                  icon: const Icon(Icons.copy, size: 16),
+                  label: const Text('نسخ المسار'),
+                ),
+              ),
+              const Divider(),
+              if (files.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 12),
+                  child: Text('لا توجد ملفات تقارير بعد.'),
+                )
+              else
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: files.length,
+                    itemBuilder: (_, i) {
+                      final f = files[i];
+                      final name = f.uri.pathSegments.isNotEmpty
+                          ? f.uri.pathSegments.last
+                          : f.path;
+                      return ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.insert_drive_file_outlined),
+                        title: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          f.lastModifiedSync().toString(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () async {
+                          final ok = await _openFileViaSystem(f.path);
+                          if (!ok && ctx.mounted) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              const SnackBar(
+                                content: Text('تعذر فتح الملف من النظام'),
+                              ),
+                            );
+                          }
+                        },
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openExportsFolder() async {
+    try {
+      final dir = await ReportExporter.exportDirectory();
+      final ok = await launchUrl(
+        Uri.directory(dir.path),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!ok) {
+        await _showExportsSheet();
+      }
+    } catch (_) {
+      await _showExportsSheet();
+    }
+  }
+
+  Future<void> _printLatestPdf() async {
+    try {
+      final files = await _listExportedFiles();
+      final pdfs = files
+          .where((f) => f.path.toLowerCase().endsWith('.pdf'))
+          .toList();
+      if (pdfs.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('لا يوجد PDF للطباعة بعد')),
+        );
+        return;
+      }
+      final latest = pdfs.first;
+      final bytes = await latest.readAsBytes();
+      await Printing.layoutPdf(
+        name: latest.uri.pathSegments.isNotEmpty
+            ? latest.uri.pathSegments.last
+            : 'report.pdf',
+        onLayout: (_) async => bytes,
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('فشل التصدير: $e')));
+      ).showSnackBar(SnackBar(content: Text('فشل الطباعة: $e')));
     }
   }
 
@@ -286,7 +477,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final license = _license;
 
     return DefaultTabController(
-      length: 7,
+      length: 8,
       child: Scaffold(
         appBar: AppBar(
           title: const AppTitle(subtitle: 'التقارير'),
@@ -296,6 +487,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
               onPressed: _loading ? null : _load,
               icon: const Icon(Icons.refresh),
             ),
+            if ((license?.isActivated ?? true))
+              IconButton(
+                tooltip: 'فتح مجلد التقارير',
+                onPressed: _openExportsFolder,
+                icon: const Icon(Icons.folder_open),
+              ),
+            if ((license?.isActivated ?? true))
+              IconButton(
+                tooltip: 'طباعة آخر PDF',
+                onPressed: _printLatestPdf,
+                icon: const Icon(Icons.print_outlined),
+              ),
             if ((license?.isActivated ?? true))
               PopupMenuButton<String>(
                 onSelected: (v) {
@@ -320,6 +523,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               Tab(text: 'ملخص العمليات'),
               Tab(text: 'المستحقات'),
               Tab(text: 'الخزنة'),
+              Tab(text: 'مطابقة الأرصدة'),
               Tab(text: 'إغلاق اليوم'),
             ],
           ),
@@ -340,6 +544,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         _opsTab(report),
                         _claimsTab(report),
                         _treasuryTab(treasury),
+                        _reconciliationTab(report),
                         _dailyCloseTab(),
                       ],
                     ),
@@ -617,6 +822,70 @@ class _ReportsScreenState extends State<ReportsScreen> {
           icon: Icons.savings,
         ),
       ],
+    );
+  }
+
+  Widget _reconciliationTab(ReportData? report) {
+    if (report == null) return const SizedBox.shrink();
+    final r = report.reconciliation;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        Card(
+          child: ListTile(
+            leading: Icon(
+              r.ok ? Icons.verified : Icons.warning_amber_rounded,
+              color: r.ok ? Colors.green : Colors.red,
+            ),
+            title: const Text('حالة المطابقة'),
+            subtitle: Text(
+              r.ok
+                  ? 'مطابقة سليمة: لا يوجد فرق'
+                  : 'يوجد فرق بين المتوقع والفعلي',
+            ),
+          ),
+        ),
+        _reconLineCard(r.drawer),
+        _reconLineCard(r.wallets),
+        _reconLineCard(r.total),
+      ],
+    );
+  }
+
+  Widget _reconLineCard(ReconciliationLine line) {
+    final diff = line.diff;
+    final diffText = diff >= 0
+        ? '+${diff.toStringAsFixed(2)}'
+        : diff.toStringAsFixed(2);
+    final diffColor = line.ok
+        ? Colors.green
+        : (diff > 0 ? Colors.blue : Colors.red);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              line.label,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            Text('رصيد أول الفترة: ${line.opening.toStringAsFixed(2)}'),
+            Text('إجمالي الداخل: ${line.inflow.toStringAsFixed(2)}'),
+            Text('إجمالي الخارج: ${line.outflow.toStringAsFixed(2)}'),
+            const Divider(),
+            Text('الرصيد المتوقع: ${line.expectedClosing.toStringAsFixed(2)}'),
+            Text('الرصيد الفعلي: ${line.actualClosing.toStringAsFixed(2)}'),
+            const SizedBox(height: 6),
+            Text(
+              'الفرق: $diffText',
+              style: TextStyle(color: diffColor, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

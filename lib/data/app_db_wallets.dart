@@ -3,35 +3,35 @@ part of 'app_db.dart';
 extension AppDbWallets on AppDb {
   String _normalizeDigit(String ch) {
     switch (ch) {
-      case 'ط·آ¸ط¢آ ':
-      case 'ط·ط›ط¢آ°':
+      case '٠':
+      case '۰':
         return '0';
-      case 'ط·آ¸ط·إ’':
-      case 'ط·ط›ط¢آ±':
+      case '١':
+      case '۱':
         return '1';
-      case 'ط·آ¸ط¢آ¢':
-      case 'ط·ط›ط¢آ²':
+      case '٢':
+      case '۲':
         return '2';
-      case 'ط·آ¸ط¢آ£':
-      case 'ط·ط›ط¢آ³':
+      case '٣':
+      case '۳':
         return '3';
-      case 'ط·آ¸ط¢آ¤':
-      case 'ط·ط›ط¢آ´':
+      case '٤':
+      case '۴':
         return '4';
-      case 'ط·آ¸ط¢آ¥':
-      case 'ط·ط›ط¢آµ':
+      case '٥':
+      case '۵':
         return '5';
-      case 'ط·آ¸ط¢آ¦':
-      case 'ط·ط›ط¢آ¶':
+      case '٦':
+      case '۶':
         return '6';
-      case 'ط·آ¸ط¢آ§':
-      case 'ط·ط›ط¢آ·':
+      case '٧':
+      case '۷':
         return '7';
-      case 'ط·آ¸ط¢آ¨':
-      case 'ط·ط›ط¢آ¸':
+      case '٨':
+      case '۸':
         return '8';
-      case 'ط·آ¸ط¢آ©':
-      case 'ط·ط›ط¢آ¹':
+      case '٩':
+      case '۹':
         return '9';
       default:
         return ch;
@@ -51,27 +51,35 @@ extension AppDbWallets on AppDb {
     return buf.toString();
   }
 
+  bool _walletPhoneExists(String normalizedPhone, {int? exceptWalletId}) {
+    for (final w in _wallets) {
+      if (exceptWalletId != null && w.id == exceptWalletId) continue;
+      if (_normalizePhone(w.phone) == normalizedPhone) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   Future<void> resetDatabase() async {
     if (!AppSession.isAdmin) {
-      throw Exception(
-        'ط·آ¸أ¢â‚¬طŒط·آ·ط¢آ°ط·آ·ط¢آ§ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ¥ط·آ·ط¢آ¬ط·آ·ط¢آ±ط·آ·ط¢آ§ط·آ·ط·إ’ ط·آ¸أ¢â‚¬آ¦ط·آ·ط¹آ¾ط·آ·ط¢آ§ط·آ·ط¢آ­ ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬â€چط·آ·ط¢آ£ط·آ·ط¢آ¯ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¾ط·آ¸أ¢â‚¬ع‘ط·آ·ط¢آ·',
-      );
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
     }
     await _closeSqlite();
-    final file = await _sqliteFile();
-    if (await file.exists()) await file.delete();
+    await _deleteSqliteArtifacts();
     final legacy = await _dataFile();
     if (await legacy.exists()) await legacy.delete();
     await _reopenSqlite();
+    await _clearSqliteAllData();
     _loaded = false;
-    await _ensureLoaded();
+    await _seed();
+    _rebuildEngineFromTxns();
+    _loaded = true;
   }
 
   Future<void> resetDatabaseEmpty() async {
     if (!AppSession.isAdmin) {
-      throw Exception(
-        'ط·آ¸أ¢â‚¬طŒط·آ·ط¢آ°ط·آ·ط¢آ§ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ¥ط·آ·ط¢آ¬ط·آ·ط¢آ±ط·آ·ط¢آ§ط·آ·ط·إ’ ط·آ¸أ¢â‚¬آ¦ط·آ·ط¹آ¾ط·آ·ط¢آ§ط·آ·ط¢آ­ ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬â€چط·آ·ط¢آ£ط·آ·ط¢آ¯ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¾ط·آ¸أ¢â‚¬ع‘ط·آ·ط¢آ·',
-      );
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
     }
     await _resetEmpty();
   }
@@ -94,40 +102,31 @@ extension AppDbWallets on AppDb {
     await _ensureWalletAllowed();
     final n = name.trim();
     if (n.isEmpty) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ·ط¢آ³ط·آ¸أ¢â‚¬آ¦ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ·ط·آ¸أ¢â‚¬â€چط·آ¸ط«â€ ط·آ·ط¢آ¨',
-      );
+      throw Exception('اسم المحفظة مطلوب');
     }
     final p = _normalizePhone(phone);
     if (p.isEmpty) {
+      throw Exception('رقم هاتف المحفظة مطلوب');
+    }
+    if (_walletPhoneExists(p)) {
       throw Exception(
-        'ط·آ·ط¢آ±ط·آ¸أ¢â‚¬ع‘ط·آ¸أ¢â‚¬آ¦ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ·ط·آ¸أ¢â‚¬â€چط·آ¸ط«â€ ط·آ·ط¢آ¨',
+        '\u0631\u0642\u0645 \u0627\u0644\u0645\u062d\u0641\u0638\u0629 \u0645\u0633\u062c\u0644 \u0645\u0633\u0628\u0642\u064b\u0627',
       );
     }
     if (dailyLimit <= 0) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦ط·آ¸ط¸آ¹ ط·آ¸ط¸آ¹ط·آ·ط¢آ¬ط·آ·ط¢آ¨ ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط¦â€™ط·آ·ط¢آ¨ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آµط·آ¸ط¸آ¾ط·آ·ط¢آ±',
-      );
+      throw Exception('الحد اليومي يجب أن يكون أكبر من صفر');
     }
     if (monthlyLimit <= 0) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ´ط·آ¸أ¢â‚¬طŒط·آ·ط¢آ±ط·آ¸ط¸آ¹ ط·آ¸ط¸آ¹ط·آ·ط¢آ¬ط·آ·ط¢آ¨ ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط¦â€™ط·آ·ط¢آ¨ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آµط·آ¸ط¸آ¾ط·آ·ط¢آ±',
-      );
+      throw Exception('الحد الشهري يجب أن يكون أكبر من صفر');
     }
     if (monthlyLimit < dailyLimit) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ´ط·آ¸أ¢â‚¬طŒط·آ·ط¢آ±ط·آ¸ط¸آ¹ ط·آ¸ط¸آ¹ط·آ·ط¢آ¬ط·آ·ط¢آ¨ ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط¦â€™ط·آ·ط¢آ¨ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط«â€  ط·آ¸ط¸آ¹ط·آ·ط¢آ³ط·آ·ط¢آ§ط·آ¸ط«â€ ط·آ¸ط¸آ¹ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦ط·آ¸ط¸آ¹',
-      );
+      throw Exception('الحد الشهري يجب أن يكون أكبر من أو يساوي الحد اليومي');
     }
     if (openingBalance < 0) {
-      throw Exception(
-        'ط·آ·ط¢آ±ط·آ·ط¢آµط·آ¸ط¸آ¹ط·آ·ط¢آ¯ ط·آ·ط¢آ£ط·آ¸ط«â€ ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¯ط·آ·ط¢آ© ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸ط¦â€™ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ³ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ¨',
-      );
+      throw Exception('رصيد أول المدة لا يمكن أن يكون سالبًا');
     }
     if (lowBalanceThreshold < 0) {
-      throw Exception(
-        'ط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¹آ¾ط·آ¸أ¢â‚¬آ ط·آ·ط¢آ¨ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬طŒ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ±ط·آ·ط¢آµط·آ¸ط¸آ¹ط·آ·ط¢آ¯ ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸ط¦â€™ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ³ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ¨',
-      );
+      throw Exception('حد التنبيه المنخفض لا يمكن أن يكون سالبًا');
     }
     final w = Wallet(
       id: _nextWalletId++,
@@ -153,8 +152,7 @@ extension AppDbWallets on AppDb {
         clientFee: 0,
         networkFee: 0,
         mode: 'opening_balance',
-        note:
-            'ط·آ·ط¢آ±ط·آ·ط¢آµط·آ¸ط¸آ¹ط·آ·ط¢آ¯ ط·آ·ط¢آ£ط·آ¸ط«â€ ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¯ط·آ·ط¢آ©',
+        note: 'رصيد أول المدة',
         createdBy: _actorName(),
         createdRole: _actorRole(),
         createdAt: now,
@@ -162,8 +160,7 @@ extension AppDbWallets on AppDb {
       final spec = WalletFundingTxSpec(
         walletId: w.id.toString(),
         amountQirsh: Money.fromEgpDouble(openingBalance),
-        note:
-            'ط·آ·ط¢آ±ط·آ·ط¢آµط·آ¸ط¸آ¹ط·آ·ط¢آ¯ ط·آ·ط¢آ£ط·آ¸ط«â€ ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¯ط·آ·ط¢آ©',
+        note: 'رصيد أول المدة',
       );
       _engine.createPending(
         txId: _txId(txn.id),
@@ -183,8 +180,7 @@ extension AppDbWallets on AppDb {
         txnId: txn.id,
         walletId: w.id,
         amount: openingBalance,
-        note:
-            'ط·آ·ط¢آ±ط·آ·ط¢آµط·آ¸ط¸آ¹ط·آ·ط¢آ¯ ط·آ·ط¢آ£ط·آ¸ط«â€ ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¯ط·آ·ط¢آ©',
+        note: 'رصيد أول المدة',
       );
     }
 
@@ -210,41 +206,32 @@ extension AppDbWallets on AppDb {
     await _ensureLoaded();
     final n = name.trim();
     if (n.isEmpty) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ·ط¢آ³ط·آ¸أ¢â‚¬آ¦ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ·ط·آ¸أ¢â‚¬â€چط·آ¸ط«â€ ط·آ·ط¢آ¨',
-      );
+      throw Exception('اسم المحفظة مطلوب');
     }
     final p = _normalizePhone(phone);
     if (p.isEmpty) {
+      throw Exception('رقم هاتف المحفظة مطلوب');
+    }
+    if (_walletPhoneExists(p, exceptWalletId: walletId)) {
       throw Exception(
-        'ط·آ·ط¢آ±ط·آ¸أ¢â‚¬ع‘ط·آ¸أ¢â‚¬آ¦ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ·ط·آ¸أ¢â‚¬â€چط·آ¸ط«â€ ط·آ·ط¢آ¨',
+        '\u0631\u0642\u0645 \u0627\u0644\u0645\u062d\u0641\u0638\u0629 \u0645\u0633\u062c\u0644 \u0645\u0633\u0628\u0642\u064b\u0627',
       );
     }
     if (dailyLimit <= 0) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦ط·آ¸ط¸آ¹ ط·آ¸ط¸آ¹ط·آ·ط¢آ¬ط·آ·ط¢آ¨ ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط¦â€™ط·آ·ط¢آ¨ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آµط·آ¸ط¸آ¾ط·آ·ط¢آ±',
-      );
+      throw Exception('الحد اليومي يجب أن يكون أكبر من صفر');
     }
     if (monthlyLimit <= 0) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ´ط·آ¸أ¢â‚¬طŒط·آ·ط¢آ±ط·آ¸ط¸آ¹ ط·آ¸ط¸آ¹ط·آ·ط¢آ¬ط·آ·ط¢آ¨ ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط¦â€™ط·آ·ط¢آ¨ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آµط·آ¸ط¸آ¾ط·آ·ط¢آ±',
-      );
+      throw Exception('الحد الشهري يجب أن يكون أكبر من صفر');
     }
     if (monthlyLimit < dailyLimit) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ´ط·آ¸أ¢â‚¬طŒط·آ·ط¢آ±ط·آ¸ط¸آ¹ ط·آ¸ط¸آ¹ط·آ·ط¢آ¬ط·آ·ط¢آ¨ ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط¦â€™ط·آ·ط¢آ¨ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸ط«â€  ط·آ¸ط¸آ¹ط·آ·ط¢آ³ط·آ·ط¢آ§ط·آ¸ط«â€ ط·آ¸ط¸آ¹ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦ط·آ¸ط¸آ¹',
-      );
+      throw Exception('الحد الشهري يجب أن يكون أكبر من أو يساوي الحد اليومي');
     }
     if (lowBalanceThreshold < 0) {
-      throw Exception(
-        'ط·آ·ط¢آ­ط·آ·ط¢آ¯ ط·آ·ط¹آ¾ط·آ¸أ¢â‚¬آ ط·آ·ط¢آ¨ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬طŒ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ±ط·آ·ط¢آµط·آ¸ط¸آ¹ط·آ·ط¢آ¯ ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸ط¦â€™ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ£ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ  ط·آ·ط¢آ³ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ¨',
-      );
+      throw Exception('حد التنبيه المنخفض لا يمكن أن يكون سالبًا');
     }
     final idx = _wallets.indexWhere((w) => w.id == walletId);
     if (idx == -1) {
-      throw Exception(
-        'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ© ط·آ·ط·â€؛ط·آ¸ط¸آ¹ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸ط«â€ ط·آ·ط¢آ¬ط·آ¸ط«â€ ط·آ·ط¢آ¯ط·آ·ط¢آ©',
-      );
+      throw Exception('المحفظة غير موجودة');
     }
     _wallets[idx] = _wallets[idx].copyWith(
       name: n,
@@ -276,11 +263,164 @@ extension AppDbWallets on AppDb {
     return Money.toEgpDouble(q);
   }
 
+  Future<double> getFawryBalance() async {
+    await _ensureLoaded();
+    return Money.toEgpDouble(_state.fawryBalanceQirsh);
+  }
+
+  String _businessMonthKeyFromDateTime(DateTime dt) {
+    final shifted = _businessShift(dt);
+    final y = shifted.year.toString().padLeft(4, '0');
+    final m = shifted.month.toString().padLeft(2, '0');
+    return '$y-$m';
+  }
+
+  Future<void> _cleanupUsageResetsIfNeeded() async {
+    final now = DateTime.now();
+    final todayKey = _businessDateKeyFromDateTime(now);
+    final monthKey = _businessMonthKeyFromDateTime(now);
+    var changed = false;
+    final walletIds = _wallets.map((w) => w.id).toSet();
+
+    _dailyUsageResetAt.removeWhere((walletId, _) {
+      final keep = walletIds.contains(walletId);
+      if (!keep) changed = true;
+      return !keep;
+    });
+    _monthlyUsageResetAt.removeWhere((walletId, _) {
+      final keep = walletIds.contains(walletId);
+      if (!keep) changed = true;
+      return !keep;
+    });
+
+    _dailyUsageResetAt.removeWhere((_, dt) {
+      final keep = _businessDateKeyFromDateTime(dt) == todayKey;
+      if (!keep) changed = true;
+      return !keep;
+    });
+
+    _monthlyUsageResetAt.removeWhere((_, dt) {
+      final keep = _businessMonthKeyFromDateTime(dt) == monthKey;
+      if (!keep) changed = true;
+      return !keep;
+    });
+
+    if (changed) {
+      await _save();
+    }
+  }
+
+  Future<void> resetWalletDailyUsage(int walletId) async {
+    await _ensureLoaded();
+    if (!AppSession.isAdmin) {
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
+    }
+    _requireWallet(walletId);
+    _dailyUsageResetAt[walletId] = DateTime.now();
+    await _save();
+    await appendAudit(
+      type: 'wallet_daily_limit_usage_reset',
+      walletId: walletId,
+    );
+  }
+
+  Future<void> resetWalletMonthlyUsage(int walletId) async {
+    await _ensureLoaded();
+    if (!AppSession.isAdmin) {
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
+    }
+    _requireWallet(walletId);
+    _monthlyUsageResetAt[walletId] = DateTime.now();
+    await _save();
+    await appendAudit(
+      type: 'wallet_monthly_limit_usage_reset',
+      walletId: walletId,
+    );
+  }
+
+  Future<void> resetAllWalletDailyUsage() async {
+    await _ensureLoaded();
+    if (!AppSession.isAdmin) {
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
+    }
+    final now = DateTime.now();
+    for (final w in _wallets) {
+      _dailyUsageResetAt[w.id] = now;
+    }
+    await _save();
+    await appendAudit(type: 'wallet_daily_limit_usage_reset_all');
+  }
+
+  Future<void> resetAllWalletMonthlyUsage() async {
+    await _ensureLoaded();
+    if (!AppSession.isAdmin) {
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
+    }
+    final now = DateTime.now();
+    for (final w in _wallets) {
+      _monthlyUsageResetAt[w.id] = now;
+    }
+    await _save();
+    await appendAudit(type: 'wallet_monthly_limit_usage_reset_all');
+  }
+
+  Future<Map<int, WalletLimitUsage>> getWalletLimitUsage() async {
+    await _ensureLoaded();
+    await _cleanupUsageResetsIfNeeded();
+
+    final now = DateTime.now();
+    final dayKey = _businessDateKeyFromDateTime(now);
+    final monthKey = _businessMonthKeyFromDateTime(now);
+
+    final dailyByWallet = <int, double>{};
+    final monthlyByWallet = <int, double>{};
+
+    for (final t in _txns) {
+      if (t.kind != 'transfer') continue;
+      if (t.status != 'posted' && t.status != 'pending') continue;
+      final walletId = t.walletFromId;
+      if (walletId == null) continue;
+
+      final baseAmount = t.mode == 'type2_v2'
+          ? (t.amount + t.clientFee)
+          : (t.amount - t.networkFee);
+      if (baseAmount <= 0) continue;
+
+      final dailyResetAnchor = _dailyUsageResetAt[walletId];
+      if (_businessDateKeyFromDateTime(t.entryDate) == dayKey &&
+          (dailyResetAnchor == null ||
+              !t.entryDate.isBefore(dailyResetAnchor))) {
+        dailyByWallet[walletId] = (dailyByWallet[walletId] ?? 0) + baseAmount;
+      }
+
+      final monthlyResetAnchor = _monthlyUsageResetAt[walletId];
+      if (_businessMonthKeyFromDateTime(t.entryDate) == monthKey &&
+          (monthlyResetAnchor == null ||
+              !t.entryDate.isBefore(monthlyResetAnchor))) {
+        monthlyByWallet[walletId] =
+            (monthlyByWallet[walletId] ?? 0) + baseAmount;
+      }
+    }
+
+    final result = <int, WalletLimitUsage>{};
+    for (final w in _wallets) {
+      result[w.id] = WalletLimitUsage(
+        walletId: w.id,
+        dailyUsed: dailyByWallet[w.id] ?? 0,
+        dailyLimit: w.dailyLimit,
+        monthlyUsed: monthlyByWallet[w.id] ?? 0,
+        monthlyLimit: w.monthlyLimit,
+      );
+    }
+    return result;
+  }
+
   Future<TreasurySnapshot> getTreasurySnapshot() async {
     await _ensureLoaded();
 
     // Posted/actual balances from engine state (qirsh -> EGP)
     final drawerActualBalance = Money.toEgpDouble(_state.drawerBalanceQirsh);
+    final fawryActualBalance = Money.toEgpDouble(_state.fawryBalanceQirsh);
     int walletsActualQ = 0;
     for (final w in _wallets) {
       walletsActualQ += _state.getWalletQirsh(w.id.toString());
@@ -295,9 +435,13 @@ extension AppDbWallets on AppDb {
       walletsAvailableQ += projected.walletsQirsh[w.id.toString()] ?? 0;
     }
     final walletsTotal = Money.toEgpDouble(walletsAvailableQ);
+    final fawryBalance = Money.toEgpDouble(projected.fawryQirsh);
 
     // Pending txns count
     final pendingCount = _txns.where((t) => t.status == 'pending').length;
+    final pendingFlow = _pendingLiquidityFlowQirsh();
+    final pendingInflow = Money.toEgpDouble(pendingFlow.inflowQirsh);
+    final pendingOutflow = Money.toEgpDouble(pendingFlow.outflowQirsh);
     await _maybeNotifyPending();
 
     // Profits derived from posted txns (CF). Rolled-back originals are excluded by status.
@@ -306,6 +450,7 @@ extension AppDbWallets on AppDb {
     final nowShifted = _businessShift(now);
     double dailyProfit = 0;
     double monthlyProfit = 0;
+    double profitApprovedTotal = 0;
 
     for (final t in _txns) {
       if (t.status != 'posted') continue;
@@ -313,6 +458,7 @@ extension AppDbWallets on AppDb {
 
       final fee = t.clientFee;
       if (fee <= 0) continue;
+      profitApprovedTotal += fee;
 
       if (_businessDateKeyFromDateTime(t.entryDate) == nowDayKey) {
         dailyProfit += fee;
@@ -324,15 +470,63 @@ extension AppDbWallets on AppDb {
       }
     }
 
+    double claimsReceivableOpen = 0;
+    double claimsPayableOpen = 0;
+    for (final c in _claims) {
+      if (c.status != 'open') continue;
+      if (c.type == 'receivable') {
+        claimsReceivableOpen += c.amount;
+      } else if (c.type == 'payable') {
+        claimsPayableOpen += c.amount;
+      }
+    }
+
     return TreasurySnapshot(
       drawerBalance: drawerBalance,
       walletsTotal: walletsTotal,
+      fawryBalance: fawryBalance,
       drawerActualBalance: drawerActualBalance,
       walletsActualTotal: walletsActualTotal,
+      fawryActualBalance: fawryActualBalance,
       pendingCount: pendingCount,
+      pendingInflow: pendingInflow,
+      pendingOutflow: pendingOutflow,
+      claimsReceivableOpen: claimsReceivableOpen,
+      claimsPayableOpen: claimsPayableOpen,
+      profitApprovedTotal: profitApprovedTotal,
       dailyProfit: dailyProfit,
       monthlyProfit: monthlyProfit,
     );
+  }
+
+  ({int inflowQirsh, int outflowQirsh}) _pendingLiquidityFlowQirsh() {
+    int inflowQirsh = 0;
+    int outflowQirsh = 0;
+    final pendingSorted =
+        _txns
+            .where(
+              (t) =>
+                  t.status == 'pending' &&
+                  (t.kind == 'receive' || t.kind == 'transfer'),
+            )
+            .toList()
+          ..sort((a, b) => a.entryDate.compareTo(b.entryDate));
+
+    for (final t in pendingSorted) {
+      final spec = _specFromTxn(t);
+      final entries = spec.buildEntries(_txId(t.id));
+      for (final e in entries) {
+        final k = e.accountKey;
+        if (!k.startsWith('wallet:')) continue;
+        if (e.deltaQirsh >= 0) {
+          inflowQirsh += e.deltaQirsh;
+        } else {
+          outflowQirsh += -e.deltaQirsh;
+        }
+      }
+    }
+
+    return (inflowQirsh: inflowQirsh, outflowQirsh: outflowQirsh);
   }
 
   Future<void> _maybeNotifyPending() async {
@@ -347,10 +541,8 @@ extension AppDbWallets on AppDb {
     if (oldPending <= 0) return;
 
     await NotificationService.show(
-      title:
-          'ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ·ط¢آ§ط·آ·ط¹آ¾ ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬ع©ط·آ¸أ¢â‚¬ع‘ط·آ·ط¢آ©',
-      body:
-          'ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ¯ط·آ¸ط¸آ¹ط·آ¸ط¦â€™ $oldPending ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬ع©ط·آ¸أ¢â‚¬ع‘ط·آ·ط¢آ© ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ£ط·آ¸ط¦â€™ط·آ·ط¢آ«ط·آ·ط¢آ± ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬آ  ط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦.',
+      title: 'تنبيه عمليات معلقة',
+      body: 'يوجد لديك $oldPending عملية معلقة أقدم من يوم وتحتاج مراجعة.',
     );
 
     _lastPendingAlertDate = todayKey;

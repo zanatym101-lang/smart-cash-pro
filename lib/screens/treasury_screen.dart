@@ -1,10 +1,7 @@
-// v9: Treasury Screen (read-only + drawer funding command).
-// - No accounting math in UI.
-// - Drawer can be negative (rule).
-// - Funding command goes through AppDb (backed by AccountingEngine).
 import 'package:flutter/material.dart';
-import '../widgets/app_title.dart';
+
 import '../data/app_db.dart';
+import '../widgets/app_title.dart';
 
 class TreasuryScreen extends StatefulWidget {
   const TreasuryScreen({super.key});
@@ -16,8 +13,14 @@ class TreasuryScreen extends StatefulWidget {
 class _TreasuryScreenState extends State<TreasuryScreen> {
   TreasurySnapshot? _snap;
   bool _loading = true;
-  bool _depositing = false;
+  bool _adjusting = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   Future<void> _load() async {
     setState(() {
@@ -36,29 +39,29 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
     }
   }
 
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _drawerDepositDialog() async {
-    if (_depositing) return;
+  Future<void> _drawerAdjustDialog() async {
+    if (_adjusting) return;
 
     final amountCtrl = TextEditingController();
     final noteCtrl = TextEditingController();
 
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('تمويل الخزنة من مصدر خارجي'),
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('تعديل رصيد الدرج (+/-)'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: amountCtrl,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'المبلغ (EGP)'),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+                signed: true,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'المبلغ (مثال: 500 أو -300)',
+              ),
             ),
             const SizedBox(height: 8),
             TextField(
@@ -69,12 +72,12 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(ctx, false),
             child: const Text('إلغاء'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('حفظ'),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('تنفيذ'),
           ),
         ],
       ),
@@ -85,35 +88,43 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
     final amt = double.tryParse(amountCtrl.text.trim()) ?? 0;
     final note = noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim();
 
-    if (amt <= 0) {
+    if (amt == 0) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('المبلغ يجب أن يكون أكبر من صفر')),
+        const SnackBar(content: Text('المبلغ لا يمكن أن يساوي صفر')),
       );
       return;
     }
 
-    setState(() => _depositing = true);
+    setState(() => _adjusting = true);
     try {
       await AppDb.instance.drawerDeposit(amount: amt, note: note);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('تم تمويل الخزنة ✅')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            amt > 0
+                ? 'تمت إضافة ${amt.toStringAsFixed(2)} إلى الدرج ✅'
+                : 'تم خصم ${(-amt).toStringAsFixed(2)} من الدرج ✅',
+          ),
+        ),
+      );
       await _load();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('فشل تمويل الخزنة: $e')));
+      ).showSnackBar(SnackBar(content: Text('فشل تعديل الدرج: $e')));
     } finally {
-      if (mounted) setState(() => _depositing = false);
+      if (mounted) setState(() => _adjusting = false);
     }
   }
 
   Widget _heroCard(TreasurySnapshot s) {
-    final total = s.drawerBalance + s.walletsTotal;
-    final actualTotal = s.drawerActualBalance + s.walletsActualTotal;
+    final totalAvailable = s.drawerBalance + s.walletsTotal + s.fawryBalance;
+    final totalActual =
+        s.drawerActualBalance + s.walletsActualTotal + s.fawryActualBalance;
+
     return Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(28),
@@ -140,7 +151,7 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
           ),
           const SizedBox(height: 6),
           Text(
-            total.toStringAsFixed(2),
+            totalAvailable.toStringAsFixed(2),
             style: const TextStyle(
               color: Colors.white,
               fontSize: 28,
@@ -148,16 +159,15 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
             ),
           ),
           const SizedBox(height: 14),
-          _darkRow('الخزنة (كاش) - متاح', s.drawerBalance),
+          _darkRow('الدرج (متاح)', s.drawerBalance),
+          _darkRow('المحافظ (متاح)', s.walletsTotal),
+          _darkRow('فوري (متاح)', s.fawryBalance),
           const SizedBox(height: 6),
-          _darkRow('المحافظ - متاح', s.walletsTotal),
+          _darkRow('الدرج (فعلي)', s.drawerActualBalance),
+          _darkRow('المحافظ (فعلي)', s.walletsActualTotal),
+          _darkRow('فوري (فعلي)', s.fawryActualBalance),
           const SizedBox(height: 6),
-          _darkRow('الخزنة (كاش) - فعلي', s.drawerActualBalance),
-          const SizedBox(height: 6),
-          _darkRow('المحافظ - فعلي', s.walletsActualTotal),
-          const SizedBox(height: 6),
-          _darkRow('الإجمالي الفعلي', actualTotal),
-          const SizedBox(height: 6),
+          _darkRow('الإجمالي الفعلي', totalActual),
           _darkRow('ربح اليوم', s.dailyProfit),
         ],
       ),
@@ -165,26 +175,22 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
   }
 
   Widget _darkRow(String label, double value) {
-    return Row(
-      children: [
-        Expanded(
-          child: Text(label, style: const TextStyle(color: Colors.white70)),
-        ),
-        Text(
-          value.toStringAsFixed(2),
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _sectionTitle(String title) {
     return Padding(
-      padding: const EdgeInsets.only(top: 18, bottom: 10),
-      child: Text(title, style: Theme.of(context).textTheme.titleMedium),
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(label, style: const TextStyle(color: Colors.white70)),
+          ),
+          Text(
+            value.toStringAsFixed(2),
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -237,7 +243,7 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
               )
             else if (s != null) ...[
               _heroCard(s),
-              _sectionTitle('إجراءات'),
+              const SizedBox(height: 18),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -245,14 +251,16 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'تمويل الخزنة',
+                        'تعديل يدوي للدرج',
                         style: TextStyle(fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 8),
-                      const Text('تمويل الخزنة لا يؤثر على أرصدة المحافظ.'),
+                      const Text(
+                        'يسجل حركة إضافة أو خصم مباشرة على الدرج فقط، ولا يغير الأرباح ولا المحافظ.',
+                      ),
                       const SizedBox(height: 12),
                       ElevatedButton.icon(
-                        icon: _depositing
+                        icon: _adjusting
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
@@ -260,9 +268,9 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
                                   strokeWidth: 2,
                                 ),
                               )
-                            : const Icon(Icons.add),
-                        label: const Text('تمويل الخزنة من مصدر خارجي'),
-                        onPressed: _depositing ? null : _drawerDepositDialog,
+                            : const Icon(Icons.edit_note),
+                        label: const Text('تعديل رصيد الدرج (+/-)'),
+                        onPressed: _adjusting ? null : _drawerAdjustDialog,
                       ),
                     ],
                   ),

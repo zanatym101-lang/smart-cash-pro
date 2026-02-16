@@ -13,40 +13,28 @@ class AuditLogScreen extends StatefulWidget {
 class _AuditLogScreenState extends State<AuditLogScreen> {
   final _searchCtrl = TextEditingController();
   bool _loading = true;
+  bool _verifying = false;
   String _typeFilter = 'all';
   List<Map<String, dynamic>> _items = [];
+  AuditChainStatus? _chain;
 
   static const Map<String, String> _typeLabels = {
-    'all': 'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط¦â€™ط·آ¸أ¢â‚¬â€چ',
-    'transfer_add':
-        'ط·آ·ط¢آ¥ط·آ·ط¢آ¶ط·آ·ط¢آ§ط·آ¸ط¸آ¾ط·آ·ط¢آ© ط·آ·ط¹آ¾ط·آ·ط¢آ­ط·آ¸ط«â€ ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬â€چ',
-    'receive_add':
-        'ط·آ·ط¢آ¥ط·آ·ط¢آ¶ط·آ·ط¢آ§ط·آ¸ط¸آ¾ط·آ·ط¢آ© ط·آ·ط¢آ§ط·آ·ط¢آ³ط·آ·ط¹آ¾ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ط·آ¸أ¢â‚¬آ¦',
-    'expense_add':
-        'ط·آ·ط¢آ¥ط·آ·ط¢آ¶ط·آ·ط¢آ§ط·آ¸ط¸آ¾ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آµط·آ·ط¢آ±ط·آ¸ط«â€ ط·آ¸ط¸آ¾',
-    'fawry_add':
-        'ط·آ·ط¢آ¥ط·آ·ط¢آ¶ط·آ·ط¢آ§ط·آ¸ط¸آ¾ط·آ·ط¢آ© ط·آ¸ط¸آ¾ط·آ¸ط«â€ ط·آ·ط¢آ±ط·آ¸ط¸آ¹',
-    'drawer_deposit':
-        'ط·آ·ط¹آ¾ط·آ¸أ¢â‚¬آ¦ط·آ¸ط«â€ ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ¯ط·آ·ط¢آ±ط·آ·ط¢آ¬',
-    'external_funding':
-        'ط·آ·ط¹آ¾ط·آ¸أ¢â‚¬آ¦ط·آ¸ط«â€ ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬â€چ ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ©',
-    'claim_add':
-        'ط·آ·ط¢آ¥ط·آ·ط¢آ¶ط·آ·ط¢آ§ط·آ¸ط¸آ¾ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ³ط·آ·ط¹آ¾ط·آ·ط¢آ­ط·آ¸أ¢â‚¬ع‘',
-    'claim_settle':
-        'ط·آ·ط¹آ¾ط·آ·ط¢آ­ط·آ·ط¢آµط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬â€چ/ط·آ·ط¢آ³ط·آ·ط¢آ¯ط·آ·ط¢آ§ط·آ·ط¢آ¯ ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ³ط·آ·ط¹آ¾ط·آ·ط¢آ­ط·آ¸أ¢â‚¬ع‘',
-    'pending_confirm':
-        'ط·آ·ط¢آ§ط·آ·ط¢آ¹ط·آ·ط¹آ¾ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ§ط·آ·ط¢آ¯ ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ·ط¢آ©',
-    'pending_cancel':
-        'ط·آ·ط¢آ¥ط·آ¸أ¢â‚¬â€چط·آ·ط·â€؛ط·آ·ط¢آ§ط·آ·ط·إ’ ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬ع©ط·آ¸أ¢â‚¬ع‘ط·آ·ط¢آ©',
-    'txn_rollback': 'Rollback ط·آ·ط¢آ¹ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ·ط¢آ©',
-    'wallet_add':
-        'ط·آ·ط¢آ¥ط·آ·ط¢آ¶ط·آ·ط¢آ§ط·آ¸ط¸آ¾ط·آ·ط¢آ© ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ©',
-    'wallet_update':
-        'ط·آ·ط¹آ¾ط·آ·ط¢آ¹ط·آ·ط¢آ¯ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬â€چ ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ­ط·آ¸ط¸آ¾ط·آ·ط¢آ¸ط·آ·ط¢آ©',
-    'daily_close':
-        'ط·آ·ط¢آ¥ط·آ·ط·â€؛ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ط·آ¸أ¢â‚¬ع‘ ط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦',
-    'daily_close_reopen':
-        'ط·آ·ط¢آ¥ط·آ¸أ¢â‚¬â€چط·آ·ط·â€؛ط·آ·ط¢آ§ط·آ·ط·إ’ ط·آ·ط¢آ¥ط·آ·ط·â€؛ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ط·آ¸أ¢â‚¬ع‘ ط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦',
+    'all': 'الكل',
+    'transfer_add': 'إضافة تحويل',
+    'receive_add': 'إضافة استلام',
+    'expense_add': 'إضافة مصروف',
+    'fawry_add': 'إضافة فوري',
+    'drawer_deposit': 'تمويل درج',
+    'external_funding': 'تمويل محفظة',
+    'claim_add': 'إضافة مستحق',
+    'claim_settle': 'تحصيل/سداد مستحق',
+    'pending_confirm': 'اعتماد عملية معلقة',
+    'pending_cancel': 'إلغاء عملية معلقة',
+    'txn_rollback': 'Rollback عملية',
+    'wallet_add': 'إضافة محفظة',
+    'wallet_update': 'تعديل محفظة',
+    'daily_close': 'إغلاق يوم',
+    'daily_close_reopen': 'إلغاء إغلاق يوم',
   };
 
   @override
@@ -65,11 +53,41 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
     setState(() => _loading = true);
     try {
       final items = await AppDb.instance.listAudit();
+      final chain = await AppDb.instance.verifyAuditChain();
       if (!mounted) return;
-      setState(() => _items = items);
+      setState(() {
+        _items = items;
+        _chain = chain;
+      });
     } catch (_) {
+      // Keep last known state if loading fails.
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _verifyChain() async {
+    setState(() => _verifying = true);
+    try {
+      final chain = await AppDb.instance.verifyAuditChain();
+      if (!mounted) return;
+      setState(() => _chain = chain);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            chain.ok
+                ? 'سلسلة التدقيق سليمة ✅'
+                : 'تحذير: سلسلة التدقيق غير سليمة',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('فشل التحقق: $e')));
+    } finally {
+      if (mounted) setState(() => _verifying = false);
     }
   }
 
@@ -78,20 +96,16 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text(
-          'ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ³ط·آ·ط¢آ­ ط·آ·ط¢آ³ط·آ·ط¢آ¬ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¹آ¾ط·آ·ط¢آ¯ط·آ¸أ¢â‚¬ع‘ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬ع‘ط·آ·ط¹ط›',
-        ),
-        content: const Text(
-          'ط·آ·ط¢آ³ط·آ¸ط¸آ¹ط·آ·ط¹آ¾ط·آ¸أ¢â‚¬آ¦ ط·آ·ط¢آ­ط·آ·ط¢آ°ط·آ¸ط¸آ¾ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ³ط·آ·ط¢آ¬ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ¨ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط¦â€™ط·آ·ط¢آ§ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬â€چ.',
-        ),
+        title: const Text('مسح سجل العمليات؟'),
+        content: const Text('سيتم حذف كل السجل نهائيًا.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('ط·آ·ط¢آ¥ط·آ¸أ¢â‚¬â€چط·آ·ط·â€؛ط·آ·ط¢آ§ط·آ·ط·إ’'),
+            child: const Text('إلغاء'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ³ط·آ·ط¢آ­'),
+            child: const Text('مسح'),
           ),
         ],
       ),
@@ -140,21 +154,28 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
     final types = _typeLabels.entries.toList();
     return Scaffold(
       appBar: AppBar(
-        title: const AppTitle(
-          subtitle:
-              'ط·آ·ط¢آ³ط·آ·ط¢آ¬ط·آ¸أ¢â‚¬â€چ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¹آ¾ط·آ·ط¢آ¯ط·آ¸أ¢â‚¬ع‘ط·آ¸ط¸آ¹ط·آ¸أ¢â‚¬ع‘',
-        ),
+        title: const AppTitle(subtitle: 'سجل عمليات النظام'),
         actions: [
           IconButton(
             onPressed: _loading ? null : _load,
             icon: const Icon(Icons.refresh),
-            tooltip: 'ط·آ·ط¹آ¾ط·آ·ط¢آ­ط·آ·ط¢آ¯ط·آ¸ط¸آ¹ط·آ·ط¢آ«',
+            tooltip: 'تحديث',
+          ),
+          IconButton(
+            onPressed: (_loading || _verifying) ? null : _verifyChain,
+            icon: _verifying
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.shield),
+            tooltip: 'التحقق من سلامة السلسلة',
           ),
           IconButton(
             onPressed: _loading ? null : _clearLog,
             icon: const Icon(Icons.delete_outline),
-            tooltip:
-                'ط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ³ط·آ·ط¢آ­ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ³ط·آ·ط¢آ¬ط·آ¸أ¢â‚¬â€چ',
+            tooltip: 'مسح السجل',
           ),
         ],
       ),
@@ -162,10 +183,30 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
+            if (_chain != null)
+              Card(
+                child: ListTile(
+                  leading: Icon(
+                    _chain!.ok ? Icons.verified : Icons.warning_amber_rounded,
+                    color: _chain!.ok ? Colors.green : Colors.orange,
+                  ),
+                  title: Text(
+                    _chain!.ok
+                        ? 'سلسلة التدقيق سليمة'
+                        : 'تحذير: سلسلة التدقيق غير سليمة',
+                  ),
+                  subtitle: Text(
+                    'عدد السجلات: ${_chain!.count}'
+                    '${_chain!.tailHash == null ? '' : ' • Tail: ${_chain!.tailHash!.substring(0, 12)}...'}'
+                    '${_chain!.error == null ? '' : ' • ${_chain!.error}'}',
+                  ),
+                ),
+              ),
+            if (_chain != null) const SizedBox(height: 8),
             TextField(
               controller: _searchCtrl,
               decoration: const InputDecoration(
-                labelText: 'ط·آ·ط¢آ¨ط·آ·ط¢آ­ط·آ·ط¢آ«',
+                labelText: 'بحث',
                 prefixIcon: Icon(Icons.search),
               ),
               onChanged: (_) => setState(() {}),
@@ -182,21 +223,14 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
                 if (v == null) return;
                 setState(() => _typeFilter = v);
               },
-              decoration: const InputDecoration(
-                labelText:
-                    'ط·آ¸أ¢â‚¬آ ط·آ¸ط«â€ ط·آ·ط¢آ¹ ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ­ط·آ·ط¢آ¯ط·آ·ط¢آ«',
-              ),
+              decoration: const InputDecoration(labelText: 'نوع العملية'),
             ),
             const SizedBox(height: 12),
             Expanded(
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
                   : _filtered.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ ط·آ·ط¹آ¾ط·آ¸ط«â€ ط·آ·ط¢آ¬ط·آ·ط¢آ¯ ط·آ·ط¢آ³ط·آ·ط¢آ¬ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ط·آ·ط¹آ¾',
-                      ),
-                    )
+                  ? const Center(child: Text('لا توجد عناصر مطابقة'))
                   : ListView.separated(
                       itemCount: _filtered.length,
                       separatorBuilder: (context, index) =>
@@ -212,24 +246,16 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
                         final amount = e['amount'];
                         final parts = <String>[];
                         if (at.isNotEmpty) {
-                          parts.add(
-                            'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط«â€ ط·آ¸أ¢â‚¬ع‘ط·آ·ط¹آ¾: $at',
-                          );
+                          parts.add('الوقت: $at');
                         }
                         if (by.isNotEmpty) {
-                          parts.add(
-                            'ط·آ·ط¢آ¨ط·آ¸ط«â€ ط·آ·ط¢آ§ط·آ·ط¢آ³ط·آ·ط¢آ·ط·آ·ط¢آ©: $by',
-                          );
+                          parts.add('بواسطة: $by');
                         }
                         if (role.isNotEmpty) {
-                          parts.add(
-                            'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ¯ط·آ¸ط«â€ ط·آ·ط¢آ±: $role',
-                          );
+                          parts.add('الدور: $role');
                         }
                         if (e['dateKey'] != null) {
-                          parts.add(
-                            'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸ط¸آ¹ط·آ¸ط«â€ ط·آ¸أ¢â‚¬آ¦: ${e['dateKey']}',
-                          );
+                          parts.add('اليوم: ${e['dateKey']}');
                         }
                         if (e['txnId'] != null) {
                           parts.add('Txn: #${e['txnId']}');
@@ -241,14 +267,10 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
                           parts.add('Wallet: #${e['walletId']}');
                         }
                         if (amount != null) {
-                          parts.add(
-                            'ط·آ·ط¢آ§ط·آ¸أ¢â‚¬â€چط·آ¸أ¢â‚¬آ¦ط·آ·ط¢آ¨ط·آ¸أ¢â‚¬â€چط·آ·ط·â€؛: ${amount.toString()}',
-                          );
+                          parts.add('المبلغ: ${amount.toString()}');
                         }
                         if (note != null && note.trim().isNotEmpty) {
-                          parts.add(
-                            'ط·آ¸أ¢â‚¬آ¦ط·آ¸أ¢â‚¬â€چط·آ·ط¢آ§ط·آ·ط¢آ­ط·آ·ط¢آ¸ط·آ·ط¢آ©: ${note.trim()}',
-                          );
+                          parts.add('ملاحظة: ${note.trim()}');
                         }
                         return Card(
                           child: ListTile(
@@ -258,7 +280,7 @@ class _AuditLogScreenState extends State<AuditLogScreen> {
                                 fontWeight: FontWeight.w700,
                               ),
                             ),
-                            subtitle: Text(parts.join(' ط£آ¢أ¢â€ڑآ¬ط¢آ¢ ')),
+                            subtitle: Text(parts.join(' | ')),
                           ),
                         );
                       },

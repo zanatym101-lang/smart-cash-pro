@@ -1,11 +1,12 @@
 import 'dart:convert';
 
-import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
-import '../widgets/app_title.dart';
+import 'package:flutter/material.dart';
+
 import '../data/app_db.dart';
-import '../data/sqlite/app_database.dart';
 import '../data/app_session.dart';
+import '../data/sqlite/app_database.dart';
+import '../widgets/app_title.dart';
 
 class SyncOutboxScreen extends StatefulWidget {
   const SyncOutboxScreen({super.key});
@@ -29,6 +30,7 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
     try {
       _items = await AppDb.instance.listOutbox(limit: 500);
     } catch (_) {
+      // Keep last state on load errors.
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -46,11 +48,11 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
   String _labelAction(String action) {
     switch (action) {
       case 'create':
-        return 'ط¥ظ†ط´ط§ط،';
+        return 'إنشاء';
       case 'update':
-        return 'طھط¹ط¯ظٹظ„';
+        return 'تعديل';
       case 'delete':
-        return 'ط­ط°ظپ';
+        return 'حذف';
       default:
         return action;
     }
@@ -59,13 +61,13 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
   String _labelEntity(String entity) {
     switch (entity) {
       case 'txn':
-        return 'ط¹ظ…ظ„ظٹط©';
+        return 'عملية';
       case 'wallet':
-        return 'ظ…ط­ظپط¸ط©';
+        return 'محفظة';
       case 'claim':
-        return 'ظ…ط³طھط­ظ‚';
+        return 'مستحق';
       case 'daily_close':
-        return 'ط¥ط؛ظ„ط§ظ‚ ظٹظˆظ…';
+        return 'إغلاق يوم';
       default:
         return entity;
     }
@@ -91,16 +93,14 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
     try {
       final path = await AppDb.instance.exportOutboxToDownloads();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('طھظ… طھطµط¯ظٹط± ظ…ظ„ظپ ط§ظ„ظ…ط²ط§ظ…ظ†ط©: $path'),
-        ),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('تم تصدير ملف المزامنة: $path')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('ظپط´ظ„ ط§ظ„طھطµط¯ظٹط±: $e')));
+      ).showSnackBar(SnackBar(content: Text('فشل التصدير: $e')));
     }
   }
 
@@ -112,12 +112,12 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('طھظ… ط­ظپط¸ ط§ظ„ظ…ظ„ظپ: $path')));
+      ).showSnackBar(SnackBar(content: Text('تم حفظ الملف: $path')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('ظپط´ظ„ ط§ظ„طھطµط¯ظٹط±: $e')));
+      ).showSnackBar(SnackBar(content: Text('فشل التصدير: $e')));
     }
   }
 
@@ -130,7 +130,7 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('ط¥ظ„ط؛ط§ط،'),
+            child: const Text('إلغاء'),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(context).pop(true),
@@ -145,9 +145,9 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
   Future<void> _markAllSent() async {
     if (!AppSession.isAdmin) return;
     final ok = await _confirm(
-      'طھط¹ظ„ظٹظ… ط§ظ„ظƒظ„ ظƒظ…ظڈط±ط³ظ„طں',
-      'ط³ظٹطھظ… ط§ط¹طھط¨ط§ط± ط¬ظ…ظٹط¹ ط§ظ„ط¹ظ†ط§طµط± ظ…ظڈط±ط³ظ„ط© (ط¨ط¯ظˆظ† ط­ط°ظپ).',
-      'طھط£ظƒظٹط¯',
+      'تعليم الكل كمرسل؟',
+      'سيتم اعتبار جميع العناصر مرسلة (بدون حذف).',
+      'تأكيد',
     );
     if (!ok) return;
     await AppDb.instance.markAllOutboxSent();
@@ -157,9 +157,9 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
   Future<void> _clearOutbox() async {
     if (!AppSession.isAdmin) return;
     final ok = await _confirm(
-      'ظ…ط³ط­ ط§ظ„ظ€ Outboxطں',
-      'ط³ظٹطھظ… ط­ط°ظپ ط¬ظ…ظٹط¹ ط§ظ„ط¹ظ†ط§طµط± ط§ظ„ظ…ط¹ظ„ظ‘ظ‚ط© ظ†ظ‡ط§ط¦ظٹظ‹ط§.',
-      'ظ…ط³ط­',
+      'مسح الـ Outbox؟',
+      'سيتم حذف جميع العناصر المعلقة نهائيًا.',
+      'مسح',
     );
     if (!ok) return;
     await AppDb.instance.clearOutbox();
@@ -171,12 +171,12 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
     final count = _items.length;
     return Scaffold(
       appBar: AppBar(
-        title: const AppTitle(subtitle: 'ظ…ط²ط§ظ…ظ†ط©'),
+        title: const AppTitle(subtitle: 'المزامنة'),
         actions: [
           IconButton(
             onPressed: _loading ? null : _load,
             icon: const Icon(Icons.refresh),
-            tooltip: 'طھط­ط¯ظٹط«',
+            tooltip: 'تحديث',
           ),
         ],
       ),
@@ -191,11 +191,11 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Outbox (ط¬ط§ظ‡ط² ظ„ظ„ظ…ط²ط§ظ…ظ†ط©)',
+                      'Outbox (جاهز للمزامنة)',
                       style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 6),
-                    Text('ط§ظ„ط¹ظ†ط§طµط± ط§ظ„ظ…ط¹ظ„ظ‘ظ‚ط©: $count'),
+                    Text('العناصر المعلقة: $count'),
                     const SizedBox(height: 10),
                     Wrap(
                       spacing: 8,
@@ -204,24 +204,22 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
                         ElevatedButton.icon(
                           onPressed: _exportDownloads,
                           icon: const Icon(Icons.cloud_download),
-                          label: const Text('طھطµط¯ظٹط± (ط§ظ„طھط­ظ…ظٹظ„ط§طھ)'),
+                          label: const Text('تصدير (التحميلات)'),
                         ),
                         OutlinedButton.icon(
                           onPressed: _exportToFolder,
                           icon: const Icon(Icons.folder_open),
-                          label: const Text(
-                            'طھطµط¯ظٹط± (ط§ط®طھظٹط§ط± ظ…ط¬ظ„ط¯)',
-                          ),
+                          label: const Text('تصدير (اختيار مجلد)'),
                         ),
                         OutlinedButton.icon(
                           onPressed: _markAllSent,
                           icon: const Icon(Icons.check_circle_outline),
-                          label: const Text('طھط¹ظ„ظٹظ… ط§ظ„ظƒظ„ ظƒظ…ظڈط±ط³ظ„'),
+                          label: const Text('تعليم الكل كمرسل'),
                         ),
                         TextButton.icon(
                           onPressed: _clearOutbox,
                           icon: const Icon(Icons.delete_outline),
-                          label: const Text('ظ…ط³ط­ ط§ظ„ظ€ Outbox'),
+                          label: const Text('مسح الـ Outbox'),
                         ),
                       ],
                     ),
@@ -234,11 +232,7 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
                   : count == 0
-                  ? const Center(
-                      child: Text(
-                        'ظ„ط§ طھظˆط¬ط¯ ط¹ظ†ط§طµط± ظ„ظ„ظ…ط²ط§ظ…ظ†ط© ط§ظ„ط¢ظ†',
-                      ),
-                    )
+                  ? const Center(child: Text('لا توجد عناصر للمزامنة الآن'))
                   : ListView.separated(
                       itemCount: _items.length,
                       separatorBuilder: (context, index) =>
@@ -246,16 +240,16 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
                       itemBuilder: (context, i) {
                         final e = _items[i];
                         final title =
-                            '${_labelEntity(e.entity)} â€¢ ${_labelAction(e.action)}';
+                            '${_labelEntity(e.entity)} | ${_labelAction(e.action)}';
                         final created = _fmtDate(e.createdAt);
                         final payload = _payloadSummary(e.payload);
                         final parts = <String>[
                           'ID: ${e.id}',
-                          'ط§ظ„ظƒظٹط§ظ†: ${e.entityId}',
-                          'ط§ظ„ظˆظ‚طھ: $created',
+                          'الكيان: ${e.entityId}',
+                          'الوقت: $created',
                         ];
                         if (payload.isNotEmpty) {
-                          parts.add('ط§ظ„ط¨ظٹط§ظ†ط§طھ: $payload');
+                          parts.add('البيانات: $payload');
                         }
                         return Card(
                           child: ListTile(
@@ -265,7 +259,7 @@ class _SyncOutboxScreenState extends State<SyncOutboxScreen> {
                                 fontWeight: FontWeight.w700,
                               ),
                             ),
-                            subtitle: Text(parts.join(' â€¢ ')),
+                            subtitle: Text(parts.join(' | ')),
                           ),
                         );
                       },

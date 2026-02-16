@@ -2,8 +2,12 @@
 import 'package:flutter/material.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
+import '../data/reporting.dart';
+import '../models/app_settings.dart';
+import '../models/claim.dart';
 import '../models/license_info.dart';
 import '../models/quick_action_item.dart';
+import '../models/transaction.dart';
 
 import '../widgets/app_title.dart';
 import 'wallets_screen.dart';
@@ -21,6 +25,7 @@ import 'reports_screen.dart';
 import 'help_screen.dart';
 import 'quick_actions_order_screen.dart';
 import 'customers_screen.dart';
+import 'assistant_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -32,11 +37,45 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   TreasurySnapshot? _snap;
   LicenseInfo? _license;
+  ReportData? _todayReport;
   bool _loading = true;
   String? _error;
   DateTime? _lastUpdated;
   _DashboardFocus _focus = _DashboardFocus.treasury;
+  bool _showHeroDetails = false;
   List<String> _actionOrder = [];
+  Map<int, WalletLimitUsage> _walletUsage = {};
+  int _dayStartHour = 0;
+
+  DateTime _businessShift(DateTime d) {
+    if (_dayStartHour <= 0) return d;
+    return d.subtract(Duration(hours: _dayStartHour));
+  }
+
+  DateRange _todayRange() {
+    final now = DateTime.now();
+    final shifted = _businessShift(now);
+    final start = DateTime(
+      shifted.year,
+      shifted.month,
+      shifted.day,
+      _dayStartHour,
+    );
+    final end = start
+        .add(const Duration(days: 1))
+        .subtract(const Duration(milliseconds: 1));
+    return DateRange(start: start, end: end);
+  }
+
+  int _opsCount(OperationalSummary ops) {
+    return ops.transferCount +
+        ops.receiveCount +
+        ops.fawryCashCount +
+        ops.fawryCreditCount +
+        ops.expenseCount +
+        ops.claimCollectCount +
+        ops.claimPayCount;
+  }
 
   Future<void> _load() async {
     setState(() {
@@ -49,15 +88,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
         AppDb.instance.getTreasurySnapshot(),
         AppDb.instance.getLicenseInfo(),
         AppDb.instance.getQuickActionsOrder(),
+        AppDb.instance.getWalletLimitUsage(),
+        AppDb.instance.getAppSettings(),
+        AppDb.instance.listTxns(),
+        AppDb.instance.listClaims(),
       ]);
       final s = results[0] as TreasurySnapshot;
       final license = results[1] as LicenseInfo;
       final order = (results[2] as List).map((e) => e.toString()).toList();
+      final usage = results[3] as Map<int, WalletLimitUsage>;
+      final settings = results[4] as AppSettings;
+      final txns = results[5] as List<Txn>;
+      final claims = results[6] as List<Claim>;
+      _dayStartHour = settings.dayStartHour;
+      final todayReport = ReportCalculator.build(
+        txns: txns,
+        claims: claims,
+        range: _todayRange(),
+      );
       if (!mounted) return;
       setState(() {
         _snap = s;
         _license = license;
         _actionOrder = order;
+        _walletUsage = usage;
+        _todayReport = todayReport;
         _lastUpdated = DateTime.now();
       });
     } catch (e) {
@@ -112,8 +167,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     required bool isAdmin,
     LicenseInfo? license,
   }) {
-    final total = snap.drawerBalance + snap.walletsTotal;
-    final totalActual = snap.drawerActualBalance + snap.walletsActualTotal;
+    final availableNow = snap.availableLiquidityNow;
+    final actualTreasuryApproved = snap.actualTreasuryApproved;
+    final realCapitalApproved = snap.realCapitalApproved;
+    final pendingDiff = snap.pendingNet;
+    final pendingDiffAbs = pendingDiff.abs();
+    final pendingDiffLabel = pendingDiff >= 0 ? 'لنا' : 'علينا';
     final isTrial = license != null && !license.isActivated;
     final trialDaysLeft = license?.daysLeft ?? 0;
     final focusPending = _focus == _DashboardFocus.pending;
@@ -140,11 +199,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         children: [
           Row(
             children: [
-              _miniIcon(Icons.analytics_outlined),
-              const SizedBox(width: 8),
-              _miniIcon(Icons.edit_outlined),
-              const SizedBox(width: 8),
-              _miniIcon(Icons.calculate_outlined, active: true),
+              Tooltip(
+                message: 'المساعد الذكي',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => const AssistantScreen(),
+                      ),
+                    );
+                    _load();
+                  },
+                  child: _miniIcon(Icons.smart_toy_outlined, active: false),
+                ),
+              ),
               const Spacer(),
               SegmentedButton<_DashboardFocus>(
                 showSelectedIcon: false,
@@ -175,7 +244,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   ButtonSegment(
                     value: _DashboardFocus.pending,
-                    label: Text('المعلّق'),
+                    label: Text('المعلق'),
                   ),
                 ],
                 selected: {_focus},
@@ -187,12 +256,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 16),
           Text(
-            focusPending ? 'العمليات المعلّقة' : 'إجمالي السيولة المتاحة',
+            focusPending
+                ? 'إجمالي المبالغ المعلقة'
+                : 'إجمالي السيولة المتاحة الآن',
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
           const SizedBox(height: 6),
           Text(
-            focusPending ? '${snap.pendingCount}' : total.toStringAsFixed(2),
+            focusPending
+                ? snap.pendingTotal.toStringAsFixed(2)
+                : availableNow.toStringAsFixed(2),
             style: const TextStyle(
               color: Colors.white,
               fontSize: 28,
@@ -201,16 +274,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(height: 16),
           if (!focusPending) ...[
-            _darkRow('الخزنة (كاش) - متاح', snap.drawerBalance),
-            _darkRow('المحافظ - متاح', snap.walletsTotal),
+            _darkRow('الخزنة الفعلية', actualTreasuryApproved),
             const SizedBox(height: 6),
-            _darkRow('إجمالي فعلي (معتمد)', totalActual),
+            _darkRow('السيولة المتاحة', availableNow),
             const SizedBox(height: 6),
             _darkRow('ربح اليوم', snap.dailyProfit),
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: Colors.white70),
+                onPressed: () {
+                  setState(() => _showHeroDetails = !_showHeroDetails);
+                },
+                icon: Icon(
+                  _showHeroDetails
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded,
+                ),
+                label: Text(_showHeroDetails ? 'إخفاء التفاصيل' : 'عرض التفاصيل'),
+              ),
+            ),
+            if (_showHeroDetails) ...[
+              const Divider(color: Colors.white24, height: 8),
+              _darkRow('الدرج (فعلي)', snap.drawerActualBalance),
+              _darkRow('المحافظ (فعلي)', snap.walletsActualTotal),
+              _darkRow('فوري (فعلي)', snap.fawryActualBalance),
+              const SizedBox(height: 6),
+              _darkRow('رأس المال الحقيقي (معتمد)', realCapitalApproved),
+            ],
           ] else ...[
-            Text(
-              'الأثر محسوب في المتاح حتى قبل الاعتماد',
-              style: const TextStyle(color: Colors.white70),
+            _darkRow('داخل المعلق', snap.pendingInflow),
+            _darkRow('خارج المعلق', snap.pendingOutflow),
+            const SizedBox(height: 6),
+            _darkRow('الفرق ($pendingDiffLabel)', pendingDiffAbs),
+            const SizedBox(height: 6),
+            const Text(
+              '\u0627\u0644\u0633\u064a\u0648\u0644\u0629 \u0627\u0644\u0645\u062a\u0627\u062d\u0629 = \u0627\u0644\u062e\u0632\u0646\u0629 \u0627\u0644\u0641\u0639\u0644\u064a\u0629 + \u0627\u0633\u062a\u0644\u0627\u0645 \u0645\u0639\u0644\u0642 - \u062a\u062d\u0648\u064a\u0644 \u0645\u0639\u0644\u0642',
+              style: TextStyle(color: Colors.white70),
             ),
           ],
           const SizedBox(height: 16),
@@ -384,6 +485,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final s = _snap;
     final isAdmin = AppSession.isAdmin;
     final license = _license;
+    final today = _todayReport;
+    final dailyLimitUsed = _walletUsage.values.fold<double>(
+      0,
+      (sum, v) => sum + v.dailyUsed,
+    );
+    final dailyLimitTotal = _walletUsage.values.fold<double>(
+      0,
+      (sum, v) => sum + v.dailyLimit,
+    );
+    final monthlyRemaining = _walletUsage.values.fold<double>(
+      0,
+      (sum, v) => sum + v.monthlyRemaining,
+    );
+    final dailyPct = dailyLimitTotal <= 0
+        ? 0.0
+        : (dailyLimitUsed / dailyLimitTotal) * 100;
 
     return Scaffold(
       appBar: AppBar(
@@ -465,12 +582,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
               _sectionTitle('ملخصات سريعة'),
               _kpiCard(
-                title: 'إجمالي الخزنة (متاح)',
-                value: (s.drawerBalance + s.walletsTotal).toStringAsFixed(2),
+                title: 'إجمالي السيولة المتاحة الآن',
+                value: s.availableLiquidityNow.toStringAsFixed(2),
                 icon: Icons.summarize,
                 hint:
-                    'الفعلي: ${(s.drawerActualBalance + s.walletsActualTotal).toStringAsFixed(2)}',
+                    '\u0627\u0644\u062e\u0632\u0646\u0629 \u0627\u0644\u0641\u0639\u0644\u064a\u0629: ${s.actualTreasuryApproved.toStringAsFixed(2)}',
               ),
+              if (today != null)
+                _kpiCard(
+                  title: 'مؤشرات اليوم',
+                  value:
+                      'ربح: ${s.dailyProfit.toStringAsFixed(2)} • عمليات: ${_opsCount(today.ops)}',
+                  icon: Icons.insights,
+                  hint:
+                      'معلق اليوم: ${today.ops.pendingCount}\n'
+                      'استهلاك الحد اليومي: ${dailyLimitUsed.toStringAsFixed(0)} / ${dailyLimitTotal.toStringAsFixed(0)} (${dailyPct.toStringAsFixed(0)}%)\n'
+                      'متبقي الحدود الشهرية: ${monthlyRemaining.toStringAsFixed(0)}',
+                ),
               _kpiCard(
                 title: 'ربح الشهر',
                 value: s.monthlyProfit.toStringAsFixed(2),
@@ -498,7 +626,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       QuickActionItem(
         id: 'transfer',
-        title: isAdmin ? 'تحويل' : 'تحويل (معلّق)',
+        title: isAdmin ? 'تحويل' : 'تحويل (معلق)',
         icon: Icons.swap_horiz,
         color: const Color(0xFF14B8A6),
         onTap: () async {
@@ -510,7 +638,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       QuickActionItem(
         id: 'receive',
-        title: isAdmin ? 'استلام' : 'استلام (معلّق)',
+        title: isAdmin ? 'استلام' : 'استلام (معلق)',
         icon: Icons.call_received,
         color: const Color(0xFF1D4ED8),
         onTap: () async {
@@ -570,7 +698,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       QuickActionItem(
         id: 'pending',
-        title: 'المعلّق',
+        title: 'المعلق',
         icon: Icons.pending_actions,
         color: const Color(0xFF0EA5E9),
         onTap: () async {

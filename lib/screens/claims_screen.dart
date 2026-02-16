@@ -1,7 +1,10 @@
-﻿import 'package:flutter/material.dart';
-import '../widgets/app_title.dart';
+import 'package:flutter/material.dart';
+
 import '../data/app_db.dart';
 import '../models/claim.dart';
+import '../utils/contact_picker.dart';
+import '../utils/phone_provider.dart';
+import '../widgets/app_title.dart';
 
 class ClaimsScreen extends StatefulWidget {
   const ClaimsScreen({super.key});
@@ -45,15 +48,22 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
     return '$y-$m-$day $h:$min';
   }
 
+  String _fmtMoney(double v) => v.toStringAsFixed(2);
+
   Future<void> _addClaimDialog(String type) async {
     final partyCtrl = TextEditingController();
+    final phoneCtrl = TextEditingController();
     final amountCtrl = TextEditingController();
     final noteCtrl = TextEditingController();
+
     try {
       final ok = await showDialog<bool>(
         context: context,
-        builder: (_) => AlertDialog(
-          title: Text(type == 'receivable' ? 'إضافة مبلغ لنا' : 'إضافة مبلغ علينا'),
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: Text(
+            type == 'receivable' ? 'إضافة مبلغ لنا' : 'إضافة مبلغ علينا',
+          ),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -68,8 +78,30 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
                 ),
                 const SizedBox(height: 10),
                 TextField(
+                  controller: phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: InputDecoration(
+                    labelText: 'رقم الطرف (اختياري)',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    suffixIcon: IconButton(
+                      onPressed: () async {
+                        final picked = await pickContact(context);
+                        if (picked == null) return;
+                        partyCtrl.text = picked.name;
+                        phoneCtrl.text = picked.phone;
+                      },
+                      icon: const Icon(Icons.contacts),
+                      tooltip: 'اختيار من جهات الاتصال',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
                   controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   decoration: const InputDecoration(
                     labelText: 'المبلغ',
                     border: OutlineInputBorder(),
@@ -90,24 +122,23 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
+              onPressed: () => Navigator.of(ctx).pop(false),
               child: const Text('إلغاء'),
             ),
             ElevatedButton(
-              onPressed: () => Navigator.of(context).pop(true),
+              onPressed: () => Navigator.of(ctx).pop(true),
               child: const Text('إضافة'),
             ),
           ],
         ),
       );
-      if (!mounted) return;
-      if (ok != true) return;
+      if (!mounted || ok != true) return;
 
       final amt = double.tryParse(amountCtrl.text.trim());
       if (amt == null || amt <= 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('أدخل مبلغ صحيح')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صحيحًا')));
         return;
       }
 
@@ -115,42 +146,113 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
         type: type,
         party: partyCtrl.text.trim(),
         amount: amt,
+        phone: normalizePhone(phoneCtrl.text),
         note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
       );
+
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تمت إضافة المطالبة ✅')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تمت إضافة المستحق ✅')));
       await _load();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
     } finally {
       partyCtrl.dispose();
+      phoneCtrl.dispose();
       amountCtrl.dispose();
       noteCtrl.dispose();
     }
   }
 
-  Future<bool> _confirmSettleDialog({
+  Future<double?> _promptSettlementAmount({
+    required Claim claim,
+    required String actionLabel,
+  }) async {
+    final ctrl = TextEditingController(text: claim.amount.toStringAsFixed(2));
+    String? error;
+
+    try {
+      return await showDialog<double>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setState) => AlertDialog(
+            title: Text('$actionLabel المستحق'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('الطرف: ${claim.party}'),
+                const SizedBox(height: 6),
+                Text('المتبقي: ${_fmtMoney(claim.amount)}'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: ctrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'المبلغ',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(error!, style: const TextStyle(color: Colors.red)),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final value = double.tryParse(ctrl.text.trim());
+                  if (value == null || value <= 0) {
+                    setState(() => error = 'أدخل مبلغًا صحيحًا');
+                    return;
+                  }
+                  if (value > claim.amount) {
+                    setState(() => error = 'المبلغ أكبر من المتبقي');
+                    return;
+                  }
+                  Navigator.of(ctx).pop(value);
+                },
+                child: Text(actionLabel),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      ctrl.dispose();
+    }
+  }
+
+  Future<bool> _confirmAction({
     required String title,
     required String body,
     required String okText,
   }) async {
     final res = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: Text(title),
         content: Text(body),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
+            onPressed: () => Navigator.of(ctx).pop(false),
             child: const Text('إلغاء'),
           ),
           ElevatedButton(
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => Navigator.of(ctx).pop(true),
             child: Text(okText),
           ),
         ],
@@ -159,32 +261,45 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
     return res == true;
   }
 
-  Future<void> _settleClaim(Claim c) async {
-    if (_busyClaimIds.contains(c.id)) return;
-    final actionLabel = c.type == 'receivable' ? 'تحصيل' : 'سداد';
-    final ok = await _confirmSettleDialog(
-      title: '$actionLabel المطالبة',
-      body: 'هل تريد $actionLabel المطالبة رقم #${c.id} بمبلغ ${c.amount.toStringAsFixed(2)}؟',
+  Future<void> _settleClaim(Claim claim) async {
+    if (_busyClaimIds.contains(claim.id)) return;
+
+    final actionLabel = claim.type == 'receivable' ? 'تحصيل' : 'سداد';
+    final settleAmount = await _promptSettlementAmount(
+      claim: claim,
+      actionLabel: actionLabel,
+    );
+    if (!mounted || settleAmount == null) return;
+
+    final ok = await _confirmAction(
+      title: '$actionLabel المستحق',
+      body:
+          'سيتم $actionLabel مبلغ ${_fmtMoney(settleAmount)} للطرف ${claim.party}.',
       okText: actionLabel,
     );
-    if (!mounted) return;
-    if (!ok) return;
+    if (!mounted || !ok) return;
 
-    setState(() => _busyClaimIds.add(c.id));
+    setState(() => _busyClaimIds.add(claim.id));
     try {
-      await AppDb.instance.settleClaim(claimId: c.id);
+      await AppDb.instance.settleClaim(claimId: claim.id, amount: settleAmount);
       if (!mounted) return;
+
+      final partial = settleAmount < claim.amount;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('تم $actionLabel ✅')),
+        SnackBar(
+          content: Text(
+            partial ? 'تم $actionLabel جزئيًا ✅' : 'تم $actionLabel بالكامل ✅',
+          ),
+        ),
       );
       await _load();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
     } finally {
-      if (mounted) setState(() => _busyClaimIds.remove(c.id));
+      if (mounted) setState(() => _busyClaimIds.remove(claim.id));
     }
   }
 
@@ -227,18 +342,8 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
             Expanded(
               child: TabBarView(
                 children: [
-                  _buildTab(
-                    type: 'receivable',
-                    openReceivableTotal: openReceivableTotal,
-                    openPayableTotal: openPayableTotal,
-                    net: net,
-                  ),
-                  _buildTab(
-                    type: 'payable',
-                    openReceivableTotal: openReceivableTotal,
-                    openPayableTotal: openPayableTotal,
-                    net: net,
-                  ),
+                  _buildTab(type: 'receivable'),
+                  _buildTab(type: 'payable'),
                 ],
               ),
             ),
@@ -276,13 +381,6 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
           end: Alignment.bottomLeft,
         ),
         borderRadius: BorderRadius.circular(22),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x22000000),
-            blurRadius: 16,
-            offset: Offset(0, 10),
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -294,13 +392,9 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
           const SizedBox(height: 12),
           Row(
             children: [
-              Expanded(
-                child: _heroStat('مبالغ لنا', openReceivableTotal),
-              ),
+              Expanded(child: _heroStat('مبالغ لنا', openReceivableTotal)),
               const SizedBox(width: 12),
-              Expanded(
-                child: _heroStat('مبالغ علينا', openPayableTotal),
-              ),
+              Expanded(child: _heroStat('مبالغ علينا', openPayableTotal)),
             ],
           ),
           const SizedBox(height: 12),
@@ -324,20 +418,19 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
           Text(label, style: const TextStyle(color: Colors.white70)),
           const SizedBox(height: 6),
           Text(
-            value.toStringAsFixed(2),
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+            _fmtMoney(value),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildTab({
-    required String type,
-    required double openReceivableTotal,
-    required double openPayableTotal,
-    required double net,
-  }) {
+  Widget _buildTab({required String type}) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -346,10 +439,16 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
       return Center(child: Text('خطأ: $_error'));
     }
 
-    final open = _claims.where((c) => c.type == type && c.status == 'open').toList();
-    final closed = _claims.where((c) => c.type == type && c.status == 'closed').toList();
+    final open = _claims
+        .where((c) => c.type == type && c.status == 'open')
+        .toList();
+    final closed = _claims
+        .where((c) => c.type == type && c.status == 'closed')
+        .toList();
 
-    final addLabel = type == 'receivable' ? 'إضافة (مبلغ لنا)' : 'إضافة (مبلغ علينا)';
+    final addLabel = type == 'receivable'
+        ? 'إضافة (مبلغ لنا)'
+        : 'إضافة (مبلغ علينا)';
     final actionLabel = type == 'receivable' ? 'تحصيل' : 'سداد';
 
     return RefreshIndicator(
@@ -367,14 +466,14 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
           _sectionHeader('مفتوحة', open.length),
           const SizedBox(height: 8),
           if (open.isEmpty)
-            const Text('لا توجد مطالبات مفتوحة.')
+            const Text('لا توجد مستحقات مفتوحة.')
           else
             ...open.map((c) => _claimCard(c, actionLabel)),
           const SizedBox(height: 16),
           _sectionHeader('مقفولة', closed.length),
           const SizedBox(height: 8),
           if (closed.isEmpty)
-            const Text('لا توجد مطالبات مقفولة.')
+            const Text('لا توجد مستحقات مقفولة.')
           else
             ...closed.map(_closedClaimCard),
         ],
@@ -459,9 +558,14 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('${c.party} • ${c.amount.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                  Text(
+                    '${c.party} • ${_fmtMoney(c.amount)}',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
                   const SizedBox(height: 6),
-                  Text('تاريخ: ${_fmtDate(c.entryDate)}${_noteLine(c.note)}'),
+                  Text(
+                    'المتبقي: ${_fmtMoney(c.amount)}\nتاريخ: ${_fmtDate(c.entryDate)}${_noteLine(c.note)}',
+                  ),
                 ],
               ),
             ),
@@ -489,7 +593,7 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
     return Card(
       child: ListTile(
         leading: const Icon(Icons.lock),
-        title: Text('${c.party} • ${c.amount.toStringAsFixed(2)}'),
+        title: Text('${c.party} • ${_fmtMoney(c.amount)}'),
         subtitle: Text('أُغلقت: $settled$extra${_noteLine(c.note)}'),
       ),
     );

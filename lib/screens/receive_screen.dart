@@ -42,12 +42,10 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   String? _selectedContactName;
 
   String _receiveType = 'cash'; // cash | deduct | electronic
-  bool _instantApprove = false;
 
   @override
   void initState() {
     super.initState();
-    _instantApprove = AppSession.isAdmin && !widget.forcePendingDefault;
 
     final initialParty = widget.initialParty?.trim();
     if (initialParty != null && initialParty.isNotEmpty) {
@@ -87,6 +85,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   }
 
   double _toDouble(String s) => double.tryParse(s.trim()) ?? 0;
+  String _fmtMoney(double v) => v.toStringAsFixed(2);
 
   String _encodeDialCode(String code) => code.replaceAll('#', '%23');
 
@@ -103,8 +102,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
 
   String? _composeNote(String? base, String phone) {
     final parts = <String>[];
-    if (base != null && base.trim().isNotEmpty) parts.add(base.trim());
-    if (phone.isNotEmpty) parts.add('رقم الطرف: $phone');
+    if (base != null && base.trim().isNotEmpty) {
+      parts.add(base.trim());
+    }
+    if (phone.isNotEmpty) {
+      parts.add('رقم الطرف: $phone');
+    }
     return parts.isEmpty ? null : parts.join(' - ');
   }
 
@@ -113,6 +116,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     required double amount,
   }) async {
     final provider = providerFromPhone(phone);
+    final providerName = providerDisplayName(provider);
     final code = defaultTransferCode(
       provider: provider,
       customerPhone: phone,
@@ -121,7 +125,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     if (code == null || code.trim().isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('لا يوجد كود افتراضي للمزوّد: $provider')),
+        SnackBar(content: Text('لا يوجد كود افتراضي للمزوّد: $providerName')),
       );
       return;
     }
@@ -146,7 +150,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        title: const Text('باركود المحفظة'),
+        title: const Text('باركود رقم المحفظة'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -190,6 +194,88 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     return res == true;
   }
 
+  Future<_ReceiveReviewResult?> _confirmReceiveSubmit({
+    required Wallet wallet,
+    required double amount,
+    required double fee,
+    required String receiveType,
+    required String partyName,
+    required String partyPhone,
+    String? note,
+  }) async {
+    double walletDelta;
+    double drawerDelta;
+    if (receiveType == 'cash') {
+      walletDelta = amount;
+      drawerDelta = -amount;
+    } else if (receiveType == 'deduct') {
+      walletDelta = amount;
+      drawerDelta = -(amount - fee);
+    } else {
+      walletDelta = amount + fee;
+      drawerDelta = 0;
+    }
+
+    bool markPending = AppSession.isAdmin ? widget.forcePendingDefault : true;
+
+    return showDialog<_ReceiveReviewResult>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: const Text('مراجعة عملية الاستلام'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('المحفظة: ${wallet.name}'),
+                Text('نوع الاستلام: $receiveType'),
+                Text('المبلغ: ${_fmtMoney(amount)}'),
+                Text('العمولة (CF): ${_fmtMoney(fee)}'),
+                Text('تأثير المحفظة: ${_fmtMoney(walletDelta)}'),
+                Text('تأثير الدرج: ${_fmtMoney(drawerDelta)}'),
+                Text('الربح: ${_fmtMoney(fee)}'),
+                if (partyName.trim().isNotEmpty) Text('الطرف: $partyName'),
+                if (partyPhone.trim().isNotEmpty)
+                  Text('رقم الطرف: $partyPhone'),
+                if (note != null && note.trim().isNotEmpty)
+                  Text('ملاحظة: ${note.trim()}'),
+                const SizedBox(height: 8),
+                if (AppSession.isAdmin)
+                  CheckboxListTile(
+                    value: markPending,
+                    onChanged: (v) => setState(() => markPending = v ?? false),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('تسجيل العملية كمعلقة'),
+                    subtitle: const Text('إذا لم تحددها سيتم تنفيذها فورًا.'),
+                  )
+                else
+                  const Text(
+                    'كمستخدم عادي سيتم تسجيل العملية كمعلقة تلقائيًا.',
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(
+                  ctx,
+                ).pop(_ReceiveReviewResult(isPending: markPending));
+              },
+              child: const Text('تنفيذ'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _submit() async {
     final wid = _walletId;
     if (wid == null) {
@@ -220,9 +306,27 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
       return;
     }
 
-    if (_instantApprove) {
-      final wallet = _wallets.where((w) => w.id == wid).toList();
-      final phone = wallet.isEmpty ? '' : wallet.first.phone.trim();
+    final wallet = _wallets.where((w) => w.id == wid).toList();
+    if (wallet.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('لا توجد محفظة صالحة')));
+      return;
+    }
+
+    final review = await _confirmReceiveSubmit(
+      wallet: wallet.first,
+      amount: amt,
+      fee: fee,
+      receiveType: _receiveType,
+      partyName: partyName ?? '',
+      partyPhone: partyPhone,
+      note: note,
+    );
+    if (review == null || !mounted) return;
+
+    if (!review.isPending) {
+      final phone = wallet.first.phone.trim();
       if (phone.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('رقم المحفظة مطلوب لعرض الباركود')),
@@ -240,24 +344,25 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
         amount: amt,
         commission: fee,
         receiveType: _receiveType,
-        isPending: !_instantApprove,
+        isPending: review.isPending,
         note: _composeNote(note, partyPhone),
         party: partyName,
       );
 
       if (!mounted) return;
-      if (_instantApprove) {
+      if (review.isPending) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم اعتماد الاستلام فورًا (ID=$id)')),
+          SnackBar(content: Text('تم تسجيل استلام معلّق (ID=$id)')),
         );
-        Navigator.of(context).pop(true);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم إنشاء استلام معلّق (ID=$id)')),
-        );
-        Navigator.of(
+        await Navigator.of(
           context,
         ).push(MaterialPageRoute(builder: (_) => const PendingScreen()));
+        if (mounted) Navigator.of(context).pop(true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('تم تنفيذ الاستلام بنجاح (ID=$id)')),
+        );
+        Navigator.of(context).pop(true);
       }
     } catch (e) {
       if (!mounted) return;
@@ -271,9 +376,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final title = _instantApprove
-        ? 'استلام (اعتماد فوري)'
-        : 'استلام (طلب معلّق)';
+    final title = AppSession.isAdmin ? 'استلام' : 'استلام (كمعلقة للمستخدم)';
 
     return Scaffold(
       appBar: AppBar(
@@ -291,20 +394,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
-                _headerCard(title),
-                const SizedBox(height: 12),
-                if (AppSession.isAdmin)
-                  _sectionCard(
-                    title: 'الاعتماد',
-                    child: SwitchListTile(
-                      value: _instantApprove,
-                      onChanged: _saving
-                          ? null
-                          : (v) => setState(() => _instantApprove = v),
-                      title: const Text('اعتماد فوري (بدون تعليق)'),
-                      subtitle: const Text('استخدمها فقط للمشرف/الإدارة.'),
-                    ),
-                  ),
+                _headerCard('استلام مع مراجعة قبل التنفيذ'),
                 const SizedBox(height: 12),
                 _sectionCard(
                   title: 'بيانات الاستلام',
@@ -346,7 +436,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                           suffixIcon: IconButton(
                             onPressed: _saving ? null : _pickContact,
                             icon: const Icon(Icons.contacts),
-                            tooltip: 'اختر من جهات الاتصال',
+                            tooltip: 'اختيار من جهات الاتصال',
                           ),
                         ),
                       ),
@@ -418,16 +508,14 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                           height: 16,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.call_received),
-                  label: Text(
-                    _instantApprove ? 'اعتماد الآن' : 'إرسال كعملية معلّقة',
-                  ),
+                      : const Icon(Icons.play_arrow),
+                  label: const Text('تنفيذ'),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  _instantApprove
-                      ? 'ملاحظة: الاعتماد الفوري يغيّر الأرصدة مباشرة.'
-                      : 'ملاحظة: العملية المعلّقة تُعرض في الرصيد المتاح وتنتظر الاعتماد النهائي.',
+                  AppSession.isAdmin
+                      ? 'يمكنك من نافذة المراجعة تحديد العملية كمعلقة أو تنفيذها فورًا.'
+                      : 'كمستخدم عادي، أي عملية جديدة تُسجل كمعلقة وتظهر في شاشة المعلقة.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
@@ -479,4 +567,10 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
       ),
     );
   }
+}
+
+class _ReceiveReviewResult {
+  final bool isPending;
+
+  const _ReceiveReviewResult({required this.isPending});
 }

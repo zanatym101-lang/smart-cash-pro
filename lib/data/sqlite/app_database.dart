@@ -127,10 +127,16 @@ class SyncOutbox extends Table {
   DateTimeColumn get sentAt => dateTime().nullable()();
 }
 
-LazyDatabase _openConnection() {
+LazyDatabase _openConnection([String? customPath]) {
   return LazyDatabase(() async {
-    final dir = await getApplicationSupportDirectory();
-    final file = File(p.join(dir.path, 'king_wallet.db'));
+    final file = customPath == null
+        ? File(
+            p.join(
+              (await getApplicationSupportDirectory()).path,
+              'king_wallet.db',
+            ),
+          )
+        : File(customPath);
     return NativeDatabase(file);
   });
 }
@@ -139,7 +145,7 @@ LazyDatabase _openConnection() {
   tables: [Wallets, Txns, Claims, DailyCloses, RecentNumbers, Meta, SyncOutbox],
 )
 class AppDatabase extends _$AppDatabase {
-  AppDatabase() : super(_openConnection());
+  AppDatabase({String? customPath}) : super(_openConnection(customPath));
 
   @override
   int get schemaVersion => 2;
@@ -157,10 +163,22 @@ class AppDatabase extends _$AppDatabase {
   );
 
   Future<bool> hasAnyData() async {
-    final count = await customSelect(
-      'SELECT COUNT(*) AS c FROM wallets',
-    ).getSingle();
-    return (count.data['c'] as int? ?? 0) > 0;
+    final counts = await customSelect('''
+      SELECT
+        (SELECT COUNT(*) FROM wallets) AS wallets_count,
+        (SELECT COUNT(*) FROM txns) AS txns_count,
+        (SELECT COUNT(*) FROM claims) AS claims_count,
+        (SELECT COUNT(*) FROM daily_closes) AS closes_count,
+        (SELECT COUNT(*) FROM recent_numbers) AS recent_count,
+        (SELECT COUNT(*) FROM meta) AS meta_count
+      ''').getSingle();
+    int read(String key) => counts.data[key] as int? ?? 0;
+    return read('wallets_count') > 0 ||
+        read('txns_count') > 0 ||
+        read('claims_count') > 0 ||
+        read('closes_count') > 0 ||
+        read('recent_count') > 0 ||
+        read('meta_count') > 0;
   }
 
   Future<void> clearAll() async {

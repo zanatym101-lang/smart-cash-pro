@@ -3,11 +3,16 @@ part of 'app_db.dart';
 extension AppDbTransactions on AppDb {
   Wallet _requireWallet(int walletId) {
     final idx = _wallets.indexWhere((w) => w.id == walletId);
-    if (idx == -1) throw Exception('المحفظة غير موجودة');
+    if (idx == -1) {
+      throw Exception('المحفظة غير موجودة.');
+    }
     return _wallets[idx];
   }
 
-  double _transferBaseAmount(Txn t) => t.amount - t.networkFee;
+  double _transferBaseAmount(Txn t) {
+    if (t.mode == 'type2_v2') return t.amount + t.clientFee;
+    return t.amount - t.networkFee;
+  }
 
   bool _sameDay(DateTime a, DateTime b) => _dayKey(a) == _dayKey(b);
 
@@ -21,7 +26,7 @@ extension AppDbTransactions on AppDb {
 
   void _requireAdmin() {
     if (!AppSession.isAdmin) {
-      throw Exception('هذا الإجراء متاح للأدمن فقط');
+      throw Exception('هذه العملية متاحة للأدمن فقط.');
     }
   }
 
@@ -53,7 +58,9 @@ extension AppDbTransactions on AppDb {
 
   void _ensureNotClosed(DateTime d) {
     if (_isDayClosed(d)) {
-      throw Exception('تم إغلاق هذا اليوم، لا يمكن تعديل العمليات المرتبطة به');
+      throw Exception(
+        'لا يمكن تعديل عملية في يوم مغلق. ألغِ إغلاق اليوم أولًا إذا لزم.',
+      );
     }
   }
 
@@ -98,28 +105,28 @@ extension AppDbTransactions on AppDb {
       final afterPct = after / limit;
       if (beforePct < threshold && afterPct >= threshold) {
         await NotificationService.show(
-          title: 'تنبيه حدود المحفظة',
+          title: 'تنبيه حدود التحويل',
           body:
-              '${wallet.name}: اقتربت من الحد $label (${(threshold * 100).toInt()}%).',
+              '${wallet.name}: تم الوصول إلى $label بنسبة ${(threshold * 100).toInt()}% من الحد المسموح.',
         );
       }
     }
 
-    await check(beforeDaily, afterDaily, wallet.dailyLimit, 0.8, 'اليومي');
-    await check(beforeDaily, afterDaily, wallet.dailyLimit, 0.9, 'اليومي');
+    await check(beforeDaily, afterDaily, wallet.dailyLimit, 0.8, 'الحد اليومي');
+    await check(beforeDaily, afterDaily, wallet.dailyLimit, 0.9, 'الحد اليومي');
     await check(
       beforeMonthly,
       afterMonthly,
       wallet.monthlyLimit,
       0.8,
-      'الشهري',
+      'الحد الشهري',
     );
     await check(
       beforeMonthly,
       afterMonthly,
       wallet.monthlyLimit,
       0.9,
-      'الشهري',
+      'الحد الشهري',
     );
   }
 
@@ -136,7 +143,7 @@ extension AppDbTransactions on AppDb {
     await NotificationService.show(
       title: 'تنبيه رصيد منخفض',
       body:
-          '${wallet.name}: الرصيد الحالي ${balance.toStringAsFixed(2)} أقل من الحد ${threshold.toStringAsFixed(2)}.',
+          '${wallet.name}: الرصيد الحالي ${balance.toStringAsFixed(2)} أقل من حد التنبيه ${threshold.toStringAsFixed(2)}.',
     );
     _lowBalanceAlertDate[wallet.id] = todayKey;
     await _save();
@@ -162,22 +169,23 @@ extension AppDbTransactions on AppDb {
 
     if (dailyLimit > 0 && (dailySum + amount) > dailyLimit) {
       NotificationService.show(
-        title: 'تجاوز الحد اليومي',
+        title: 'تجاوز الحد اليومي للتحويل',
         body:
-            '${w.name}: محاولة تجاوز الحد اليومي (${dailyLimit.toStringAsFixed(2)}).',
+            '${w.name}: العملية تتجاوز الحد اليومي (${dailyLimit.toStringAsFixed(2)}).',
       );
       throw Exception(
-        'تجاوز الحد اليومي للمحفظة (${dailyLimit.toStringAsFixed(2)})',
+        'لا يمكن تنفيذ العملية: سيتجاوز إجمالي التحويل الحد اليومي (${dailyLimit.toStringAsFixed(2)}).',
       );
     }
+
     if (monthlyLimit > 0 && (monthlySum + amount) > monthlyLimit) {
       NotificationService.show(
-        title: 'تجاوز الحد الشهري',
+        title: 'تجاوز الحد الشهري للتحويل',
         body:
-            '${w.name}: محاولة تجاوز الحد الشهري (${monthlyLimit.toStringAsFixed(2)}).',
+            '${w.name}: العملية تتجاوز الحد الشهري (${monthlyLimit.toStringAsFixed(2)}).',
       );
       throw Exception(
-        'تجاوز الحد الشهري للمحفظة (${monthlyLimit.toStringAsFixed(2)})',
+        'لا يمكن تنفيذ العملية: سيتجاوز إجمالي التحويل الحد الشهري (${monthlyLimit.toStringAsFixed(2)}).',
       );
     }
   }
@@ -190,7 +198,10 @@ extension AppDbTransactions on AppDb {
     await _ensureLoaded();
     await _ensureOperationAllowed();
     _requireAdmin();
-    if (amount <= 0) throw Exception('المبلغ يجب أن يكون أكبر من صفر');
+    _requireWallet(walletId);
+    if (amount <= 0) {
+      throw Exception('Amount must be greater than zero.');
+    }
     final now = DateTime.now();
     final entryDate = _nextOpenDate(now);
     final txn = Txn(
@@ -242,7 +253,9 @@ extension AppDbTransactions on AppDb {
     await _ensureLoaded();
     await _ensureOperationAllowed();
     _requireAdmin();
-    if (amount == 0) throw Exception('المبلغ لا يمكن أن يساوي صفر');
+    if (amount == 0) {
+      throw Exception('Drawer amount cannot be zero.');
+    }
     final now = DateTime.now();
     final entryDate = _nextOpenDate(now);
     final txn = Txn(
@@ -298,7 +311,16 @@ extension AppDbTransactions on AppDb {
   }) async {
     await _ensureLoaded();
     await _ensureOperationAllowed();
-    if (amount <= 0) throw Exception('المبلغ يجب أن يكون أكبر من صفر');
+    if (clientFee < 0 || networkFee < 0) {
+      throw Exception('Fees cannot be negative');
+    }
+    if (transferType == 'type2' && amount <= (clientFee + networkFee)) {
+      throw Exception('For type2: amount must be greater than CF + NF');
+    }
+    _requireWallet(walletId);
+    if (amount <= 0) {
+      throw Exception('Amount must be greater than zero.');
+    }
     final now = DateTime.now();
     final entryDate = _nextOpenDate(now);
     final beforeUsage = _transferUsage(
@@ -313,10 +335,12 @@ extension AppDbTransactions on AppDb {
 
     final effectivePending = AppSession.isAdmin ? isPending : true;
     final status = effectivePending ? 'pending' : 'posted';
+    final storedMode = transferType == 'type2' ? 'type2_v2' : transferType;
 
-    // Keep the same stored meaning as v47:
-    // amount field = wallet spend = amount + networkFee
-    final walletSpend = amount + networkFee;
+    // Stored amount = wallet spend.
+    final walletSpend = transferType == 'type2'
+        ? (amount - clientFee)
+        : (amount + networkFee);
 
     final txn = Txn(
       id: _nextTxnId++,
@@ -327,7 +351,7 @@ extension AppDbTransactions on AppDb {
       amount: walletSpend,
       clientFee: clientFee,
       networkFee: networkFee,
-      mode: transferType,
+      mode: storedMode,
       note: note,
       party: party?.trim().isEmpty ?? true ? null : party?.trim(),
       createdBy: _actorName(),
@@ -390,8 +414,13 @@ extension AppDbTransactions on AppDb {
   }) async {
     await _ensureLoaded();
     await _ensureOperationAllowed();
-    if (amount <= 0) throw Exception('المبلغ يجب أن يكون أكبر من صفر');
-    if (commission < 0) throw Exception('العمولة لا يمكن أن تكون سالبة');
+    _requireWallet(walletId);
+    if (amount <= 0) {
+      throw Exception('Amount must be greater than zero.');
+    }
+    if (commission < 0) {
+      throw Exception('Commission cannot be negative.');
+    }
 
     final effectivePending = AppSession.isAdmin ? isPending : true;
     final status = effectivePending ? 'pending' : 'posted';
@@ -459,7 +488,9 @@ extension AppDbTransactions on AppDb {
     await _ensureLoaded();
     await _ensureOperationAllowed();
     _requireAdmin();
-    if (amount <= 0) throw Exception('المبلغ يجب أن يكون أكبر من صفر');
+    if (amount <= 0) {
+      throw Exception('Amount must be greater than zero.');
+    }
 
     final status = isPending ? 'pending' : 'posted';
 
@@ -524,18 +555,24 @@ extension AppDbTransactions on AppDb {
     await _ensureLoaded();
     await _ensureOperationAllowed();
     final svc = serviceName.trim();
-    if (svc.isEmpty) throw Exception('اسم الخدمة مطلوب');
-    if (amount <= 0) throw Exception('قيمة الخدمة يجب أن تكون أكبر من صفر');
-    if (fee < 0) throw Exception('الربح/العمولة لا يمكن أن تكون سالبة');
+    if (svc.isEmpty) {
+      throw Exception('اسم خدمة فوري مطلوب.');
+    }
+    if (amount <= 0) {
+      throw Exception('المبلغ يجب أن يكون أكبر من صفر.');
+    }
+    if (fee < 0) {
+      throw Exception('الربح/العمولة لا يمكن أن يكون سالبًا.');
+    }
 
     final method = collectionMethod.trim();
     if (method != 'cash' && method != 'credit') {
-      throw Exception('طريقة التحصيل غير صحيحة');
+      throw Exception('طريقة التحصيل غير صالحة (cash أو credit).');
     }
 
     final partyName = party?.trim();
     if (method == 'credit' && (partyName == null || partyName.isEmpty)) {
-      throw Exception('اسم العميل مطلوب في الآجل');
+      throw Exception('اسم العميل مطلوب في فوري الآجل.');
     }
 
     final effectivePending = AppSession.isAdmin ? isPending : true;
@@ -596,6 +633,57 @@ extension AppDbTransactions on AppDb {
     return txn.id;
   }
 
+  Future<int> addFawryFundingFromDrawer({
+    required double amount,
+    String? note,
+  }) async {
+    await _ensureLoaded();
+    await _ensureOperationAllowed();
+    _requireAdmin();
+    if (amount <= 0) {
+      throw Exception('Amount must be greater than zero.');
+    }
+
+    final now = DateTime.now();
+    final entryDate = _nextOpenDate(now);
+    final txn = Txn(
+      id: _nextTxnId++,
+      kind: 'fawry_fund_drawer',
+      status: 'posted',
+      entryDate: entryDate,
+      amount: amount,
+      clientFee: 0,
+      networkFee: 0,
+      mode: 'fawry_fund_drawer',
+      note: note?.trim().isEmpty ?? true ? null : note!.trim(),
+      createdBy: _actorName(),
+      createdRole: _actorRole(),
+      createdAt: now,
+    );
+
+    final spec = _specFromTxn(txn);
+    final txId = _txId(txn.id);
+    _engine.createPending(txId: txId, spec: spec, payload: txn.toJson());
+    _engine.approve(txId: txId, spec: spec);
+
+    _txns.add(txn);
+    await _save();
+    await enqueueOutbox(
+      entity: 'txn',
+      entityId: txn.id.toString(),
+      action: 'create',
+      payload: txn.toJson(),
+    );
+    await appendAudit(
+      type: 'fawry_fund_drawer',
+      txnId: txn.id,
+      amount: amount,
+      note: note,
+    );
+    await _incrementOperationUsed();
+    return txn.id;
+  }
+
   Future<List<Txn>> listTxns({String? kind, String? status}) async {
     await _ensureLoaded();
     return _txns.where((t) {
@@ -610,9 +698,13 @@ extension AppDbTransactions on AppDb {
     _requireAdmin();
 
     final idx = _txns.indexWhere((t) => t.id == txnId);
-    if (idx < 0) throw Exception('العملية غير موجودة');
+    if (idx < 0) {
+      throw Exception('المعاملة غير موجودة.');
+    }
     final t = _txns[idx];
-    if (t.status != 'pending') throw Exception('العملية ليست معلّقة');
+    if (t.status != 'pending') {
+      throw Exception('لا يمكن تنفيذ هذه العملية لأنها ليست معلقة.');
+    }
     final now = DateTime.now();
     final effectiveDate = (_isDayClosed(now) || _isDayClosed(t.entryDate))
         ? _nextOpenDate(now)
@@ -679,9 +771,13 @@ extension AppDbTransactions on AppDb {
     _requireAdmin();
 
     final idx = _txns.indexWhere((t) => t.id == txnId);
-    if (idx < 0) throw Exception('العملية غير موجودة');
+    if (idx < 0) {
+      throw Exception('المعاملة غير موجودة.');
+    }
     final t = _txns[idx];
-    if (t.status != 'pending') throw Exception('العملية ليست معلّقة');
+    if (t.status != 'pending') {
+      throw Exception('لا يمكن إلغاء هذه العملية لأنها ليست معلقة.');
+    }
     _ensureNotClosed(t.entryDate);
 
     _engine.reject(_txId(t.id));
@@ -702,25 +798,45 @@ extension AppDbTransactions on AppDb {
     _requireAdmin();
 
     final idx = _txns.indexWhere((t) => t.id == txnId);
-    if (idx < 0) throw Exception('العملية غير موجودة');
+    if (idx < 0) {
+      throw Exception('المعاملة غير موجودة.');
+    }
     final t = _txns[idx];
     if (t.status != 'posted') {
-      throw Exception('Rollback مسموح فقط للعمليات المعتمدة');
+      throw Exception('Rollback متاح للعمليات المنفذة فقط.');
     }
     _ensureNotClosed(t.entryDate);
 
-    if (t.kind != 'fawry_cash' && t.kind != 'fawry_credit') {
-      throw Exception('Rollback متاح فقط لفوري');
+    if (t.kind != 'fawry_cash' &&
+        t.kind != 'fawry_credit' &&
+        t.kind != 'transfer' &&
+        t.kind != 'receive') {
+      throw Exception('Rollback مدعوم فقط لخدمات فوري.');
+    }
+
+    if (t.kind == 'transfer' || t.kind == 'receive') {
+      final linkedClaims = _claims.where((c) => c.sourceTxnId == t.id).toList();
+      if (linkedClaims.isNotEmpty) {
+        throw Exception(
+          'لا يمكن عمل Rollback لعملية مرتبطة بمطالبات. قم بإغلاق/تسوية المطالبة أولًا.',
+        );
+      }
     }
 
     if (t.kind == 'fawry_credit') {
       final cIdx = _claims.indexWhere((c) => c.sourceTxnId == t.id);
       if (cIdx < 0) {
-        throw Exception('لم يتم العثور على مستحق لهذه العملية');
+        throw Exception('تعذر إيجاد مطالبة فوري الآجل المرتبطة بالمعاملة.');
       }
       final claim = _claims[cIdx];
-      if (claim.status == 'closed' && claim.settledTxnId != null) {
-        throw Exception('لا يمكن Rollback بعد تحصيل المستحق');
+      final totalDueQ = Money.fromEgpDouble(t.amount + t.clientFee);
+      final remainingQ = Money.fromEgpDouble(claim.amount);
+      final collectedAny = remainingQ < totalDueQ;
+      if (collectedAny ||
+          (claim.status == 'closed' && claim.settledTxnId != null)) {
+        throw Exception(
+          'لا يمكن عمل Rollback لأن مطالبة فوري الآجل تم تحصيلها كليًا أو جزئيًا.',
+        );
       }
       if (claim.status == 'open') {
         _claims[cIdx] = claim.copyWith(

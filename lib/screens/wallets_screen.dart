@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/app_db.dart';
+import '../data/app_session.dart';
 import '../models/wallet.dart';
 import '../utils/phone_provider.dart';
 import '../widgets/app_title.dart';
@@ -20,6 +21,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
   List<Wallet> _wallets = [];
   final Map<int, double> _balances = {};
   final Map<int, double> _actualBalances = {};
+  final Map<int, WalletLimitUsage> _limitUsage = {};
 
   @override
   void initState() {
@@ -41,6 +43,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
       final actualList = await Future.wait(
         wallets.map((w) => AppDb.instance.getWalletBalance(w.id)),
       );
+      final usageMap = await AppDb.instance.getWalletLimitUsage();
       if (!mounted) return;
       setState(() {
         _wallets = wallets;
@@ -56,6 +59,9 @@ class _WalletsScreenState extends State<WalletsScreen> {
             for (var i = 0; i < wallets.length; i++)
               wallets[i].id: actualList[i],
           });
+        _limitUsage
+          ..clear()
+          ..addAll(usageMap);
       });
     } catch (e) {
       if (!mounted) return;
@@ -66,6 +72,8 @@ class _WalletsScreenState extends State<WalletsScreen> {
   }
 
   double get _total => _balances.values.fold(0.0, (a, b) => a + b);
+  double get _totalActual => _actualBalances.values.fold(0.0, (a, b) => a + b);
+  double get _totalPendingImpact => _total - _totalActual;
 
   Color _providerColor(String provider) {
     switch (provider.toLowerCase()) {
@@ -129,7 +137,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
                 Align(
                   alignment: Alignment.centerRight,
                   child: Text(
-                    'المزوّد: ${providerFromPhone(normalizePhone(phoneCtrl.text))}',
+                    'المزوّد: ${providerDisplayName(providerFromPhone(normalizePhone(phoneCtrl.text)))}',
                     style: const TextStyle(fontSize: 12, color: Colors.black54),
                   ),
                 ),
@@ -215,12 +223,14 @@ class _WalletsScreenState extends State<WalletsScreen> {
                 }
                 if (lowBal < 0) {
                   setState(
-                    () => error = 'حد تنبيه الرصيد لا يمكن أن يكون سالب',
+                    () => error = 'حد تنبيه الرصيد لا يمكن أن يكون سالبًا',
                   );
                   return;
                 }
                 if (openingBalance < 0) {
-                  setState(() => error = 'رصيد أول المدة لا يمكن أن يكون سالب');
+                  setState(
+                    () => error = 'رصيد أول المدة لا يمكن أن يكون سالبًا',
+                  );
                   return;
                 }
 
@@ -296,6 +306,104 @@ class _WalletsScreenState extends State<WalletsScreen> {
     }
   }
 
+  Future<void> _resetUsage({
+    required Wallet wallet,
+    required bool monthly,
+  }) async {
+    if (!AppSession.isAdmin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('هذا الإجراء متاح للأدمن فقط')),
+      );
+      return;
+    }
+
+    final scopeText = monthly ? 'الشهري' : 'اليومي';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('تأكيد التصفير'),
+        content: Text(
+          'هل تريد تصفير استهلاك الحد $scopeText للمحفظة "${wallet.name}"؟',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('تأكيد'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      if (monthly) {
+        await AppDb.instance.resetWalletMonthlyUsage(wallet.id);
+      } else {
+        await AppDb.instance.resetWalletDailyUsage(wallet.id);
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تم تصفير الاستهلاك $scopeText بنجاح')),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('فشل التصفير: $e')));
+    }
+  }
+
+  Future<void> _resetAllUsage({required bool monthly}) async {
+    if (!AppSession.isAdmin) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('هذا الإجراء متاح للأدمن فقط')),
+      );
+      return;
+    }
+    final scopeText = monthly ? 'الشهري' : 'اليومي';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('تأكيد التصفير الجماعي'),
+        content: Text('هل تريد تصفير استهلاك الحد $scopeText لكل المحافظ؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('تأكيد'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      if (monthly) {
+        await AppDb.instance.resetAllWalletMonthlyUsage();
+      } else {
+        await AppDb.instance.resetAllWalletDailyUsage();
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تم التصفير الجماعي $scopeText بنجاح')),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('فشل التصفير الجماعي: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -326,6 +434,26 @@ class _WalletsScreenState extends State<WalletsScreen> {
             onPressed: _loading ? null : _load,
             icon: const Icon(Icons.refresh),
           ),
+          PopupMenuButton<String>(
+            tooltip: 'تصفير استهلاك الحدود',
+            onSelected: (value) async {
+              if (value == 'reset_all_daily') {
+                await _resetAllUsage(monthly: false);
+              } else if (value == 'reset_all_monthly') {
+                await _resetAllUsage(monthly: true);
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(
+                value: 'reset_all_daily',
+                child: Text('تصفير يومي لكل المحافظ'),
+              ),
+              PopupMenuItem(
+                value: 'reset_all_monthly',
+                child: Text('تصفير شهري لكل المحافظ'),
+              ),
+            ],
+          ),
         ],
       ),
       body: RefreshIndicator(
@@ -337,7 +465,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: _loading
-                    ? const Text('جاري التحميل...')
+                    ? const Text('جارٍ التحميل...')
                     : _error != null
                     ? Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -357,8 +485,18 @@ class _WalletsScreenState extends State<WalletsScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'إجمالي أرصدة المحافظ: ${_total.toStringAsFixed(2)}',
+                            'إجمالي أرصدة المحافظ المتاحة: ${_total.toStringAsFixed(2)}',
                             style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'إجمالي فعلي (معتمد): ${_totalActual.toStringAsFixed(2)}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'تأثير المعلق على المحافظ: ${_totalPendingImpact >= 0 ? '+' : '-'}${_totalPendingImpact.abs().toStringAsFixed(2)}',
+                            style: Theme.of(context).textTheme.bodySmall,
                           ),
                           const SizedBox(height: 6),
                           Text(
@@ -379,7 +517,10 @@ class _WalletsScreenState extends State<WalletsScreen> {
               ..._wallets.map((w) {
                 final bal = _balances[w.id] ?? 0.0;
                 final actual = _actualBalances[w.id] ?? 0.0;
+                final pendingImpact = bal - actual;
+                final usage = _limitUsage[w.id];
                 final provider = providerFromPhone(w.phone);
+                final providerName = providerDisplayName(provider);
                 final color = _providerColor(provider);
                 return InkWell(
                   borderRadius: BorderRadius.circular(22),
@@ -430,12 +571,35 @@ class _WalletsScreenState extends State<WalletsScreen> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Text(
-                                provider,
+                                providerName,
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 12,
                                 ),
                               ),
+                            ),
+                            PopupMenuButton<String>(
+                              icon: const Icon(
+                                Icons.more_vert,
+                                color: Colors.white,
+                              ),
+                              onSelected: (value) async {
+                                if (value == 'reset_daily') {
+                                  await _resetUsage(wallet: w, monthly: false);
+                                } else if (value == 'reset_monthly') {
+                                  await _resetUsage(wallet: w, monthly: true);
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'reset_daily',
+                                  child: Text('تصفير استهلاك اليوم'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'reset_monthly',
+                                  child: Text('تصفير استهلاك الشهر'),
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -455,9 +619,16 @@ class _WalletsScreenState extends State<WalletsScreen> {
                             color: Colors.white.withValues(alpha: 0.85),
                           ),
                         ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'تأثير المعلق: ${pendingImpact >= 0 ? '+' : '-'}${pendingImpact.abs().toStringAsFixed(2)}',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.85),
+                          ),
+                        ),
                         const SizedBox(height: 8),
                         Text(
-                          'رقم: ${w.phone.isEmpty ? 'غير محدد' : w.phone}',
+                          'رقم المحفظة: ${w.phone.isEmpty ? 'غير محدد' : w.phone}',
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.85),
                           ),
@@ -468,15 +639,11 @@ class _WalletsScreenState extends State<WalletsScreen> {
                           runSpacing: 6,
                           children: [
                             _pill(
-                              'حد يومي: ${w.dailyLimit.toStringAsFixed(0)}',
+                              'استهلاك اليوم: ${usage?.dailyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.dailyLimit.toStringAsFixed(0) ?? w.dailyLimit.toStringAsFixed(0)}',
                             ),
                             _pill(
-                              'حد شهري: ${w.monthlyLimit.toStringAsFixed(0)}',
+                              'استهلاك الشهر: ${usage?.monthlyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.monthlyLimit.toStringAsFixed(0) ?? w.monthlyLimit.toStringAsFixed(0)}',
                             ),
-                            if (w.lowBalanceThreshold > 0)
-                              _pill(
-                                'تنبيه رصيد: ${w.lowBalanceThreshold.toStringAsFixed(0)}',
-                              ),
                           ],
                         ),
                       ],
@@ -487,7 +654,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
             const SizedBox(height: 8),
             if (!_loading && _error == null)
               Text(
-                'ملاحظة: المتاح يشمل العمليات المعلّقة، والفعلي يشمل المعتمد فقط.',
+                'المتاح يشمل العمليات المعلقة، بينما الفعلي يشمل المعتمد فقط.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
           ],
