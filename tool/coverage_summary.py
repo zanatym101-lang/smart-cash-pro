@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 
@@ -28,6 +29,12 @@ PREFIX_GROUPS = [
     "lib/screens/",
     "lib/widgets/",
     "lib/",
+]
+
+DEFAULT_EXCLUDE_GLOBS = [
+    "**/*.g.dart",
+    "**/*.freezed.dart",
+    "**/*.mocks.dart",
 ]
 
 
@@ -149,7 +156,27 @@ def format_ratio(hit: int, found: int, pct: float | None) -> str:
     return f"{hit}/{found} ({pct:.2f}%)"
 
 
-def build_report(files: list[FileCoverage]) -> tuple[str, dict]:
+def _matches_any_glob(path: str, globs: list[str]) -> bool:
+    pure = PurePosixPath(path)
+    for pattern in globs:
+        if pure.match(pattern):
+            return True
+    return False
+
+
+def _aggregate_by_prefix(files: list[FileCoverage]) -> dict[str, dict]:
+    by_prefix: dict[str, dict] = {}
+    for prefix in PREFIX_GROUPS:
+        matched = [f for f in files if f.path.startswith(prefix)]
+        hit, found, pct = aggregate(matched)
+        by_prefix[prefix] = {"hit": hit, "found": found, "percent": pct}
+    return by_prefix
+
+
+def build_report(
+    files: list[FileCoverage],
+    exclude_globs: list[str],
+) -> tuple[str, dict]:
     merged_by_path: dict[str, FileCoverage] = {}
     for file_cov in files:
         existing = merged_by_path.get(file_cov.path)
@@ -163,17 +190,19 @@ def build_report(files: list[FileCoverage]) -> tuple[str, dict]:
             existing.hit += file_cov.hit
             existing.found += file_cov.found
 
-    normalized_files = list(merged_by_path.values())
-    overall_hit, overall_found, overall_pct = aggregate(normalized_files)
+    raw_files = list(merged_by_path.values())
+    excluded_files = [f for f in raw_files if _matches_any_glob(f.path, exclude_globs)]
+    effective_files = [f for f in raw_files if not _matches_any_glob(f.path, exclude_globs)]
 
-    by_prefix: dict[str, dict] = {}
-    for prefix in PREFIX_GROUPS:
-        matched = [f for f in normalized_files if f.path.startswith(prefix)]
-        hit, found, pct = aggregate(matched)
-        by_prefix[prefix] = {"hit": hit, "found": found, "percent": pct}
+    overall_hit_raw, overall_found_raw, overall_pct_raw = aggregate(raw_files)
+    overall_hit, overall_found, overall_pct = aggregate(effective_files)
+    excluded_hit, excluded_found, excluded_pct = aggregate(excluded_files)
+
+    by_prefix_raw = _aggregate_by_prefix(raw_files)
+    by_prefix = _aggregate_by_prefix(effective_files)
 
     core_items: list[FileCoverage] = []
-    by_path = {f.path: f for f in normalized_files}
+    by_path = {f.path: f for f in effective_files}
     for path in ACCOUNTING_CORE_FILES:
         core_items.append(by_path.get(path, FileCoverage(path=path, hit=0, found=0)))
 
@@ -181,12 +210,12 @@ def build_report(files: list[FileCoverage]) -> tuple[str, dict]:
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     low_files = sorted(
-        [f for f in normalized_files if f.found > 0],
+        [f for f in effective_files if f.found > 0],
         key=lambda item: ((item.percent if item.percent is not None else 101.0), -item.found),
     )[:12]
 
     riskiest_files = sorted(
-        [f for f in normalized_files if f.found > 0],
+        [f for f in effective_files if f.found > 0],
         key=lambda item: ((item.found - item.hit), item.found),
         reverse=True,
     )[:12]
@@ -195,9 +224,14 @@ def build_report(files: list[FileCoverage]) -> tuple[str, dict]:
     lines.append("Coverage Summary")
     lines.append(f"Generated (UTC): {generated_at}")
     lines.append("")
-    lines.append(f"Overall: {format_ratio(overall_hit, overall_found, overall_pct)}")
+    lines.append(f"Overall (raw): {format_ratio(overall_hit_raw, overall_found_raw, overall_pct_raw)}")
+    lines.append(f"Overall (effective): {format_ratio(overall_hit, overall_found, overall_pct)}")
+    lines.append(
+        f"Excluded generated files: {len(excluded_files)} "
+        f"({format_ratio(excluded_hit, excluded_found, excluded_pct)})"
+    )
     lines.append("")
-    lines.append("By area:")
+    lines.append("By area (effective):")
     for prefix in PREFIX_GROUPS:
         entry = by_prefix[prefix]
         lines.append(f"- {prefix}: {format_ratio(entry['hit'], entry['found'], entry['percent'])}")
@@ -223,8 +257,17 @@ def build_report(files: list[FileCoverage]) -> tuple[str, dict]:
 
     payload = {
         "generated_at_utc": generated_at,
-        "overall": {"hit": overall_hit, "found": overall_found, "percent": overall_pct},
+        "overall": {"hit": overall_hit_raw, "found": overall_found_raw, "percent": overall_pct_raw},
+        "overall_effective": {"hit": overall_hit, "found": overall_found, "percent": overall_pct},
+        "excluded_generated": {
+            "files": len(excluded_files),
+            "hit": excluded_hit,
+            "found": excluded_found,
+            "percent": excluded_pct,
+            "globs": exclude_globs,
+        },
         "by_prefix": by_prefix,
+        "by_prefix_raw": by_prefix_raw,
         "accounting_core": {
             "hit": core_hit,
             "found": core_found,
@@ -279,6 +322,18 @@ def main() -> int:
         default="coverage/summary.json",
         help="Path to JSON summary output",
     )
+    parser.add_argument(
+        "--exclude-glob",
+        action="append",
+        default=None,
+        help="Glob pattern to exclude from effective coverage (repeatable)",
+    )
+    parser.add_argument(
+        "--min-effective",
+        type=float,
+        default=None,
+        help="Fail with non-zero exit if effective coverage %% is below this threshold",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -286,7 +341,8 @@ def main() -> int:
         raise FileNotFoundError(f"Coverage input not found: {input_path}")
 
     files = parse_lcov(input_path.read_text(encoding="utf-8", errors="ignore").splitlines())
-    report_text, report_json = build_report(files)
+    exclude_globs = args.exclude_glob if args.exclude_glob else DEFAULT_EXCLUDE_GLOBS
+    report_text, report_json = build_report(files, exclude_globs)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,6 +353,18 @@ def main() -> int:
     json_path.write_text(json.dumps(report_json, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(report_text)
+    if args.min_effective is not None:
+        effective_pct = report_json.get("overall_effective", {}).get("percent")
+        if effective_pct is None or effective_pct < args.min_effective:
+            print(
+                (
+                    "Coverage gate failed: effective coverage "
+                    f"{effective_pct if effective_pct is not None else 'N/A'}% "
+                    f"is below required {args.min_effective:.2f}%"
+                ),
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

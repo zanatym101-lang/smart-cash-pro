@@ -6,6 +6,8 @@ workflows:
     environment:
       flutter: stable
       java: 17
+      vars:
+        COVERAGE_MIN_EFFECTIVE: "38.0"
       android_signing:
         - upload_keystore
     triggering:
@@ -38,7 +40,7 @@ workflows:
       - name: Run tests
         script: flutter test --coverage --reporter expanded
       - name: Coverage summary
-        script: python3 tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json
+        script: python3 tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json --min-effective "${COVERAGE_MIN_EFFECTIVE:-38.0}"
       - name: Build release APK
         script: flutter build apk --release
       - name: Build release AAB
