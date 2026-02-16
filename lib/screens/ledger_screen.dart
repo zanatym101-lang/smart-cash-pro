@@ -1,4 +1,7 @@
-﻿import 'package:flutter/material.dart';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
@@ -23,7 +26,8 @@ class _LedgerScreenState extends State<LedgerScreen> {
 
   // Filters
   String _period = 'today'; // today | month | all
-  String _type = 'all'; // all | transfer | receive | external_funding | drawer_deposit | rollback
+  String _type =
+      'all'; // all | transfer | receive | external_funding | drawer_deposit | rollback
   String _status = 'all'; // all | pending | posted | rolled_back
 
   @override
@@ -67,8 +71,9 @@ class _LedgerScreenState extends State<LedgerScreen> {
     bool inType(Txn t) => _type == 'all' ? true : t.kind == _type;
     bool inStatus(Txn t) => _status == 'all' ? true : t.status == _status;
 
-    _filtered = _all.where((t) => inPeriod(t) && inType(t) && inStatus(t)).toList()
-      ..sort((a, b) => b.entryDate.compareTo(a.entryDate));
+    _filtered =
+        _all.where((t) => inPeriod(t) && inType(t) && inStatus(t)).toList()
+          ..sort((a, b) => b.entryDate.compareTo(a.entryDate));
 
     if (mounted) setState(() {});
   }
@@ -93,6 +98,8 @@ class _LedgerScreenState extends State<LedgerScreen> {
         return 'خدمة فوري (نقدي)';
       case 'fawry_credit':
         return 'خدمة فوري (آجل)';
+      case 'fawry_fund_drawer':
+        return 'شحن رصيد فوري';
       case 'rollback':
         return 'Rollback';
       default:
@@ -113,6 +120,80 @@ class _LedgerScreenState extends State<LedgerScreen> {
     );
   }
 
+  String _csvCell(Object? value) {
+    final raw = (value ?? '').toString();
+    final escaped = raw.replaceAll('"', '""');
+    return '"$escaped"';
+  }
+
+  Future<void> _exportFilteredCsv() async {
+    if (_loading) return;
+    if (_filtered.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('لا توجد عمليات للتصدير حسب الفلاتر الحالية'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      final dir =
+          await getDownloadsDirectory() ??
+          await getApplicationDocumentsDirectory();
+      final now = DateTime.now();
+      final stamp =
+          '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+      final file = File('${dir.path}/ledger_$stamp.csv');
+
+      final lines = <String>[
+        [
+          'id',
+          'date',
+          'kind',
+          'status',
+          'amount',
+          'client_fee',
+          'network_fee',
+          'wallet_from',
+          'wallet_to',
+          'note',
+          'created_by',
+        ].map(_csvCell).join(','),
+      ];
+
+      for (final t in _filtered) {
+        lines.add(
+          [
+            t.id,
+            t.entryDate.toIso8601String(),
+            t.kind,
+            t.status,
+            t.amount,
+            t.clientFee,
+            t.networkFee,
+            t.walletFromId ?? '',
+            t.walletToId ?? '',
+            t.note ?? '',
+            t.createdBy,
+          ].map(_csvCell).join(','),
+        );
+      }
+
+      await file.writeAsString(lines.join('\n'), flush: true);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('تم تصدير السجل: ${file.path}')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('فشل تصدير السجل: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isAdmin = AppSession.isAdmin;
@@ -124,6 +205,11 @@ class _LedgerScreenState extends State<LedgerScreen> {
       appBar: AppBar(
         title: const AppTitle(subtitle: 'سجل العمليات'),
         actions: [
+          IconButton(
+            tooltip: 'تصدير CSV',
+            onPressed: _loading ? null : _exportFilteredCsv,
+            icon: const Icon(Icons.download),
+          ),
           IconButton(
             tooltip: 'تحديث',
             onPressed: _loading ? null : _load,
@@ -193,16 +279,50 @@ class _LedgerScreenState extends State<LedgerScreen> {
                         initialValue: _type,
                         items: const [
                           DropdownMenuItem(value: 'all', child: Text('الكل')),
-                          DropdownMenuItem(value: 'transfer', child: Text('تحويل')),
-                          DropdownMenuItem(value: 'receive', child: Text('استلام')),
-                          DropdownMenuItem(value: 'external_funding', child: Text('تمويل محفظة')),
-                          DropdownMenuItem(value: 'drawer_deposit', child: Text('تمويل درج')),
-                          DropdownMenuItem(value: 'expense', child: Text('مصروف')),
-                          DropdownMenuItem(value: 'claim_collect', child: Text('تحصيل مستحقات')),
-                          DropdownMenuItem(value: 'claim_pay', child: Text('سداد مستحقات')),
-                          DropdownMenuItem(value: 'fawry_cash', child: Text('فوري نقدي')),
-                          DropdownMenuItem(value: 'fawry_credit', child: Text('فوري آجل')),
-                          DropdownMenuItem(value: 'rollback', child: Text('Rollback')),
+                          DropdownMenuItem(
+                            value: 'transfer',
+                            child: Text('تحويل'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'receive',
+                            child: Text('استلام'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'external_funding',
+                            child: Text('تمويل محفظة'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'drawer_deposit',
+                            child: Text('تمويل درج'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'expense',
+                            child: Text('مصروف'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'claim_collect',
+                            child: Text('تحصيل مستحقات'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'claim_pay',
+                            child: Text('سداد مستحقات'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'fawry_cash',
+                            child: Text('فوري نقدي'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'fawry_credit',
+                            child: Text('فوري آجل'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'fawry_fund_drawer',
+                            child: Text('شحن فوري من الدرج'),
+                          ),
+                          DropdownMenuItem(
+                            value: 'rollback',
+                            child: Text('Rollback'),
+                          ),
                         ],
                         onChanged: (v) {
                           _type = v ?? 'all';
@@ -252,7 +372,9 @@ class _LedgerScreenState extends State<LedgerScreen> {
                       ],
                     ),
                     if (isAdmin)
-                      const Text('للأدمن: يمكن الاعتماد/الإلغاء/Rollback من تفاصيل العملية.'),
+                      const Text(
+                        'للأدمن: يمكن الاعتماد/الإلغاء/Rollback من تفاصيل العملية.',
+                      ),
                   ],
                 ),
               ),
@@ -262,35 +384,45 @@ class _LedgerScreenState extends State<LedgerScreen> {
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
                   : _error != null
-                      ? Center(child: Text('خطأ: $_error'))
-                      : _filtered.isEmpty
-                          ? const Center(child: Text('لا توجد عمليات حسب الفلاتر الحالية'))
-                          : ListView.separated(
-                              itemCount: _filtered.length,
-                              separatorBuilder: (_, _) => const SizedBox(height: 8),
-                              itemBuilder: (_, i) {
-                                final t = _filtered[i];
-                                final dt = '${t.entryDate.year}-${t.entryDate.month.toString().padLeft(2, '0')}-${t.entryDate.day.toString().padLeft(2, '0')} '
-                                    '${t.entryDate.hour.toString().padLeft(2, '0')}:${t.entryDate.minute.toString().padLeft(2, '0')}';
+                  ? Center(child: Text('خطأ: $_error'))
+                  : _filtered.isEmpty
+                  ? const Center(
+                      child: Text('لا توجد عمليات حسب الفلاتر الحالية'),
+                    )
+                  : ListView.separated(
+                      itemCount: _filtered.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (_, i) {
+                        final t = _filtered[i];
+                        final dt =
+                            '${t.entryDate.year}-${t.entryDate.month.toString().padLeft(2, '0')}-${t.entryDate.day.toString().padLeft(2, '0')} '
+                            '${t.entryDate.hour.toString().padLeft(2, '0')}:${t.entryDate.minute.toString().padLeft(2, '0')}';
 
-                                return Card(
-                                  child: ListTile(
-                                    leading: const Icon(Icons.receipt),
-                                    title: Text('${_kindLabel(t.kind)} • ${_statusLabel(t.status)}'),
-                                    subtitle: Text('رقم #${t.id} • $dt • بواسطة ${t.createdBy}'),
-                                    trailing: Text(t.amount.toStringAsFixed(2)),
-                                    onTap: () async {
-                                      await Navigator.of(context).push(
-                                        MaterialPageRoute(
-                                          builder: (_) => TxDetailsScreen(txn: t, wallets: _wallets),
-                                        ),
-                                      );
-                                      await _load();
-                                    },
-                                  ),
-                                );
-                              },
+                        return Card(
+                          child: ListTile(
+                            leading: const Icon(Icons.receipt),
+                            title: Text(
+                              '${_kindLabel(t.kind)} • ${_statusLabel(t.status)}',
                             ),
+                            subtitle: Text(
+                              'رقم #${t.id} • $dt • بواسطة ${t.createdBy}',
+                            ),
+                            trailing: Text(t.amount.toStringAsFixed(2)),
+                            onTap: () async {
+                              await Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => TxDetailsScreen(
+                                    txn: t,
+                                    wallets: _wallets,
+                                  ),
+                                ),
+                              );
+                              await _load();
+                            },
+                          ),
+                        );
+                      },
+                    ),
             ),
           ],
         ),

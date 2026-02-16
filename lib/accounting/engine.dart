@@ -3,7 +3,7 @@ enum TxType { transfer, walletFunding, drawerFunding }
 enum CommissionMode { cash, deductFromAmount }
 
 class LedgerEntry {
-  final String accountKey; // "wallet:<id>" or "drawer"
+  final String accountKey; // "wallet:<id>" or "drawer" or "fawry"
   final int deltaQirsh;
   final DateTime ts;
   final String txId;
@@ -21,12 +21,14 @@ class LedgerEntry {
 class AccountingState {
   final Map<String, int> walletBalancesQirsh; // walletId -> qirsh
   int drawerBalanceQirsh;
+  int fawryBalanceQirsh; // fawry machine float (can go negative)
   final List<LedgerEntry> ledger;
   final Map<String, TransactionRecord> transactions;
 
   AccountingState({
     required this.walletBalancesQirsh,
     required this.drawerBalanceQirsh,
+    this.fawryBalanceQirsh = 0,
     required this.ledger,
     required this.transactions,
   });
@@ -36,6 +38,11 @@ class AccountingState {
   void applyEntry(LedgerEntry e) {
     if (e.accountKey == "drawer") {
       drawerBalanceQirsh += e.deltaQirsh; // drawer CAN be negative
+      return;
+    }
+
+    if (e.accountKey == "fawry") {
+      fawryBalanceQirsh += e.deltaQirsh; // fawry float CAN be negative
       return;
     }
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/app_db.dart';
 import '../models/transaction.dart';
 import '../widgets/app_title.dart';
+import 'customer_report_screen.dart';
 import 'fawry_screen.dart';
 import 'receive_screen.dart';
 import 'transfer_screen.dart';
@@ -117,10 +118,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         final b = bucketFor(name: name, phone: phone);
 
         if (t.kind == 'transfer') {
-          final baseAmount = t.amount - t.networkFee;
-          final due = t.mode == 'type1'
-              ? (baseAmount + t.clientFee)
-              : baseAmount;
+          final due = _pendingTransferDue(t);
           if (due > 0) {
             b.receivablePending += due;
             b.lines.add(
@@ -193,12 +191,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   String _detailsForTransfer(Txn t) {
-    final base = (t.amount - t.networkFee).toStringAsFixed(2);
+    final entered = _pendingTransferDue(t).toStringAsFixed(2);
+    final sent = (t.amount - t.networkFee).toStringAsFixed(2);
     final fee = t.clientFee.toStringAsFixed(2);
     final phone = _extractPhone(t.note);
-    final parts = <String>['الأساس: $base', 'CF: $fee', 'النوع: ${t.mode}'];
+    final parts = <String>[
+      'المطلوب: $entered',
+      'المحوّل: $sent',
+      'CF: $fee',
+      'النوع: ${t.mode}',
+    ];
     if (phone != null) parts.add('الهاتف: $phone');
-    return parts.join(' • ');
+    return parts.join(' | ');
   }
 
   String _detailsForReceive(Txn t) {
@@ -207,7 +211,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final phone = _extractPhone(t.note);
     final parts = <String>['المبلغ: $amt', 'CF: $fee', 'النوع: ${t.mode}'];
     if (phone != null) parts.add('الهاتف: $phone');
-    return parts.join(' • ');
+    return parts.join(' | ');
   }
 
   String _detailsForFawry(Txn t) {
@@ -216,10 +220,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final base = t.amount.toStringAsFixed(2);
     final fee = t.clientFee.toStringAsFixed(2);
     final phone = _extractPhone(t.note);
-    final p = <String>['الخدمة: $svc', 'الأساس: $base', 'الربح: $fee'];
-    if (ref.isNotEmpty) p.add('المرجع: $ref');
-    if (phone != null) p.add('الهاتف: $phone');
-    return p.join(' • ');
+    final parts = <String>['الخدمة: $svc', 'الأساس: $base', 'الربح: $fee'];
+    if (ref.isNotEmpty) parts.add('المرجع: $ref');
+    if (phone != null) parts.add('الهاتف: $phone');
+    return parts.join(' | ');
+  }
+
+  double _pendingTransferDue(Txn t) {
+    if (t.mode == 'type2_v2') return t.amount + t.clientFee;
+    final base = t.amount - t.networkFee;
+    if (t.mode == 'type1') return base + t.clientFee;
+    return base;
   }
 
   double _pendingReceiveDue(Txn t) {
@@ -286,6 +297,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
           );
           _load();
         },
+        onReport: () async {
+          Navigator.of(ctx).pop();
+          await Navigator.of(context).push<void>(
+            MaterialPageRoute(
+              builder: (_) => CustomerReportScreen(
+                customerName: c.name,
+                customerPhone: c.phone,
+              ),
+            ),
+          );
+          _load();
+        },
       ),
     );
   }
@@ -326,7 +349,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
             TextField(
               onChanged: (v) => setState(() => _query = v),
               decoration: const InputDecoration(
-                labelText: 'بحث باسم أو هاتف العميل',
+                labelText: 'بحث باسم العميل أو رقم الهاتف',
                 prefixIcon: Icon(Icons.search),
               ),
             ),
@@ -348,10 +371,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
             else if (items.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 24),
-                child: Center(child: Text('لا توجد بيانات عملاء حالياً')),
+                child: Center(child: Text('لا توجد بيانات عملاء حاليًا.')),
               )
             else
-              ...items.map((c) => _customerCard(c)),
+              ...items.map(_customerCard),
           ],
         ),
       ),
@@ -366,6 +389,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }) {
     final netLabel = net >= 0 ? 'الصافي لنا' : 'الصافي علينا';
     final netValue = net >= 0 ? net : -net;
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -425,7 +449,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
         subtitle: Text(
-          '${c.phone ?? 'بدون هاتف'}\nلنا: ${c.receivableTotal.toStringAsFixed(2)} • علينا: ${c.payableTotal.toStringAsFixed(2)} • $netLabel: ${netValue.toStringAsFixed(2)}',
+          '${c.phone ?? 'بدون هاتف'}\nلنا: ${c.receivableTotal.toStringAsFixed(2)} | علينا: ${c.payableTotal.toStringAsFixed(2)} | $netLabel: ${netValue.toStringAsFixed(2)}',
         ),
         isThreeLine: true,
         trailing: const Icon(Icons.chevron_right),
@@ -439,18 +463,21 @@ class _CustomerSheet extends StatelessWidget {
   final VoidCallback onTransferPending;
   final VoidCallback onReceivePending;
   final VoidCallback onFawryCredit;
+  final VoidCallback onReport;
 
   const _CustomerSheet({
     required this.customer,
     required this.onTransferPending,
     required this.onReceivePending,
     required this.onFawryCredit,
+    required this.onReport,
   });
 
   @override
   Widget build(BuildContext context) {
     final netLabel = customer.net >= 0 ? 'صافي لنا' : 'صافي علينا';
     final netValue = customer.net >= 0 ? customer.net : -customer.net;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
       child: Column(
@@ -494,12 +521,17 @@ class _CustomerSheet extends StatelessWidget {
                 icon: const Icon(Icons.flash_on),
                 label: const Text('فوري آجل'),
               ),
+              ElevatedButton.icon(
+                onPressed: onReport,
+                icon: const Icon(Icons.assessment_outlined),
+                label: const Text('تقرير العميل'),
+              ),
             ],
           ),
           const SizedBox(height: 12),
           Expanded(
             child: customer.lines.isEmpty
-                ? const Center(child: Text('لا توجد قيود على هذا العميل'))
+                ? const Center(child: Text('لا توجد حركات مرتبطة لهذا العميل'))
                 : ListView.separated(
                     itemCount: customer.lines.length,
                     separatorBuilder: (_, i) => const Divider(height: 1),
@@ -518,15 +550,16 @@ class _CustomerSheet extends StatelessWidget {
                       if ((line.details ?? '').trim().isNotEmpty) {
                         subtitleParts.add(line.details!.trim());
                       }
+
                       return ListTile(
                         dense: true,
                         title: Text(line.title),
-                        subtitle: Text(subtitleParts.join(' • ')),
+                        subtitle: Text(subtitleParts.join(' | ')),
                         trailing: Text(
                           '$sign${line.amount.toStringAsFixed(2)}',
                           style: TextStyle(
-                            fontWeight: FontWeight.w700,
                             color: color,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
                       );
@@ -562,6 +595,7 @@ class _CustomerLine {
 class _CustomerBucket {
   final String name;
   final String? phone;
+
   double receivableClaims = 0;
   double payableClaims = 0;
   double receivablePending = 0;

@@ -44,3 +44,17 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 /android/build/
+android/key.properties
+android/app/*.jks
+android/app/*.keystore
+
+# Local artifacts
+dist/
+temp_*.png
+temp_*.jpg
+temp_*.jpeg
+
+# QA local dependencies/logs
+qa/sauce/node_modules/
+qa/sauce/package-lock.json
+qa/health/*.txt

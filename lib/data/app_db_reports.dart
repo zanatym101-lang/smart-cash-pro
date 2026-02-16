@@ -45,7 +45,7 @@ extension AppDbReports on AppDb {
       closedAt: DateTime.now(),
       drawerBalance: snap.drawerActualBalance,
       walletsTotal: snap.walletsActualTotal,
-      treasuryTotal: snap.drawerActualBalance + snap.walletsActualTotal,
+      treasuryTotal: snap.actualTreasuryApproved,
       profitTotal: report.profit.total,
       profitTransfer: report.profit.transfer,
       profitReceive: report.profit.receive,

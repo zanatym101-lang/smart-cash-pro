@@ -48,21 +48,33 @@ class _MiniLogo extends StatelessWidget {
       width: 28,
       height: 28,
       decoration: BoxDecoration(
+        color: Colors.white,
         shape: BoxShape.circle,
-        gradient: const LinearGradient(
-          colors: [Color(0xFF10B981), Color(0xFF047857)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
-      child: const Center(
-        child: Text(
-          'SC',
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.4,
-            color: Colors.white,
+      clipBehavior: Clip.antiAlias,
+      child: Image.asset(
+        AppBranding.logoMarkAsset,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) => const ColoredBox(
+          color: Color(0xFF0EA5E9),
+          child: Center(
+            child: Text(
+              'SC',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.4,
+                color: Colors.white,
+              ),
+            ),
           ),
         ),
       ),

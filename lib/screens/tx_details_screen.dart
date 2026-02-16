@@ -102,8 +102,16 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
 
     if (_txn.kind == 'transfer') {
       walletLabel = _walletName(_txn.walletFromId);
-      walletDelta = -(amt + nf);
-      drawerDelta = (_txn.mode == 'type1') ? (amt + cf) : amt;
+      // Stored amount for transfer is wallet spend.
+      walletDelta = -amt;
+      if (_txn.mode == 'type1') {
+        drawerDelta = (amt - nf) + cf;
+      } else if (_txn.mode == 'type2_v2') {
+        drawerDelta = amt + cf;
+      } else {
+        // Legacy type2
+        drawerDelta = amt - nf;
+      }
       profitDelta = cf;
     } else if (_txn.kind == 'receive') {
       walletLabel = _walletName(_txn.walletToId);

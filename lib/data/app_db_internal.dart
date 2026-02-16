@@ -27,6 +27,22 @@ extension _AppDbInternal on AppDb {
     return File('${dir.path}/king_wallet.db');
   }
 
+  Future<void> _deleteSqliteArtifacts() async {
+    final dbFile = await _sqliteFile();
+    final parent = dbFile.parent;
+    if (!await parent.exists()) {
+      await parent.create(recursive: true);
+    }
+    for (final suffix in ['', '-wal', '-shm']) {
+      final target = File('${dbFile.path}$suffix');
+      try {
+        if (await target.exists()) {
+          await target.delete();
+        }
+      } catch (_) {}
+    }
+  }
+
   void _setDayStartHourCache(int hour) {
     _cachedDayStartHour = hour.clamp(0, 23);
   }
@@ -70,10 +86,15 @@ extension _AppDbInternal on AppDb {
   }
 
   void _applyJson(Map<String, dynamic> j) {
-    _nextWalletId = (j['nextWalletId'] ?? 1) as int;
-    _nextTxnId = (j['nextTxnId'] ?? 1) as int;
-    _nextClaimId = (j['nextClaimId'] ?? 1) as int;
-    _nextCloseId = (j['nextCloseId'] ?? 1) as int;
+    int readCounter(dynamic raw, int fallback) {
+      if (raw is int) return raw;
+      return int.tryParse((raw ?? '').toString()) ?? fallback;
+    }
+
+    _nextWalletId = readCounter(j['nextWalletId'], 1);
+    _nextTxnId = readCounter(j['nextTxnId'], 1);
+    _nextClaimId = readCounter(j['nextClaimId'], 1);
+    _nextCloseId = readCounter(j['nextCloseId'], 1);
 
     final walletsJson = (j['wallets'] ?? []) as List<dynamic>;
     _wallets
@@ -117,6 +138,53 @@ extension _AppDbInternal on AppDb {
           (k, v) => MapEntry(int.tryParse(k) ?? 0, (v ?? '').toString()),
         ),
       );
+
+    DateTime? parseIso(dynamic raw) {
+      final s = (raw ?? '').toString().trim();
+      if (s.isEmpty) return null;
+      return DateTime.tryParse(s);
+    }
+
+    final dailyResetMap =
+        (j['dailyUsageResetAt'] as Map<String, dynamic>?) ?? {};
+    _dailyUsageResetAt
+      ..clear()
+      ..addAll({
+        for (final e in dailyResetMap.entries)
+          if (parseIso(e.value) != null)
+            (int.tryParse(e.key) ?? 0): parseIso(e.value)!,
+      });
+
+    final monthlyResetMap =
+        (j['monthlyUsageResetAt'] as Map<String, dynamic>?) ?? {};
+    _monthlyUsageResetAt
+      ..clear()
+      ..addAll({
+        for (final e in monthlyResetMap.entries)
+          if (parseIso(e.value) != null)
+            (int.tryParse(e.key) ?? 0): parseIso(e.value)!,
+      });
+
+    int maxWalletId = 0;
+    for (final w in _wallets) {
+      if (w.id > maxWalletId) maxWalletId = w.id;
+    }
+    int maxTxnId = 0;
+    for (final t in _txns) {
+      if (t.id > maxTxnId) maxTxnId = t.id;
+    }
+    int maxClaimId = 0;
+    for (final c in _claims) {
+      if (c.id > maxClaimId) maxClaimId = c.id;
+    }
+    int maxCloseId = 0;
+    for (final c in _dailyCloses) {
+      if (c.id > maxCloseId) maxCloseId = c.id;
+    }
+    _nextWalletId = max(_nextWalletId, maxWalletId + 1);
+    _nextTxnId = max(_nextTxnId, maxTxnId + 1);
+    _nextClaimId = max(_nextClaimId, maxClaimId + 1);
+    _nextCloseId = max(_nextCloseId, maxCloseId + 1);
   }
 
   Future<void> _loadFromSqlite() async {
@@ -141,6 +209,27 @@ extension _AppDbInternal on AppDb {
     _nextTxnId = int.tryParse(meta['nextTxnId'] ?? '') ?? 1;
     _nextClaimId = int.tryParse(meta['nextClaimId'] ?? '') ?? 1;
     _nextCloseId = int.tryParse(meta['nextCloseId'] ?? '') ?? 1;
+    int maxWalletId = 0;
+    for (final w in _wallets) {
+      if (w.id > maxWalletId) maxWalletId = w.id;
+    }
+    int maxTxnId = 0;
+    for (final t in _txns) {
+      if (t.id > maxTxnId) maxTxnId = t.id;
+    }
+    int maxClaimId = 0;
+    for (final c in _claims) {
+      if (c.id > maxClaimId) maxClaimId = c.id;
+    }
+    int maxCloseId = 0;
+    for (final c in _dailyCloses) {
+      if (c.id > maxCloseId) maxCloseId = c.id;
+    }
+    // Safety: if meta was missing/corrupted, never reuse existing ids.
+    _nextWalletId = max(_nextWalletId, maxWalletId + 1);
+    _nextTxnId = max(_nextTxnId, maxTxnId + 1);
+    _nextClaimId = max(_nextClaimId, maxClaimId + 1);
+    _nextCloseId = max(_nextCloseId, maxCloseId + 1);
 
     final lastPending = (meta['lastPendingAlertDate'] ?? '').trim();
     _lastPendingAlertDate = lastPending.isEmpty ? null : lastPending;
@@ -157,33 +246,84 @@ extension _AppDbInternal on AppDb {
         );
       } catch (_) {}
     }
+
+    final dailyResetRaw = (meta['dailyUsageResetAt'] ?? '').trim();
+    _dailyUsageResetAt.clear();
+    if (dailyResetRaw.isNotEmpty) {
+      try {
+        final m = jsonDecode(dailyResetRaw) as Map<String, dynamic>;
+        for (final e in m.entries) {
+          final id = int.tryParse(e.key);
+          final dt = DateTime.tryParse((e.value ?? '').toString());
+          if (id != null && dt != null) {
+            _dailyUsageResetAt[id] = dt;
+          }
+        }
+      } catch (_) {}
+    }
+
+    final monthlyResetRaw = (meta['monthlyUsageResetAt'] ?? '').trim();
+    _monthlyUsageResetAt.clear();
+    if (monthlyResetRaw.isNotEmpty) {
+      try {
+        final m = jsonDecode(monthlyResetRaw) as Map<String, dynamic>;
+        for (final e in m.entries) {
+          final id = int.tryParse(e.key);
+          final dt = DateTime.tryParse((e.value ?? '').toString());
+          if (id != null && dt != null) {
+            _monthlyUsageResetAt[id] = dt;
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   Future<void> _ensureLoaded() async {
     if (_loaded) return;
-    await _ensureDayStartHourLoaded();
+    if (_loadingFuture != null) {
+      await _loadingFuture;
+      return;
+    }
 
-    final hasSqlite = await _sqlite.hasAnyData();
-    if (hasSqlite) {
-      await _loadFromSqlite();
-    } else {
-      final file = await _dataFile();
-      if (await file.exists()) {
-        final raw = await file.readAsString();
-        if (raw.trim().isNotEmpty) {
-          final j = jsonDecode(raw) as Map<String, dynamic>;
-          _applyJson(j);
-          await _save();
+    final completer = Completer<void>();
+    _loadingFuture = completer.future;
+    try {
+      await _ensureDayStartHourLoaded();
+
+      final hasSqlite = await _sqlite.hasAnyData();
+      if (hasSqlite) {
+        await _loadFromSqlite();
+      } else {
+        final file = await _dataFile();
+        if (await file.exists()) {
+          final raw = await file.readAsString();
+          if (raw.trim().isNotEmpty) {
+            final j = jsonDecode(raw) as Map<String, dynamic>;
+            _applyJson(j);
+            await _save();
+          } else {
+            await _seed();
+          }
         } else {
           await _seed();
         }
-      } else {
-        await _seed();
       }
-    }
 
-    _rebuildEngineFromTxns();
-    _loaded = true;
+      final repaired = _autoRepairInMemoryDuplicatesAndCounters();
+      if (repaired) {
+        await _save();
+      }
+
+      _rebuildEngineFromTxns();
+      _loaded = true;
+      await _runDailyIntegrityCheckIfNeeded();
+      completer.complete();
+    } catch (e, st) {
+      completer.completeError(e, st);
+      rethrow;
+    } finally {
+      _loadingFuture = null;
+    }
   }
 
   Future<void> _seed() async {
@@ -198,6 +338,8 @@ extension _AppDbInternal on AppDb {
     _nextCloseId = 1;
     _lastPendingAlertDate = null;
     _lowBalanceAlertDate.clear();
+    _dailyUsageResetAt.clear();
+    _monthlyUsageResetAt.clear();
 
     // Example wallets (edit as needed)
     _wallets.addAll([
@@ -238,20 +380,62 @@ extension _AppDbInternal on AppDb {
     _nextCloseId = 1;
     _lastPendingAlertDate = null;
     _lowBalanceAlertDate.clear();
+    _dailyUsageResetAt.clear();
+    _monthlyUsageResetAt.clear();
     await _save();
   }
 
   Future<void> _resetEmpty() async {
     await _closeSqlite();
-    final file = await _sqliteFile();
-    if (await file.exists()) await file.delete();
+    await _deleteSqliteArtifacts();
     final legacy = await _dataFile();
     if (await legacy.exists()) await legacy.delete();
     await _reopenSqlite();
+    await _clearSqliteAllData();
     _loaded = false;
     await _seedEmpty();
     _rebuildEngineFromTxns();
     _loaded = true;
+  }
+
+  Future<void> _clearSqliteAllData() async {
+    try {
+      await _sqlite.clearAll();
+    } catch (e) {
+      if (!_isReadonlyDatabaseError(e)) rethrow;
+      await _recoverWritableDatabaseFile();
+      await _sqlite.clearAll();
+    }
+  }
+
+  bool _isReadonlyDatabaseError(Object e) {
+    final m = e.toString().toLowerCase();
+    return m.contains('readonly database') ||
+        m.contains('attempt to write a readonly database') ||
+        m.contains('code 1032');
+  }
+
+  Future<void> _recoverWritableDatabaseFile() async {
+    await _closeSqlite();
+    final file = await _sqliteFile();
+    final parent = file.parent;
+    if (!await parent.exists()) {
+      await parent.create(recursive: true);
+    }
+    for (final suffix in ['', '-wal', '-shm']) {
+      final target = File('${file.path}$suffix');
+      try {
+        if (await target.exists()) {
+          await target.delete();
+        }
+      } catch (_) {}
+    }
+    try {
+      if (!await file.exists()) {
+        await file.create(recursive: true);
+      }
+    } catch (_) {}
+    await _reopenSqlite();
   }
 
   Future<void> _save() async {
@@ -264,15 +448,98 @@ extension _AppDbInternal on AppDb {
       'lowBalanceAlertDate': jsonEncode(
         _lowBalanceAlertDate.map((k, v) => MapEntry(k.toString(), v)),
       ),
+      'dailyUsageResetAt': jsonEncode(
+        _dailyUsageResetAt.map(
+          (k, v) => MapEntry(k.toString(), v.toIso8601String()),
+        ),
+      ),
+      'monthlyUsageResetAt': jsonEncode(
+        _monthlyUsageResetAt.map(
+          (k, v) => MapEntry(k.toString(), v.toIso8601String()),
+        ),
+      ),
     };
-    await _sqlite.saveSnapshot(
-      walletItems: _wallets,
-      txnItems: _txns,
-      claimItems: _claims,
-      dailyCloseItems: _dailyCloses,
-      recentNumberItems: _recentNumbers,
-      metaItems: meta,
-    );
+    try {
+      await _sqlite.saveSnapshot(
+        walletItems: _wallets,
+        txnItems: _txns,
+        claimItems: _claims,
+        dailyCloseItems: _dailyCloses,
+        recentNumberItems: _recentNumbers,
+        metaItems: meta,
+      );
+    } catch (e) {
+      if (!_isReadonlyDatabaseError(e)) rethrow;
+      await _recoverWritableDatabaseFile();
+      await _sqlite.saveSnapshot(
+        walletItems: _wallets,
+        txnItems: _txns,
+        claimItems: _claims,
+        dailyCloseItems: _dailyCloses,
+        recentNumberItems: _recentNumbers,
+        metaItems: meta,
+      );
+    }
+  }
+
+  bool _hasDuplicateIds<T>(Iterable<T> items, int Function(T item) idOf) {
+    final seen = <int>{};
+    for (final item in items) {
+      if (!seen.add(idOf(item))) return true;
+    }
+    return false;
+  }
+
+  bool _hasDuplicateDateKeys(Iterable<DailyClose> items) {
+    final seen = <String>{};
+    for (final item in items) {
+      if (!seen.add(item.dateKey)) return true;
+    }
+    return false;
+  }
+
+  bool _autoRepairInMemoryDuplicatesAndCounters() {
+    bool changed = false;
+
+    final hasWalletDup = _hasDuplicateIds(_wallets, (w) => w.id);
+    final hasTxnDup = _hasDuplicateIds(_txns, (t) => t.id);
+    final hasClaimDup = _hasDuplicateIds(_claims, (c) => c.id);
+    final hasCloseDupDate = _hasDuplicateDateKeys(_dailyCloses);
+    final hasCloseDupId = _hasDuplicateIds(_dailyCloses, (c) => c.id);
+
+    if (hasWalletDup) {
+      final fixed = _fixWalletDuplicates();
+      changed = changed || fixed > 0;
+    }
+    if (hasTxnDup) {
+      final fixed = _fixTxnDuplicates();
+      changed = changed || fixed > 0;
+    }
+    if (hasClaimDup) {
+      final fixed = _fixClaimDuplicates();
+      changed = changed || fixed > 0;
+    }
+    if (hasCloseDupDate || hasCloseDupId) {
+      final fixed = _fixDailyCloseDuplicates();
+      changed = changed || fixed > 0;
+    }
+
+    final maxWalletId = _maxId(_wallets, (w) => w.id);
+    final maxTxnId = _maxId(_txns, (t) => t.id);
+    final maxClaimId = _maxId(_claims, (c) => c.id);
+    final maxCloseId = _maxId(_dailyCloses, (c) => c.id);
+    final invalidCounters =
+        _nextWalletId <= maxWalletId ||
+        _nextTxnId <= maxTxnId ||
+        _nextClaimId <= maxClaimId ||
+        _nextCloseId <= maxCloseId;
+
+    if (invalidCounters || changed) {
+      _normalizeNextIdsAndMaps();
+      changed = true;
+    }
+
+    return changed;
   }
 
   /// Rebuild AccountingState from _txns list.
@@ -280,6 +547,7 @@ extension _AppDbInternal on AppDb {
   void _rebuildEngineFromTxns() {
     _state.walletBalancesQirsh.clear();
     _state.drawerBalanceQirsh = 0;
+    _state.fawryBalanceQirsh = 0;
     _state.ledger.clear();
     _state.transactions.clear();
 
@@ -309,7 +577,8 @@ extension _AppDbInternal on AppDb {
 
   String _txId(int txnId) => 'txn:$txnId';
 
-  ({int drawerQirsh, Map<String, int> walletsQirsh}) _projectedBalances({
+  ({int drawerQirsh, int fawryQirsh, Map<String, int> walletsQirsh})
+  _projectedBalances({
     Txn? includeTxn,
     int? excludeTxnId,
   }) {
@@ -318,13 +587,18 @@ extension _AppDbInternal on AppDb {
       wallets[w.id.toString()] = _state.getWalletQirsh(w.id.toString());
     }
     var drawer = _state.drawerBalanceQirsh;
+    var fawry = _state.fawryBalanceQirsh;
 
-    void applyTxn(Txn txn) {
+    void applyTxn(Txn txn, {required bool walletOnly}) {
       final spec = _specFromTxn(txn);
       final entries = spec.buildEntries(_txId(txn.id));
       for (final e in entries) {
         if (e.accountKey == 'drawer') {
+          if (walletOnly) continue;
           drawer += e.deltaQirsh;
+        } else if (e.accountKey == 'fawry') {
+          if (walletOnly) continue;
+          fawry += e.deltaQirsh;
         } else if (e.accountKey.startsWith('wallet:')) {
           final wid = e.accountKey.split(':')[1];
           wallets[wid] = (wallets[wid] ?? 0) + e.deltaQirsh;
@@ -342,12 +616,21 @@ extension _AppDbInternal on AppDb {
             .toList()
           ..sort((a, b) => a.entryDate.compareTo(b.entryDate));
     for (final t in pendingSorted) {
-      applyTxn(t);
+      final walletOnly = t.kind == 'transfer' || t.kind == 'receive';
+      // Pending projection policy:
+      // - transfer/receive impact wallets only
+      // - other pending kinds have no projected balance impact
+      if (!walletOnly) continue;
+      applyTxn(t, walletOnly: true);
     }
     if (includeTxn != null && includeTxn.status == 'pending') {
-      applyTxn(includeTxn);
+      final walletOnly =
+          includeTxn.kind == 'transfer' || includeTxn.kind == 'receive';
+      if (walletOnly) {
+        applyTxn(includeTxn, walletOnly: true);
+      }
     }
-    return (drawerQirsh: drawer, walletsQirsh: wallets);
+    return (drawerQirsh: drawer, fawryQirsh: fawry, walletsQirsh: wallets);
   }
 
   void _validateProjectedWalletsNonNegative(Txn candidate) {
@@ -387,12 +670,22 @@ extension _AppDbInternal on AppDb {
     if (kind == 'transfer') {
       final fromId = (t.walletFromId ?? 0).toString();
 
-      // In v47 we store wallet movement as amount = (transferAmount + networkFee)
-      // So transferAmount = storedAmount - networkFee
+      // Stored transfer amount is wallet spend.
+      // Actual transferred amount to receiver = spend - networkFee.
       final spendQ = Money.fromEgpDouble(t.amount);
       final nfQ = Money.fromEgpDouble(t.networkFee);
       final cfQ = Money.fromEgpDouble(t.clientFee);
       final transferAmountQ = spendQ - nfQ;
+
+      // Keep old type2 records stable, use new logic only for type2_v2.
+      if (t.mode == 'type2') {
+        return TransferLegacyType2TxSpec(
+          fromWalletId: fromId,
+          spendQirsh: spendQ,
+          nfQirsh: nfQ,
+          cfQirsh: cfQ,
+        );
+      }
 
       final mode = (t.mode == 'type1')
           ? CommissionMode.cash
@@ -426,31 +719,53 @@ extension _AppDbInternal on AppDb {
         mode: rm,
       );
     }
-
     if (kind == 'claim_collect') {
       final amtQ = Money.fromEgpDouble(t.amount);
-      final label = (t.note ?? 'تحصيل مستحقات').toString();
+      final label = (t.note ?? 'طھط­طµ طھط­ظ‚طھ').toString();
       return DrawerFundingTxSpec(amountQirsh: amtQ, note: label);
     }
 
     if (kind == 'claim_pay') {
       final amtQ = Money.fromEgpDouble(t.amount);
-      final label = (t.note ?? 'سداد مستحقات').toString();
+      final label = (t.note ?? 'ط¯ط¯ طھط­ظ‚طھ').toString();
       return DrawerFundingTxSpec(amountQirsh: -amtQ, note: label);
     }
 
+    if (kind == 'claim_open_receivable') {
+      final amtQ = Money.fromEgpDouble(t.amount);
+      final label = (t.note ?? 'ظپطھط­ طھط­ظ‚ ').toString();
+      return DrawerFundingTxSpec(amountQirsh: -amtQ, note: label);
+    }
+
+    if (kind == 'claim_open_payable') {
+      final amtQ = Money.fromEgpDouble(t.amount);
+      final label = (t.note ?? 'ظپطھط­ طھط­ظ‚ ').toString();
+      return DrawerFundingTxSpec(amountQirsh: amtQ, note: label);
+    }
+
+
     if (kind == 'fawry_cash') {
+      final amountQ = Money.fromEgpDouble(t.amount);
       final feeQ = Money.fromEgpDouble(t.clientFee);
-      final label = (t.note ?? 'فوري نقدي').toString();
-      return DrawerFundingTxSpec(amountQirsh: feeQ, note: label);
+      final label = (t.note ?? 'Fawry cash').toString();
+      return FawryCashTxSpec(
+        amountQirsh: amountQ,
+        feeQirsh: feeQ,
+        note: label,
+      );
     }
 
     if (kind == 'fawry_credit') {
       final amtQ = Money.fromEgpDouble(t.amount);
-      final label = (t.note ?? 'فوري آجل').toString();
-      return DrawerFundingTxSpec(amountQirsh: -amtQ, note: label);
+      final label = (t.note ?? 'Fawry credit').toString();
+      return FawryCreditTxSpec(amountQirsh: amtQ, note: label);
     }
 
+    if (kind == 'fawry_fund_drawer') {
+      final amtQ = Money.fromEgpDouble(t.amount);
+      final label = (t.note ?? 'Fawry drawer top-up').toString();
+      return FawryDrawerTopupTxSpec(amountQirsh: amtQ, note: label);
+    }
     if (kind == 'expense') {
       // Expense subtracts from drawer only.
       // Reuse DrawerFundingTxSpec with NEGATIVE amountQirsh.
@@ -464,3 +779,4 @@ extension _AppDbInternal on AppDb {
     throw Exception('Unknown txn kind: $kind');
   }
 }
+

@@ -1,10 +1,25 @@
 String providerFromPhone(String phone) {
-  final p = phone.trim();
-  if (p.startsWith('010')) return 'فودافون';
-  if (p.startsWith('011')) return 'اتصالات';
-  if (p.startsWith('012')) return 'موبينل';
-  if (p.startsWith('015')) return 'وي';
-  return 'غير معروف';
+  final p = normalizePhone(phone);
+  if (p.startsWith('010')) return 'vodafone';
+  if (p.startsWith('011')) return 'etisalat';
+  if (p.startsWith('012')) return 'orange';
+  if (p.startsWith('015')) return 'we';
+  return 'unknown';
+}
+
+String providerDisplayName(String provider) {
+  switch (provider.toLowerCase()) {
+    case 'vodafone':
+      return 'فودافون';
+    case 'etisalat':
+      return 'اتصالات';
+    case 'orange':
+      return 'أورنج';
+    case 'we':
+      return 'وي';
+    default:
+      return 'غير معروف';
+  }
 }
 
 String _normalizeDigit(String ch) {
@@ -66,15 +81,15 @@ String? defaultTransferCode({
       ? amount.toStringAsFixed(0)
       : amount.toStringAsFixed(2);
 
-  switch (provider) {
-    case 'فودافون':
+  switch (provider.toLowerCase()) {
+    case 'vodafone':
       return '*9*7*$customerPhone*$amt#';
-    case 'اتصالات':
-      // PIN left blank intentionally: *777*1*PIN*amount*recipient#
+    case 'etisalat':
+      // PIN is intentionally left blank by default.
       return '*777*1**$amt*$customerPhone#';
-    case 'موبينل':
+    case 'orange':
       return '#7115#';
-    case 'وي':
+    case 'we':
       return null;
     default:
       return null;

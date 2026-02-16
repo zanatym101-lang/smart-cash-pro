@@ -22,7 +22,7 @@ extension AppDbAdmin on AppDb {
 
   void _requireAdmin() {
     if (!AppSession.isAdmin) {
-      throw Exception('ظ‡ط°ط§ ط§ظ„ط¥ط¬ط±ط§ط، ظ…طھط§ط­ ظ„ظ„ط£ط¯ظ…ظ† ظپظ‚ط·');
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
     }
   }
 
@@ -244,11 +244,11 @@ extension AppDbAdmin on AppDb {
     final info = await getLicenseInfo();
     if (info.isActivated) return;
     if (info.daysLeft <= 0) {
-      throw Exception('ط§ظ†طھظ‡طھ ط§ظ„ظپطھط±ط© ط§ظ„طھط¬ط±ظٹط¨ظٹط©');
+      throw Exception('انتهت الفترة التجريبية');
     }
     if (info.operationsLeft <= 0) {
       throw Exception(
-        'طھظ… طھط¬ط§ظˆط² ط§ظ„ط­ط¯ ط§ظ„طھط¬ط±ظٹط¨ظٹ ظ„ظ„ط¹ظ…ظ„ظٹط§طھ (${info.maxOperations})',
+        'تم تجاوز الحد التجريبي للعمليات (${info.maxOperations})',
       );
     }
   }
@@ -268,12 +268,10 @@ extension AppDbAdmin on AppDb {
     final info = await getLicenseInfo();
     if (info.isActivated) return;
     if (info.daysLeft <= 0) {
-      throw Exception('ط§ظ†طھظ‡طھ ط§ظ„ظپطھط±ط© ط§ظ„طھط¬ط±ظٹط¨ظٹط©');
+      throw Exception('انتهت الفترة التجريبية');
     }
     if (_wallets.length >= info.maxWallets) {
-      throw Exception(
-        'ظ†ط³ط®ط© طھط¬ط±ظٹط¨ظٹط©: ط§ظ„ط­ط¯ ط§ظ„ط£ظ‚طµظ‰ ظ„ظ„ظ…ط­ط§ظپط¸ ${info.maxWallets}',
-      );
+      throw Exception('نسخة تجريبية: الحد الأقصى للمحافظ ${info.maxWallets}');
     }
   }
 
@@ -415,7 +413,7 @@ extension AppDbAdmin on AppDb {
   Future<void> setDeveloperPin(String newPin) async {
     final pin = newPin.trim();
     if (pin.length < 4) {
-      throw Exception('PIN ظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ† 4 ط£ط±ظ‚ط§ظ… ط£ظˆ ط£ظƒط«ط±');
+      throw Exception('PIN يجب أن يكون 4 أرقام أو أكثر');
     }
     final m = await _readSettingsMap();
     m['devPin'] = _pinRecord(pin);
@@ -463,7 +461,7 @@ extension AppDbAdmin on AppDb {
   Future<void> setAdminPin(String newPin) async {
     final pin = newPin.trim();
     if (pin.length < 4) {
-      throw Exception('PIN ظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ† 4 ط£ط±ظ‚ط§ظ… ط£ظˆ ط£ظƒط«ط±');
+      throw Exception('PIN يجب أن يكون 4 أرقام أو أكثر');
     }
     final m = await _readSettingsMap();
     m['adminPin'] = _pinRecord(pin);
@@ -498,7 +496,7 @@ extension AppDbAdmin on AppDb {
 
     String businessName = (m['businessName'] ?? '').toString().trim();
     if (businessName.isEmpty) {
-      businessName = 'ط§ظ„ظ†ط´ط§ط·';
+      businessName = 'النشاط';
       changed = true;
     }
 
@@ -559,10 +557,10 @@ extension AppDbAdmin on AppDb {
     final name = settings.businessName.trim();
     final currency = settings.currency.trim();
     final hour = settings.dayStartHour;
-    if (name.isEmpty) throw Exception('ط§ط³ظ… ط§ظ„ظ†ط´ط§ط· ظ…ط·ظ„ظˆط¨');
-    if (currency.isEmpty) throw Exception('ط§ظ„ط¹ظ…ظ„ط© ظ…ط·ظ„ظˆط¨ط©');
+    if (name.isEmpty) throw Exception('اسم النشاط مطلوب');
+    if (currency.isEmpty) throw Exception('العملة مطلوبة');
     if (hour < 0 || hour > 23) {
-      throw Exception('ط¨ط¯ط§ظٹط© ط§ظ„ظٹظˆظ… ط؛ظٹط± طµط­ظٹط­ط©');
+      throw Exception('بداية اليوم غير صحيحة');
     }
 
     final m = await _readSettingsMap();
@@ -583,6 +581,7 @@ extension AppDbAdmin on AppDb {
     final dir = await getApplicationSupportDirectory();
     final backup = File('${dir.path}/king_wallet_backup.db');
     await _copyDatabaseSnapshotTo(backup.path);
+    await _markBackupMeta(type: 'db', path: backup.path);
     return backup.path;
   }
 
@@ -591,18 +590,9 @@ extension AppDbAdmin on AppDb {
     final dir = await getApplicationSupportDirectory();
     final backup = File('${dir.path}/king_wallet_backup.db');
     if (!await backup.exists()) {
-      throw Exception('ظ„ط§ طھظˆط¬ط¯ ظ†ط³ط®ط© ط§ط­طھظٹط§ط·ظٹط©');
+      throw Exception('لا توجد نسخة احتياطية');
     }
-    await _closeSqlite();
-    final dataFile = await _sqliteFile();
-    if (await dataFile.exists()) {
-      await dataFile.delete();
-    }
-    final bytes = await backup.readAsBytes();
-    await dataFile.writeAsBytes(bytes, flush: true);
-    await _reopenSqlite();
-    _loaded = false;
-    await _ensureLoaded();
+    await restoreBackupFromPath(backup.path);
   }
 
   String _backupFileName(DateTime now) {
@@ -623,6 +613,230 @@ extension AppDbAdmin on AppDb {
     final min = now.minute.toString().padLeft(2, '0');
     final s = now.second.toString().padLeft(2, '0');
     return 'smart_cash_backup_$y$m${d}_$h$min$s.json';
+  }
+
+  String _backupEncryptedFileName(DateTime now) {
+    final y = now.year.toString().padLeft(4, '0');
+    final m = now.month.toString().padLeft(2, '0');
+    final d = now.day.toString().padLeft(2, '0');
+    final h = now.hour.toString().padLeft(2, '0');
+    final min = now.minute.toString().padLeft(2, '0');
+    final s = now.second.toString().padLeft(2, '0');
+    return 'smart_cash_backup_$y$m${d}_$h$min$s.scpb';
+  }
+
+  static const int _secureRestoreMaxAttempts = 3;
+  static const int _secureRestoreLockMinutes = 15;
+
+  void _validateBackupPassphrase(String passphrase) {
+    if (passphrase.trim().length < 8) {
+      throw Exception('كلمة المرور يجب أن تكون 8 أحرف على الأقل');
+    }
+  }
+
+  Map<String, dynamic> _secureRestoreMap(Map<String, dynamic> m) {
+    final raw = m['secureRestoreGuard'];
+    if (raw is Map) {
+      return Map<String, dynamic>.from(
+        raw.map((k, v) => MapEntry(k.toString(), v)),
+      );
+    }
+    return <String, dynamic>{};
+  }
+
+  SecureRestoreStatus _secureRestoreStatusFromMap(Map<String, dynamic> map) {
+    final failed =
+        int.tryParse(
+          (map['failedAttempts'] ?? '0').toString(),
+        )?.clamp(0, _secureRestoreMaxAttempts) ??
+        0;
+    final lockIso = (map['lockedUntil'] ?? '').toString().trim();
+    final lockTime = lockIso.isEmpty ? null : DateTime.tryParse(lockIso);
+    final now = DateTime.now();
+    final locked = lockTime != null && lockTime.isAfter(now);
+    final remaining = locked
+        ? 0
+        : (_secureRestoreMaxAttempts - failed).clamp(
+            0,
+            _secureRestoreMaxAttempts,
+          );
+    return SecureRestoreStatus(
+      failedAttempts: failed,
+      maxAttempts: _secureRestoreMaxAttempts,
+      remainingAttempts: remaining,
+      lockedUntil: lockTime,
+      locked: locked,
+    );
+  }
+
+  Future<SecureRestoreStatus> getEncryptedRestoreStatus() async {
+    final m = await _readSettingsMap();
+    final guard = _secureRestoreMap(m);
+    final status = _secureRestoreStatusFromMap(guard);
+    if (!status.locked &&
+        status.lockedUntil != null &&
+        status.failedAttempts >= _secureRestoreMaxAttempts) {
+      guard['failedAttempts'] = 0;
+      guard['lockedUntil'] = '';
+      m['secureRestoreGuard'] = guard;
+      await _writeSettingsMap(m);
+      return const SecureRestoreStatus(
+        failedAttempts: 0,
+        maxAttempts: _secureRestoreMaxAttempts,
+        remainingAttempts: _secureRestoreMaxAttempts,
+        lockedUntil: null,
+        locked: false,
+      );
+    }
+    return status;
+  }
+
+  Future<void> _clearEncryptedRestoreGuard() async {
+    final m = await _readSettingsMap();
+    m['secureRestoreGuard'] = <String, dynamic>{
+      'failedAttempts': 0,
+      'lockedUntil': '',
+    };
+    await _writeSettingsMap(m);
+  }
+
+  Future<void> resetEncryptedRestoreGuard() async {
+    _requireAdmin();
+    await _clearEncryptedRestoreGuard();
+  }
+
+  String _minutesLabel(Duration d) {
+    final mins = d.inMinutes + ((d.inSeconds % 60) > 0 ? 1 : 0);
+    return mins <= 0 ? '1' : mins.toString();
+  }
+
+  Future<void> _recordEncryptedRestoreFailure() async {
+    final m = await _readSettingsMap();
+    final guard = _secureRestoreMap(m);
+    final current =
+        int.tryParse((guard['failedAttempts'] ?? '0').toString()) ?? 0;
+    final failed = (current + 1).clamp(1, _secureRestoreMaxAttempts);
+    guard['failedAttempts'] = failed;
+    if (failed >= _secureRestoreMaxAttempts) {
+      guard['lockedUntil'] = DateTime.now()
+          .add(const Duration(minutes: _secureRestoreLockMinutes))
+          .toIso8601String();
+    } else {
+      guard['lockedUntil'] = '';
+    }
+    m['secureRestoreGuard'] = guard;
+    await _writeSettingsMap(m);
+  }
+
+  Future<crypt.SecretKey> _deriveBackupKey({
+    required String passphrase,
+    required List<int> salt,
+    required int iterations,
+  }) async {
+    final kdf = crypt.Pbkdf2(
+      macAlgorithm: crypt.Hmac.sha256(),
+      iterations: iterations,
+      bits: 256,
+    );
+    return kdf.deriveKey(
+      secretKey: crypt.SecretKey(utf8.encode(passphrase)),
+      nonce: salt,
+    );
+  }
+
+  Future<String> _encryptBackupJson({
+    required Map<String, dynamic> payload,
+    required String passphrase,
+  }) async {
+    _validateBackupPassphrase(passphrase);
+    const iterations = 150000;
+    final rnd = Random.secure();
+    final salt = List<int>.generate(16, (_) => rnd.nextInt(256));
+    final nonce = List<int>.generate(12, (_) => rnd.nextInt(256));
+    final key = await _deriveBackupKey(
+      passphrase: passphrase,
+      salt: salt,
+      iterations: iterations,
+    );
+    final algorithm = crypt.AesGcm.with256bits();
+    final clear = utf8.encode(jsonEncode(payload));
+    final box = await algorithm.encrypt(clear, secretKey: key, nonce: nonce);
+    final packed = <int>[...box.cipherText, ...box.mac.bytes];
+    final envelope = <String, dynamic>{
+      'format': 'smart_cash_secure_backup_v1',
+      'cipher': 'aes_gcm_256',
+      'kdf': 'pbkdf2_hmac_sha256',
+      'iterations': iterations,
+      'salt': base64Encode(salt),
+      'nonce': base64Encode(nonce),
+      'data': base64Encode(packed),
+      'createdAt': DateTime.now().toIso8601String(),
+    };
+    return jsonEncode(envelope);
+  }
+
+  Future<Map<String, dynamic>> _decryptBackupJson({
+    required String envelopeJson,
+    required String passphrase,
+  }) async {
+    _validateBackupPassphrase(passphrase);
+    final envelope = jsonDecode(envelopeJson) as Map<String, dynamic>;
+    if ((envelope['format'] ?? '').toString() !=
+        'smart_cash_secure_backup_v1') {
+      throw Exception('صيغة النسخة المشفرة غير مدعومة');
+    }
+    final iterations =
+        int.tryParse((envelope['iterations'] ?? '150000').toString()) ?? 150000;
+    final saltRaw = (envelope['salt'] ?? '').toString();
+    final nonceRaw = (envelope['nonce'] ?? '').toString();
+    final dataRaw = (envelope['data'] ?? '').toString();
+    if (saltRaw.isEmpty || nonceRaw.isEmpty || dataRaw.isEmpty) {
+      throw Exception('ملف النسخة المشفرة غير مكتمل');
+    }
+    final salt = base64Decode(saltRaw);
+    final nonce = base64Decode(nonceRaw);
+    final packed = base64Decode(dataRaw);
+    if (packed.length <= 16) {
+      throw Exception('بيانات النسخة المشفرة تالفة');
+    }
+
+    final key = await _deriveBackupKey(
+      passphrase: passphrase,
+      salt: salt,
+      iterations: iterations,
+    );
+    final cipher = packed.sublist(0, packed.length - 16);
+    final mac = packed.sublist(packed.length - 16);
+    final box = crypt.SecretBox(cipher, nonce: nonce, mac: crypt.Mac(mac));
+    final algorithm = crypt.AesGcm.with256bits();
+
+    List<int> clear;
+    try {
+      clear = await algorithm.decrypt(box, secretKey: key);
+    } on crypt.SecretBoxAuthenticationError {
+      throw const SecureBackupAuthException(
+        'Invalid passphrase or tampered file',
+      );
+    }
+    final decoded = utf8.decode(clear);
+    final payload = jsonDecode(decoded);
+    if (payload is! Map<String, dynamic>) {
+      throw Exception('بيانات النسخة غير صالحة');
+    }
+    return payload;
+  }
+
+  Future<void> _markBackupMeta({
+    required String type,
+    required String path,
+  }) async {
+    final m = await _readSettingsMap();
+    m['backupMeta'] = <String, dynamic>{
+      'lastAt': DateTime.now().toIso8601String(),
+      'type': type,
+      'path': path,
+    };
+    await _writeSettingsMap(m);
   }
 
   Future<void> _copyDatabaseSnapshotTo(String destinationPath) async {
@@ -658,6 +872,12 @@ extension AppDbAdmin on AppDb {
       'lowBalanceAlertDate': _lowBalanceAlertDate.map(
         (k, v) => MapEntry(k.toString(), v),
       ),
+      'dailyUsageResetAt': _dailyUsageResetAt.map(
+        (k, v) => MapEntry(k.toString(), v.toIso8601String()),
+      ),
+      'monthlyUsageResetAt': _monthlyUsageResetAt.map(
+        (k, v) => MapEntry(k.toString(), v.toIso8601String()),
+      ),
     };
   }
 
@@ -669,6 +889,7 @@ extension AppDbAdmin on AppDb {
     final name = _backupFileName(DateTime.now());
     final backup = File('${dir.path}/$name');
     await _copyDatabaseSnapshotTo(backup.path);
+    await _markBackupMeta(type: 'db', path: backup.path);
     return backup.path;
   }
 
@@ -678,6 +899,7 @@ extension AppDbAdmin on AppDb {
     final name = _backupFileName(DateTime.now());
     final path = p.join(directoryPath, name);
     await _copyDatabaseSnapshotTo(path);
+    await _markBackupMeta(type: 'db', path: path);
     return path;
   }
 
@@ -685,18 +907,32 @@ extension AppDbAdmin on AppDb {
     _requireAdmin();
     final src = File(path);
     if (!await src.exists()) {
-      throw Exception(
-        'ظ…ظ„ظپ ط§ظ„ظ†ط³ط®ط© ط§ظ„ط§ط­طھظٹط§ط·ظٹط© ط؛ظٹط± ظ…ظˆط¬ظˆط¯',
+      throw Exception('ملف النسخة الاحتياطية غير موجود');
+    }
+    final sourceDb = AppDatabase(customPath: src.path);
+    try {
+      final snapshot = (
+        wallets: await sourceDb.loadWallets(),
+        txns: await sourceDb.loadTxns(),
+        claims: await sourceDb.loadClaims(),
+        dailyCloses: await sourceDb.loadDailyCloses(),
+        recentNumbers: await sourceDb.loadRecentNumbers(),
+        meta: await sourceDb.loadMeta(),
       );
+
+      await _reopenSqlite();
+      await _sqlite.saveSnapshot(
+        walletItems: snapshot.wallets,
+        txnItems: snapshot.txns,
+        claimItems: snapshot.claims,
+        dailyCloseItems: snapshot.dailyCloses,
+        recentNumberItems: snapshot.recentNumbers,
+        metaItems: snapshot.meta,
+      );
+    } finally {
+      await sourceDb.close();
     }
-    await _closeSqlite();
-    final dataFile = await _sqliteFile();
-    if (await dataFile.exists()) {
-      await dataFile.delete();
-    }
-    final bytes = await src.readAsBytes();
-    await dataFile.writeAsBytes(bytes, flush: true);
-    await _reopenSqlite();
+
     _loaded = false;
     await _ensureLoaded();
   }
@@ -710,6 +946,7 @@ extension AppDbAdmin on AppDb {
     final file = File('${dir.path}/$name');
     final j = _buildJsonBackup();
     await file.writeAsString(jsonEncode(j));
+    await _markBackupMeta(type: 'json', path: file.path);
     return file.path;
   }
 
@@ -721,6 +958,43 @@ extension AppDbAdmin on AppDb {
     final file = File(path);
     final j = _buildJsonBackup();
     await file.writeAsString(jsonEncode(j));
+    await _markBackupMeta(type: 'json', path: file.path);
+    return file.path;
+  }
+
+  Future<String> exportEncryptedJsonBackupToDownloads({
+    required String passphrase,
+  }) async {
+    await _ensureLoaded();
+    _requireAdmin();
+    final downloads = await getDownloadsDirectory();
+    final dir = downloads ?? await getApplicationSupportDirectory();
+    final name = _backupEncryptedFileName(DateTime.now());
+    final file = File('${dir.path}/$name');
+    final encrypted = await _encryptBackupJson(
+      payload: _buildJsonBackup(),
+      passphrase: passphrase,
+    );
+    await file.writeAsString(encrypted);
+    await _markBackupMeta(type: 'json_encrypted', path: file.path);
+    return file.path;
+  }
+
+  Future<String> exportEncryptedJsonBackupToPath({
+    required String directoryPath,
+    required String passphrase,
+  }) async {
+    await _ensureLoaded();
+    _requireAdmin();
+    final name = _backupEncryptedFileName(DateTime.now());
+    final path = p.join(directoryPath, name);
+    final file = File(path);
+    final encrypted = await _encryptBackupJson(
+      payload: _buildJsonBackup(),
+      passphrase: passphrase,
+    );
+    await file.writeAsString(encrypted);
+    await _markBackupMeta(type: 'json_encrypted', path: file.path);
     return file.path;
   }
 
@@ -728,17 +1002,61 @@ extension AppDbAdmin on AppDb {
     _requireAdmin();
     final src = File(path);
     if (!await src.exists()) {
-      throw Exception(
-        'ظ…ظ„ظپ ط§ظ„ظ†ط³ط®ط© ط§ظ„ط§ط­طھظٹط§ط·ظٹط© ط؛ظٹط± ظ…ظˆط¬ظˆط¯',
-      );
+      throw Exception('ملف النسخة الاحتياطية غير موجود');
     }
     final raw = await src.readAsString();
     if (raw.trim().isEmpty) {
-      throw Exception('ظ…ظ„ظپ ط§ظ„ظ†ط³ط®ط© ط§ظ„ط§ط­طھظٹط§ط·ظٹط© ظپط§ط±ط؛');
+      throw Exception('ملف النسخة الاحتياطية فارغ');
     }
     final j = jsonDecode(raw) as Map<String, dynamic>;
+    await _restoreFromJsonMap(j);
+  }
+
+  Future<void> restoreEncryptedJsonBackupFromPath({
+    required String path,
+    required String passphrase,
+  }) async {
+    _requireAdmin();
+    final status = await getEncryptedRestoreStatus();
+    if (status.locked && status.lockedUntil != null) {
+      final left = status.lockedUntil!.difference(DateTime.now());
+      throw Exception(
+        'Secure restore is temporarily locked. Try again in ${_minutesLabel(left)} minute(s).',
+      );
+    }
+
+    final src = File(path);
+    if (!await src.exists()) {
+      throw Exception('ملف النسخة المشفرة غير موجود');
+    }
+    final raw = await src.readAsString();
+    if (raw.trim().isEmpty) {
+      throw Exception('ملف النسخة المشفرة فارغ');
+    }
+    Map<String, dynamic> j;
+    try {
+      j = await _decryptBackupJson(envelopeJson: raw, passphrase: passphrase);
+    } on SecureBackupAuthException {
+      await _recordEncryptedRestoreFailure();
+      final nowStatus = await getEncryptedRestoreStatus();
+      if (nowStatus.locked && nowStatus.lockedUntil != null) {
+        final left = nowStatus.lockedUntil!.difference(DateTime.now());
+        throw Exception(
+          'Invalid passphrase. Secure restore is locked for ${_minutesLabel(left)} minute(s).',
+        );
+      }
+      throw Exception(
+        'Invalid passphrase. Remaining attempts: ${nowStatus.remainingAttempts}.',
+      );
+    }
+    await _restoreFromJsonMap(j);
+    await _clearEncryptedRestoreGuard();
+  }
+
+  Future<void> _restoreFromJsonMap(Map<String, dynamic> j) async {
     await _reopenSqlite();
     _applyJson(j);
+    _autoRepairInMemoryDuplicatesAndCounters();
     await _save();
     _rebuildEngineFromTxns();
     _loaded = true;

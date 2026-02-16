@@ -1,5 +1,5 @@
-import '../models/transaction.dart';
 import '../models/claim.dart';
+import '../models/transaction.dart';
 
 class DateRange {
   final DateTime start;
@@ -76,17 +76,54 @@ class ClaimsSnapshot {
   double get net => receivableOpen - payableOpen;
 }
 
+class ReconciliationLine {
+  final String label;
+  final double opening;
+  final double inflow;
+  final double outflow;
+  final double expectedClosing;
+  final double actualClosing;
+
+  const ReconciliationLine({
+    required this.label,
+    required this.opening,
+    required this.inflow,
+    required this.outflow,
+    required this.expectedClosing,
+    required this.actualClosing,
+  });
+
+  double get diff => actualClosing - expectedClosing;
+  bool get ok => diff.abs() < 0.0001;
+}
+
+class ReconciliationReport {
+  final ReconciliationLine drawer;
+  final ReconciliationLine wallets;
+  final ReconciliationLine total;
+
+  const ReconciliationReport({
+    required this.drawer,
+    required this.wallets,
+    required this.total,
+  });
+
+  bool get ok => drawer.ok && wallets.ok && total.ok;
+}
+
 class ReportData {
   final ProfitReport profit;
   final DrawerCashflow cashflow;
   final OperationalSummary ops;
   final ClaimsSnapshot claims;
+  final ReconciliationReport reconciliation;
 
   const ReportData({
     required this.profit,
     required this.cashflow,
     required this.ops,
     required this.claims,
+    required this.reconciliation,
   });
 }
 
@@ -133,6 +170,183 @@ class SmartInsights {
 }
 
 class ReportCalculator {
+  static ({double drawerDelta, double walletsDelta}) _postedDelta(Txn t) {
+    if (t.status != 'posted') return (drawerDelta: 0, walletsDelta: 0);
+
+    switch (t.kind) {
+      case 'transfer':
+        final sentAmount = t.amount - t.networkFee;
+        if (t.mode == 'type1') {
+          return (
+            drawerDelta: sentAmount + t.clientFee,
+            walletsDelta: -t.amount,
+          );
+        }
+        if (t.mode == 'type2_v2') {
+          return (
+            drawerDelta: sentAmount + t.clientFee + t.networkFee,
+            walletsDelta: -t.amount,
+          );
+        }
+        return (drawerDelta: sentAmount, walletsDelta: -t.amount);
+
+      case 'receive':
+        if (t.mode == 'cash') {
+          return (
+            drawerDelta: -(t.amount - t.clientFee),
+            walletsDelta: t.amount,
+          );
+        }
+        if (t.mode == 'deduct') {
+          return (
+            drawerDelta: -(t.amount - t.clientFee),
+            walletsDelta: t.amount,
+          );
+        }
+        return (drawerDelta: 0, walletsDelta: t.amount + t.clientFee);
+
+      case 'external_funding':
+        return (drawerDelta: 0, walletsDelta: t.amount);
+
+      case 'drawer_deposit':
+        return (drawerDelta: t.amount, walletsDelta: 0);
+
+      case 'claim_collect':
+        return (drawerDelta: t.amount, walletsDelta: 0);
+
+      case 'claim_pay':
+        return (drawerDelta: -t.amount, walletsDelta: 0);
+
+      case 'claim_open_receivable':
+        return (drawerDelta: -t.amount, walletsDelta: 0);
+
+      case 'claim_open_payable':
+        return (drawerDelta: t.amount, walletsDelta: 0);
+
+      case 'fawry_cash':
+        return (drawerDelta: t.amount + t.clientFee, walletsDelta: 0);
+
+      case 'fawry_credit':
+        return (drawerDelta: 0, walletsDelta: 0);
+
+      case 'fawry_fund_drawer':
+        return (drawerDelta: -t.amount, walletsDelta: 0);
+
+      case 'expense':
+        return (drawerDelta: -t.amount, walletsDelta: 0);
+
+      default:
+        return (drawerDelta: 0, walletsDelta: 0);
+    }
+  }
+
+  static ReconciliationReport _buildReconciliation({
+    required List<Txn> txns,
+    required DateRange range,
+  }) {
+    double drawerOpening = 0;
+    double walletsOpening = 0;
+    double drawerIn = 0;
+    double drawerOut = 0;
+    double walletsIn = 0;
+    double walletsOut = 0;
+    double drawerClosing = 0;
+    double walletsClosing = 0;
+
+    final postedSorted = txns.where((t) => t.status == 'posted').toList()
+      ..sort((a, b) {
+        final c = a.entryDate.compareTo(b.entryDate);
+        if (c != 0) return c;
+        return a.id.compareTo(b.id);
+      });
+
+    var seenDrawer = 0.0;
+    var seenWallets = 0.0;
+    var openingCaptured = false;
+    var closingCaptured = false;
+
+    for (final t in postedSorted) {
+      final d = _postedDelta(t);
+      final inRange = range.contains(t.entryDate);
+
+      if (!openingCaptured && !t.entryDate.isBefore(range.start)) {
+        drawerOpening = seenDrawer;
+        walletsOpening = seenWallets;
+        openingCaptured = true;
+      }
+
+      if (inRange) {
+        if (d.drawerDelta >= 0) {
+          drawerIn += d.drawerDelta;
+        } else {
+          drawerOut += -d.drawerDelta;
+        }
+        if (d.walletsDelta >= 0) {
+          walletsIn += d.walletsDelta;
+        } else {
+          walletsOut += -d.walletsDelta;
+        }
+      }
+
+      seenDrawer += d.drawerDelta;
+      seenWallets += d.walletsDelta;
+
+      if (inRange) {
+        drawerClosing = seenDrawer;
+        walletsClosing = seenWallets;
+        closingCaptured = true;
+      }
+    }
+
+    if (!openingCaptured) {
+      drawerOpening = seenDrawer;
+      walletsOpening = seenWallets;
+    }
+
+    if (!closingCaptured) {
+      if (range.end.isBefore(range.start)) {
+        drawerClosing = drawerOpening;
+        walletsClosing = walletsOpening;
+      } else {
+        drawerClosing = drawerOpening + drawerIn - drawerOut;
+        walletsClosing = walletsOpening + walletsIn - walletsOut;
+      }
+    }
+
+    final drawerLine = ReconciliationLine(
+      label: 'الدرج',
+      opening: drawerOpening,
+      inflow: drawerIn,
+      outflow: drawerOut,
+      expectedClosing: drawerOpening + drawerIn - drawerOut,
+      actualClosing: drawerClosing,
+    );
+
+    final walletsLine = ReconciliationLine(
+      label: 'المحافظ',
+      opening: walletsOpening,
+      inflow: walletsIn,
+      outflow: walletsOut,
+      expectedClosing: walletsOpening + walletsIn - walletsOut,
+      actualClosing: walletsClosing,
+    );
+
+    final totalLine = ReconciliationLine(
+      label: 'الإجمالي',
+      opening: drawerLine.opening + walletsLine.opening,
+      inflow: drawerLine.inflow + walletsLine.inflow,
+      outflow: drawerLine.outflow + walletsLine.outflow,
+      expectedClosing: drawerLine.expectedClosing + walletsLine.expectedClosing,
+      actualClosing: drawerLine.actualClosing + walletsLine.actualClosing,
+    );
+
+    return ReconciliationReport(
+      drawer: drawerLine,
+      wallets: walletsLine,
+      total: totalLine,
+    );
+  }
+
   static ReportData build({
     required List<Txn> txns,
     required List<Claim> claims,
@@ -182,52 +396,75 @@ class ReportCalculator {
         case 'transfer':
           transferCount++;
           profitTransfer += t.clientFee;
-          final baseAmount = t.amount - t.networkFee;
+          final sentAmount = t.amount - t.networkFee;
           if (t.mode == 'type1') {
-            addInflow('تحويل (نوع 1)', baseAmount + t.clientFee);
+            addInflow('تحويل (النوع 1)', sentAmount + t.clientFee);
+          } else if (t.mode == 'type2_v2') {
+            addInflow(
+              'تحويل (النوع 2)',
+              sentAmount + t.clientFee + t.networkFee,
+            );
           } else {
-            addInflow('تحويل (نوع 2)', baseAmount);
+            addInflow('تحويل (النوع 2 قديم)', sentAmount);
           }
           break;
+
         case 'receive':
           receiveCount++;
           profitReceive += t.clientFee;
           if (t.mode == 'cash') {
-            addOutflow('استلام (نقدي)', t.amount);
+            addOutflow('استلام (نقدي)', t.amount - t.clientFee);
           } else if (t.mode == 'deduct') {
-            addOutflow('استلام (خصم)', t.amount - t.clientFee);
+            addOutflow('استلام (خصم من المبلغ)', t.amount - t.clientFee);
           }
           break;
+
         case 'fawry_cash':
           fawryCashCount++;
           profitFawry += t.clientFee;
-          addInflow('فوري نقدي (تحصيل)', t.amount + t.clientFee);
-          addOutflow('فوري نقدي (تكلفة)', t.amount);
+          addInflow('فوري نقدي (تحصيل من العميل)', t.amount + t.clientFee);
           break;
+
         case 'fawry_credit':
           fawryCreditCount++;
           profitFawry += t.clientFee;
-          addOutflow('فوري آجل (تكلفة)', t.amount);
           break;
+
+        case 'fawry_fund_drawer':
+          addOutflow('شحن رصيد فوري من الدرج', t.amount);
+          break;
+
         case 'expense':
           expenseCount++;
           addOutflow('مصروفات', t.amount);
           break;
+
         case 'drawer_deposit':
           if (t.amount >= 0) {
-            addInflow('تمويل درج', t.amount);
+            addInflow('تعديل الدرج (إضافة)', t.amount);
           } else {
-            addOutflow('تمويل درج (سالب)', -t.amount);
+            addOutflow('تعديل الدرج (خصم)', -t.amount);
           }
           break;
+
+        case 'claim_open_receivable':
+          addOutflow('فتح مستحق لنا', t.amount);
+          break;
+
+        case 'claim_open_payable':
+          addInflow('فتح مستحق علينا', t.amount);
+          break;
+
         case 'claim_collect':
           claimCollectCount++;
-          addInflow('تحصيل مستحقات', t.amount);
+          addInflow('تحصيل مستحقات لنا', t.amount);
           break;
+
         case 'claim_pay':
           claimPayCount++;
-          addOutflow('سداد مستحقات', t.amount);
+          addOutflow('سداد مستحقات علينا', t.amount);
           break;
+
         default:
           break;
       }
@@ -266,6 +503,7 @@ class ReportCalculator {
         receivableOpen: receivableOpen,
         payableOpen: payableOpen,
       ),
+      reconciliation: _buildReconciliation(txns: txns, range: range),
     );
   }
 
@@ -275,14 +513,18 @@ class ReportCalculator {
   }) {
     bool inRange(Txn t) => range.contains(t.entryDate);
 
-    String dayKey(DateTime d) =>
-        '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    String dayKey(DateTime d) {
+      return '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    }
 
     double txnProfit(Txn t) => t.clientFee > 0 ? t.clientFee : 0;
 
     double txnVolume(Txn t) {
       switch (t.kind) {
         case 'transfer':
+          if (t.mode == 'type2_v2') {
+            return t.amount + t.clientFee;
+          }
           return t.amount - t.networkFee;
         case 'fawry_cash':
         case 'fawry_credit':

@@ -157,7 +157,13 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const BrandLogo(size: 90),
+                          Image.asset(
+                            AppBranding.logoFullAsset,
+                            width: 220,
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stackTrace) =>
+                                const BrandLogo(size: 90),
+                          ),
                           const SizedBox(height: 10),
                           Text(
                             AppBranding.nameAr,

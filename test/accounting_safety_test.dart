@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:king_wallet_accounting/data/app_db.dart';
 import 'package:king_wallet_accounting/data/app_session.dart';
+import 'package:king_wallet_accounting/data/reporting.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -21,6 +23,7 @@ void main() {
       info.deviceCode,
     );
     await db.activateWithCode(activationCode);
+    await db.resetEncryptedRestoreGuard();
     await db.resetDatabaseEmpty();
   }
 
@@ -84,7 +87,7 @@ void main() {
 
       final beforeConfirm = await db.getTreasurySnapshot();
       expect(beforeConfirm.drawerActualBalance, closeTo(0, 0.0001));
-      expect(beforeConfirm.drawerBalance, closeTo(110, 0.0001));
+      expect(beforeConfirm.drawerBalance, closeTo(0, 0.0001));
 
       await db.confirmPending(txnId);
 
@@ -126,10 +129,14 @@ void main() {
       expect(openClaims.first.amount, closeTo(1010, 0.0001));
 
       final beforeSettlement = await db.getTreasurySnapshot();
-      expect(beforeSettlement.drawerActualBalance, closeTo(-1000, 0.0001));
+      expect(beforeSettlement.drawerActualBalance, closeTo(0, 0.0001));
+      expect(beforeSettlement.fawryActualBalance, closeTo(-1000, 0.0001));
       expect(beforeSettlement.dailyProfit, closeTo(10, 0.0001));
 
-      await db.settleClaim(claimId: openClaims.first.id);
+      await db.settleClaim(
+        claimId: openClaims.first.id,
+        amount: openClaims.first.amount,
+      );
 
       final openAfterSettlement = await db.listClaims(
         type: 'receivable',
@@ -144,7 +151,9 @@ void main() {
       expect(closedAfterSettlement.first.settledTxnId, isNotNull);
 
       final afterSettlement = await db.getTreasurySnapshot();
-      expect(afterSettlement.drawerActualBalance, closeTo(10, 0.0001));
+      expect(afterSettlement.drawerActualBalance, closeTo(1010, 0.0001));
+      expect(afterSettlement.fawryActualBalance, closeTo(-1000, 0.0001));
+      expect(afterSettlement.actualTreasuryApproved, closeTo(10, 0.0001));
       expect(afterSettlement.dailyProfit, closeTo(10, 0.0001));
     },
   );
@@ -219,7 +228,7 @@ void main() {
 
       final beforeConfirm = await db.getTreasurySnapshot();
       expect(beforeConfirm.drawerActualBalance, closeTo(0, 0.0001));
-      expect(beforeConfirm.drawerBalance, closeTo(-100, 0.0001));
+      expect(beforeConfirm.drawerBalance, closeTo(0, 0.0001));
 
       await db.confirmPending(txnId);
 
@@ -230,8 +239,8 @@ void main() {
       );
 
       final afterConfirm = await db.getTreasurySnapshot();
-      expect(afterConfirm.drawerActualBalance, closeTo(-100, 0.0001));
-      expect(afterConfirm.drawerBalance, closeTo(-100, 0.0001));
+      expect(afterConfirm.drawerActualBalance, closeTo(-90, 0.0001));
+      expect(afterConfirm.drawerBalance, closeTo(-90, 0.0001));
       expect(afterConfirm.dailyProfit, closeTo(10, 0.0001));
     },
   );
@@ -327,8 +336,708 @@ void main() {
     final openClaims = await db.listClaims(type: 'receivable', status: 'open');
     expect(openClaims.length, 1);
 
-    await db.settleClaim(claimId: openClaims.first.id);
+    await db.settleClaim(
+      claimId: openClaims.first.id,
+      amount: openClaims.first.amount,
+    );
 
     expect(() => db.rollbackPosted(fawryTxnId), throwsException);
+  });
+
+  test('external funding rejects unknown wallet id', () async {
+    final db = AppDb.instance;
+
+    expect(
+      () => db.addExternalFunding(walletId: 999999, amount: 10),
+      throwsException,
+    );
+  });
+
+  test('receive rejects unknown wallet id', () async {
+    final db = AppDb.instance;
+
+    expect(
+      () => db.addReceive(
+        walletId: 999999,
+        amount: 10,
+        commission: 1,
+        receiveType: 'cash',
+        isPending: true,
+      ),
+      throwsException,
+    );
+  });
+
+  test('transfer type2_v2 uses deducted-send math', () async {
+    final db = AppDb.instance;
+
+    final walletId = await db.addWallet(
+      name: 'Type2 Wallet',
+      phone: '01011112222',
+      openingBalance: 2000,
+    );
+
+    final txnId = await db.addTransfer(
+      walletId: walletId,
+      amount: 1000,
+      clientFee: 4,
+      networkFee: 1,
+      transferType: 'type2',
+      isPending: false,
+      note: 'type2 new math',
+    );
+    expect(txnId, greaterThan(0));
+
+    // Wallet spend = amount - CF = 996
+    expect(await db.getWalletBalance(walletId), closeTo(1004, 0.0001));
+    expect(await db.getWalletAvailableBalance(walletId), closeTo(1004, 0.0001));
+
+    final snap = await db.getTreasurySnapshot();
+    // Drawer inflow = customer-paid amount = 1000
+    expect(snap.drawerActualBalance, closeTo(1000, 0.0001));
+    expect(snap.drawerBalance, closeTo(1000, 0.0001));
+    expect(snap.dailyProfit, closeTo(4, 0.0001));
+  });
+
+  test('rollback supports posted transfer and receive safely', () async {
+    final db = AppDb.instance;
+
+    final walletId = await db.addWallet(
+      name: 'Rollback Wallet',
+      phone: '01080808080',
+      openingBalance: 1000,
+    );
+
+    final transferId = await db.addTransfer(
+      walletId: walletId,
+      amount: 100,
+      clientFee: 10,
+      networkFee: 2,
+      transferType: 'type1',
+      isPending: false,
+      note: 'rollback transfer',
+    );
+    final receiveId = await db.addReceive(
+      walletId: walletId,
+      amount: 50,
+      commission: 5,
+      receiveType: 'cash',
+      isPending: false,
+      note: 'rollback receive',
+    );
+
+    var snap = await db.getTreasurySnapshot();
+    expect(await db.getWalletBalance(walletId), closeTo(948, 0.0001));
+    expect(snap.drawerActualBalance, closeTo(65, 0.0001));
+    expect(snap.profitApprovedTotal, closeTo(15, 0.0001));
+
+    await db.rollbackPosted(receiveId);
+    snap = await db.getTreasurySnapshot();
+    expect(await db.getWalletBalance(walletId), closeTo(898, 0.0001));
+    expect(snap.drawerActualBalance, closeTo(110, 0.0001));
+    expect(snap.profitApprovedTotal, closeTo(10, 0.0001));
+
+    await db.rollbackPosted(transferId);
+    snap = await db.getTreasurySnapshot();
+    expect(await db.getWalletBalance(walletId), closeTo(1000, 0.0001));
+    expect(snap.drawerActualBalance, closeTo(0, 0.0001));
+    expect(snap.profitApprovedTotal, closeTo(0, 0.0001));
+
+    final txs = await db.listTxns();
+    final transferTxn = txs.firstWhere((t) => t.id == transferId);
+    final receiveTxn = txs.firstWhere((t) => t.id == receiveId);
+    expect(transferTxn.status, 'rolled_back');
+    expect(receiveTxn.status, 'rolled_back');
+  });
+
+  test('manual daily/monthly usage reset affects limits only', () async {
+    final db = AppDb.instance;
+
+    final walletId = await db.addWallet(
+      name: 'Usage Reset Wallet',
+      phone: '01044445555',
+      openingBalance: 5000,
+    );
+
+    await db.addTransfer(
+      walletId: walletId,
+      amount: 1000,
+      clientFee: 10,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: false,
+      note: 'usage before reset',
+    );
+
+    var usage = await db.getWalletLimitUsage();
+    expect(usage[walletId], isNotNull);
+    expect(usage[walletId]!.dailyUsed, closeTo(1000, 0.0001));
+    expect(usage[walletId]!.monthlyUsed, closeTo(1000, 0.0001));
+
+    final beforeBalance = await db.getWalletBalance(walletId);
+    await db.resetWalletDailyUsage(walletId);
+
+    usage = await db.getWalletLimitUsage();
+    expect(usage[walletId]!.dailyUsed, closeTo(0, 0.0001));
+    expect(usage[walletId]!.monthlyUsed, closeTo(1000, 0.0001));
+    expect(await db.getWalletBalance(walletId), closeTo(beforeBalance, 0.0001));
+
+    await db.addTransfer(
+      walletId: walletId,
+      amount: 300,
+      clientFee: 3,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: false,
+      note: 'usage after daily reset',
+    );
+
+    usage = await db.getWalletLimitUsage();
+    expect(usage[walletId]!.dailyUsed, closeTo(300, 0.0001));
+    expect(usage[walletId]!.monthlyUsed, closeTo(1300, 0.0001));
+
+    await db.resetWalletMonthlyUsage(walletId);
+    usage = await db.getWalletLimitUsage();
+    expect(usage[walletId]!.monthlyUsed, closeTo(0, 0.0001));
+    expect(usage[walletId]!.dailyUsed, closeTo(300, 0.0001));
+  });
+
+  test('bulk daily/monthly usage reset works for all wallets', () async {
+    final db = AppDb.instance;
+
+    final w1 = await db.addWallet(
+      name: 'Bulk Reset Wallet 1',
+      phone: '01014141414',
+      openingBalance: 3000,
+    );
+    final w2 = await db.addWallet(
+      name: 'Bulk Reset Wallet 2',
+      phone: '01115151515',
+      openingBalance: 3000,
+    );
+
+    await db.addTransfer(
+      walletId: w1,
+      amount: 400,
+      clientFee: 4,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: false,
+    );
+    await db.addTransfer(
+      walletId: w2,
+      amount: 700,
+      clientFee: 7,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: false,
+    );
+
+    var usage = await db.getWalletLimitUsage();
+    expect(usage[w1]!.dailyUsed, closeTo(400, 0.0001));
+    expect(usage[w2]!.dailyUsed, closeTo(700, 0.0001));
+    expect(usage[w1]!.monthlyUsed, closeTo(400, 0.0001));
+    expect(usage[w2]!.monthlyUsed, closeTo(700, 0.0001));
+
+    final bal1 = await db.getWalletBalance(w1);
+    final bal2 = await db.getWalletBalance(w2);
+
+    await db.resetAllWalletDailyUsage();
+    usage = await db.getWalletLimitUsage();
+    expect(usage[w1]!.dailyUsed, closeTo(0, 0.0001));
+    expect(usage[w2]!.dailyUsed, closeTo(0, 0.0001));
+    expect(usage[w1]!.monthlyUsed, closeTo(400, 0.0001));
+    expect(usage[w2]!.monthlyUsed, closeTo(700, 0.0001));
+    expect(await db.getWalletBalance(w1), closeTo(bal1, 0.0001));
+    expect(await db.getWalletBalance(w2), closeTo(bal2, 0.0001));
+
+    await db.resetAllWalletMonthlyUsage();
+    usage = await db.getWalletLimitUsage();
+    expect(usage[w1]!.monthlyUsed, closeTo(0, 0.0001));
+    expect(usage[w2]!.monthlyUsed, closeTo(0, 0.0001));
+  });
+
+  test('reconciliation report equation is balanced', () async {
+    final db = AppDb.instance;
+
+    final walletId = await db.addWallet(
+      name: 'Recon Wallet',
+      phone: '01122225555',
+      openingBalance: 1000,
+    );
+    await db.drawerDeposit(amount: 200, note: 'recon drawer');
+    await db.addTransfer(
+      walletId: walletId,
+      amount: 100,
+      clientFee: 10,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: false,
+    );
+    await db.addReceive(
+      walletId: walletId,
+      amount: 50,
+      commission: 5,
+      receiveType: 'cash',
+      isPending: false,
+    );
+
+    final txns = await db.listTxns();
+    final claims = await db.listClaims();
+    final now = DateTime.now();
+    final range = DateRange(
+      start: DateTime(now.year, now.month, now.day, 0, 0, 0),
+      end: DateTime(now.year, now.month, now.day, 23, 59, 59, 999),
+    );
+    final report = ReportCalculator.build(
+      txns: txns,
+      claims: claims,
+      range: range,
+    );
+
+    expect(report.reconciliation.drawer.ok, isTrue);
+    expect(report.reconciliation.wallets.ok, isTrue);
+    expect(report.reconciliation.total.ok, isTrue);
+    expect(report.reconciliation.total.diff.abs(), lessThan(0.0001));
+  });
+
+  test(
+    'treasury formulas separate claims from liquidity and include pending net correctly',
+    () async {
+      final db = AppDb.instance;
+
+      final walletId = await db.addWallet(
+        name: 'Formula Wallet',
+        phone: '01077778888',
+        openingBalance: 1000,
+      );
+
+      await db.drawerDeposit(amount: 200, note: 'seed drawer');
+      await db.addClaim(
+        type: 'receivable',
+        party: 'Client X',
+        amount: 300,
+        note: 'open receivable',
+      );
+      await db.addClaim(
+        type: 'payable',
+        party: 'Supplier Y',
+        amount: 80,
+        note: 'open payable',
+      );
+      await db.addFawry(
+        serviceName: 'Utilities',
+        reference: 'F-100',
+        amount: 500,
+        fee: 10,
+        collectionMethod: 'cash',
+        party: 'Client Cash',
+        isPending: false,
+      );
+
+      await db.addTransfer(
+        walletId: walletId,
+        amount: 100,
+        clientFee: 10,
+        networkFee: 0,
+        transferType: 'type1',
+        isPending: true,
+        note: 'pending out',
+      );
+      await db.addReceive(
+        walletId: walletId,
+        amount: 50,
+        commission: 5,
+        receiveType: 'cash',
+        isPending: true,
+        note: 'pending in',
+      );
+
+      final snap = await db.getTreasurySnapshot();
+
+      expect(snap.drawerActualBalance, closeTo(490, 0.0001));
+      expect(snap.walletsActualTotal, closeTo(1000, 0.0001));
+      expect(snap.fawryActualBalance, closeTo(-500, 0.0001));
+      expect(snap.profitApprovedTotal, closeTo(10, 0.0001));
+      expect(snap.actualTreasuryApproved, closeTo(990, 0.0001));
+
+      expect(snap.claimsReceivableOpen, closeTo(300, 0.0001));
+      expect(snap.claimsPayableOpen, closeTo(80, 0.0001));
+      expect(snap.claimsNet, closeTo(220, 0.0001));
+      expect(snap.realCapitalApproved, closeTo(1210, 0.0001));
+
+      expect(snap.pendingInflow, closeTo(50, 0.0001));
+      expect(snap.pendingOutflow, closeTo(100, 0.0001));
+      expect(snap.pendingNet, closeTo(-50, 0.0001));
+      expect(snap.availableLiquidityNow, closeTo(940, 0.0001));
+    },
+  );
+
+  test(
+    'partial claim settlement updates drawer and remaining amount correctly',
+    () async {
+      final db = AppDb.instance;
+
+      final claimId = await db.addClaim(
+        type: 'receivable',
+        party: 'Partial Client',
+        amount: 200,
+        note: 'partial test',
+      );
+
+      var snap = await db.getTreasurySnapshot();
+      expect(snap.drawerActualBalance, closeTo(-200, 0.0001));
+
+      await db.settleClaim(claimId: claimId, amount: 75);
+      var openClaims = await db.listClaims(type: 'receivable', status: 'open');
+      expect(openClaims.length, 1);
+      expect(openClaims.first.id, claimId);
+      expect(openClaims.first.amount, closeTo(125, 0.0001));
+
+      snap = await db.getTreasurySnapshot();
+      expect(snap.drawerActualBalance, closeTo(-125, 0.0001));
+      expect(snap.claimsReceivableOpen, closeTo(125, 0.0001));
+
+      await db.settleClaim(claimId: claimId, amount: 125);
+      openClaims = await db.listClaims(type: 'receivable', status: 'open');
+      final closedClaims = await db.listClaims(
+        type: 'receivable',
+        status: 'closed',
+      );
+      expect(openClaims, isEmpty);
+      expect(closedClaims.length, 1);
+      expect(closedClaims.first.id, claimId);
+
+      snap = await db.getTreasurySnapshot();
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
+      expect(snap.claimsReceivableOpen, closeTo(0, 0.0001));
+    },
+  );
+
+  test(
+    'combined pending transfer and receive affect liquidity now and post once on confirm',
+    () async {
+      final db = AppDb.instance;
+
+      final walletId = await db.addWallet(
+        name: 'Combo Pending Wallet',
+        phone: '01188889999',
+        openingBalance: 1000,
+      );
+
+      final transferPendingId = await db.addTransfer(
+        walletId: walletId,
+        amount: 100,
+        clientFee: 10,
+        networkFee: 2,
+        transferType: 'type1',
+        isPending: true,
+        note: 'combo pending transfer',
+      );
+      final receivePendingId = await db.addReceive(
+        walletId: walletId,
+        amount: 40,
+        commission: 4,
+        receiveType: 'cash',
+        isPending: true,
+        note: 'combo pending receive',
+      );
+
+      expect(await db.getWalletBalance(walletId), closeTo(1000, 0.0001));
+      expect(
+        await db.getWalletAvailableBalance(walletId),
+        closeTo(938, 0.0001),
+      );
+
+      var snap = await db.getTreasurySnapshot();
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
+      expect(snap.profitApprovedTotal, closeTo(0, 0.0001));
+      expect(snap.pendingInflow, closeTo(40, 0.0001));
+      expect(snap.pendingOutflow, closeTo(102, 0.0001));
+      expect(snap.availableLiquidityNow, closeTo(938, 0.0001));
+
+      await db.confirmPending(transferPendingId);
+
+      snap = await db.getTreasurySnapshot();
+      expect(await db.getWalletBalance(walletId), closeTo(898, 0.0001));
+      expect(
+        await db.getWalletAvailableBalance(walletId),
+        closeTo(938, 0.0001),
+      );
+      expect(snap.drawerActualBalance, closeTo(110, 0.0001));
+      expect(snap.profitApprovedTotal, closeTo(10, 0.0001));
+      expect(snap.pendingInflow, closeTo(40, 0.0001));
+      expect(snap.pendingOutflow, closeTo(0, 0.0001));
+
+      await db.confirmPending(receivePendingId);
+
+      snap = await db.getTreasurySnapshot();
+      expect(await db.getWalletBalance(walletId), closeTo(938, 0.0001));
+      expect(
+        await db.getWalletAvailableBalance(walletId),
+        closeTo(938, 0.0001),
+      );
+      expect(snap.drawerActualBalance, closeTo(74, 0.0001));
+      expect(snap.profitApprovedTotal, closeTo(14, 0.0001));
+      expect(snap.pendingInflow, closeTo(0, 0.0001));
+      expect(snap.pendingOutflow, closeTo(0, 0.0001));
+      expect(snap.actualTreasuryApproved, closeTo(1012, 0.0001));
+      expect(snap.availableLiquidityNow, closeTo(1012, 0.0001));
+    },
+  );
+
+  test('audit hash chain is generated and valid', () async {
+    final db = AppDb.instance;
+
+    await db.addWallet(
+      name: 'Audit Wallet',
+      phone: '01033334444',
+      openingBalance: 100,
+    );
+    await db.addExpense(amount: 10, category: 'test', note: 'audit check');
+
+    final chain = await db.verifyAuditChain();
+    expect(chain.ok, isTrue);
+    expect(chain.count, greaterThan(0));
+    expect(chain.tailHash, isNotNull);
+  });
+
+  test('encrypted backup export and restore works with passphrase', () async {
+    final db = AppDb.instance;
+
+    await db.addWallet(
+      name: 'Encrypted Backup Wallet',
+      phone: '01055556666',
+      openingBalance: 321,
+    );
+
+    const passphrase = 'strong-pass-123';
+    final backupPath = await db.exportEncryptedJsonBackupToPath(
+      directoryPath: supportDir.path,
+      passphrase: passphrase,
+    );
+    expect(File(backupPath).existsSync(), isTrue);
+
+    await db.resetDatabaseEmpty();
+    expect(await db.listWallets(), isEmpty);
+
+    await db.restoreEncryptedJsonBackupFromPath(
+      path: backupPath,
+      passphrase: passphrase,
+    );
+    final wallets = await db.listWallets();
+    expect(wallets.isNotEmpty, isTrue);
+    expect(wallets.any((w) => w.name == 'Encrypted Backup Wallet'), isTrue);
+  });
+
+  test(
+    'encrypted restore locks after three failed passphrase attempts',
+    () async {
+      final db = AppDb.instance;
+
+      await db.addWallet(
+        name: 'Lock Guard Wallet',
+        phone: '01099990000',
+        openingBalance: 123,
+      );
+
+      const passphrase = 'lock-pass-123';
+      final backupPath = await db.exportEncryptedJsonBackupToPath(
+        directoryPath: supportDir.path,
+        passphrase: passphrase,
+      );
+
+      Future<void> wrongTry() async {
+        await db.restoreEncryptedJsonBackupFromPath(
+          path: backupPath,
+          passphrase: 'wrong-pass',
+        );
+      }
+
+      await expectLater(wrongTry(), throwsException);
+      await expectLater(wrongTry(), throwsException);
+      await expectLater(wrongTry(), throwsException);
+
+      final status = await db.getEncryptedRestoreStatus();
+      expect(status.locked, isTrue);
+      expect(status.remainingAttempts, 0);
+    },
+  );
+
+  test('empty reset stays empty after backup restore cycle', () async {
+    final db = AppDb.instance;
+
+    await db.resetDatabaseEmpty();
+    expect(await db.listWallets(), isEmpty);
+
+    final backupPath = await db.exportBackupToPath(supportDir.path);
+    await db.restoreBackupFromPath(backupPath);
+
+    final wallets = await db.listWallets();
+    expect(wallets, isEmpty);
+  });
+
+  test('db backup restore keeps data after empty reset', () async {
+    final db = AppDb.instance;
+    final walletId = await db.addWallet(
+      name: 'DB Restore Wallet',
+      phone: '01022223333',
+      openingBalance: 150,
+    );
+    await db.addExternalFunding(walletId: walletId, amount: 25, note: 'test');
+
+    final backupPath = await db.exportBackupToPath(supportDir.path);
+    await db.resetDatabaseEmpty();
+    expect(await db.listWallets(), isEmpty);
+
+    await db.restoreBackupFromPath(backupPath);
+    final wallets = await db.listWallets();
+    expect(wallets.any((w) => w.name == 'DB Restore Wallet'), isTrue);
+    expect(await db.getWalletBalance(walletId), closeTo(175, 0.0001));
+  });
+
+  test('json backup restore keeps data after empty reset', () async {
+    final db = AppDb.instance;
+    final walletId = await db.addWallet(
+      name: 'JSON Restore Wallet',
+      phone: '01133334444',
+      openingBalance: 200,
+    );
+
+    final backupPath = await db.exportJsonBackupToPath(supportDir.path);
+    await db.resetDatabaseEmpty();
+    expect(await db.listWallets(), isEmpty);
+
+    await db.restoreJsonBackupFromPath(backupPath);
+    final wallets = await db.listWallets();
+    expect(wallets.any((w) => w.name == 'JSON Restore Wallet'), isTrue);
+    expect(await db.getWalletBalance(walletId), closeTo(200, 0.0001));
+  });
+
+  test('json restore auto-repairs duplicated ids before persisting', () async {
+    final db = AppDb.instance;
+    final walletId = await db.addWallet(
+      name: 'Dup Repair Wallet',
+      phone: '01044445555',
+      openingBalance: 120,
+    );
+    await db.addTransfer(
+      walletId: walletId,
+      amount: 100,
+      clientFee: 4,
+      networkFee: 1,
+      transferType: 'type1',
+    );
+
+    final backupPath = await db.exportJsonBackupToPath(supportDir.path);
+    final raw = await File(backupPath).readAsString();
+    final j = jsonDecode(raw) as Map<String, dynamic>;
+
+    final wallets = (j['wallets'] as List<dynamic>).cast<Map<String, dynamic>>();
+    final txns = (j['txns'] as List<dynamic>).cast<Map<String, dynamic>>();
+    wallets.add(Map<String, dynamic>.from(wallets.first));
+    txns.add(Map<String, dynamic>.from(txns.first));
+
+    j['nextWalletId'] = 1;
+    j['nextTxnId'] = 1;
+    j['nextClaimId'] = 1;
+    j['nextCloseId'] = 1;
+
+    final brokenPath =
+        '${supportDir.path}${Platform.pathSeparator}dup_ids_restore.json';
+    await File(brokenPath).writeAsString(jsonEncode(j));
+
+    await db.resetDatabaseEmpty();
+    await db.restoreJsonBackupFromPath(brokenPath);
+
+    final repairedWallets = await db.listWallets();
+    expect(repairedWallets.map((w) => w.id).toSet().length, repairedWallets.length);
+    final txnsAfter = await db.listTxns();
+    expect(txnsAfter.map((t) => t.id).toSet().length, txnsAfter.length);
+
+    final integrity = await db.runIntegrityCheck(force: true);
+    expect(integrity.ok, isTrue);
+    expect(integrity.issues, isEmpty);
+  });
+
+  test('duplicate repair is a no-op on clean data', () async {
+    final db = AppDb.instance;
+
+    await db.addWallet(
+      name: 'Repair Clean Wallet',
+      phone: '01012349876',
+      openingBalance: 100,
+    );
+
+    final result = await db.repairDuplicateIntegrityIssues(
+      createJsonBackup: false,
+    );
+    expect(result.changed, isFalse);
+    expect(result.after.ok, isTrue);
+    expect(result.after.issues, isEmpty);
+  });
+
+  test('reset with seed stays deterministic across repeated runs', () async {
+    final db = AppDb.instance;
+
+    await db.resetDatabase();
+    var wallets = await db.listWallets();
+    expect(wallets.length, 2);
+    expect(wallets.map((w) => w.id).toSet().length, 2);
+    expect(wallets.map((w) => w.id).toSet(), {1, 2});
+
+    await db.resetDatabase();
+    wallets = await db.listWallets();
+    expect(wallets.length, 2);
+    expect(wallets.map((w) => w.id).toSet().length, 2);
+    expect(wallets.map((w) => w.id).toSet(), {1, 2});
+
+    final integrity = await db.runIntegrityCheck(force: true);
+    expect(integrity.ok, isTrue);
+    expect(integrity.issues, isEmpty);
+  });
+
+  test('json restore with missing next ids still allocates unique ids', () async {
+    final db = AppDb.instance;
+
+    await db.addWallet(
+      name: 'Restore Counter A',
+      phone: '01011111111',
+      openingBalance: 50,
+    );
+    await db.addWallet(
+      name: 'Restore Counter B',
+      phone: '01022222222',
+      openingBalance: 75,
+    );
+
+    final backupPath = await db.exportJsonBackupToPath(supportDir.path);
+    final raw = await File(backupPath).readAsString();
+    final j = jsonDecode(raw) as Map<String, dynamic>;
+    j.remove('nextWalletId');
+    j.remove('nextTxnId');
+    j.remove('nextClaimId');
+    j.remove('nextCloseId');
+    final brokenPath =
+        '${supportDir.path}${Platform.pathSeparator}broken_restore.json';
+    await File(brokenPath).writeAsString(jsonEncode(j));
+
+    await db.resetDatabaseEmpty();
+    await db.restoreJsonBackupFromPath(brokenPath);
+
+    final before = await db.listWallets();
+    final maxId = before.map((w) => w.id).reduce((a, b) => a > b ? a : b);
+    final newId = await db.addWallet(
+      name: 'Restore Counter C',
+      phone: '01033333333',
+      openingBalance: 10,
+    );
+    expect(newId, greaterThan(maxId));
+
+    final after = await db.listWallets();
+    expect(after.map((w) => w.id).toSet().length, after.length);
+    final integrity = await db.runIntegrityCheck(force: true);
+    expect(integrity.ok, isTrue);
+    expect(integrity.issues, isEmpty);
   });
 }
