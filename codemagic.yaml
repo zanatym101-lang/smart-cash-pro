@@ -24,12 +24,11 @@ workflows:
       - name: Prepare Android signing config
         script: |
           if [ -n "$CM_KEYSTORE_PATH" ] && [ -n "$CM_KEYSTORE_PASSWORD" ] && [ -n "$CM_KEY_ALIAS" ] && [ -n "$CM_KEY_PASSWORD" ]; then
-            cat > android/key.properties <<EOF
-            storePassword=$CM_KEYSTORE_PASSWORD
-            keyPassword=$CM_KEY_PASSWORD
-            keyAlias=$CM_KEY_ALIAS
-            storeFile=$CM_KEYSTORE_PATH
-            EOF
+            printf "storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=%s\n" \
+              "$CM_KEYSTORE_PASSWORD" \
+              "$CM_KEY_PASSWORD" \
+              "$CM_KEY_ALIAS" \
+              "$CM_KEYSTORE_PATH" > android/key.properties
             echo "Android signing is configured from Codemagic keystore."
           else
             echo "Codemagic keystore env vars are missing; build will use fallback signing."
