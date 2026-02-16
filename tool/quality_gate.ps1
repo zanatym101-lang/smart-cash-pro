@@ -10,10 +10,11 @@ Write-Host "==> flutter test --coverage"
 flutter test --coverage
 
 Write-Host "==> coverage summary"
+$minEffective = if ($env:COVERAGE_MIN_EFFECTIVE) { $env:COVERAGE_MIN_EFFECTIVE } else { "38.0" }
 if (Get-Command python -ErrorAction SilentlyContinue) {
-  python tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json
+  python tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json --min-effective $minEffective
 } elseif (Get-Command py -ErrorAction SilentlyContinue) {
-  py -3 tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json
+  py -3 tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json --min-effective $minEffective
 } else {
   Write-Warning "Python not found; skipping coverage summary generation."
 }
