@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:excel/excel.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/widgets.dart' as pw;
@@ -63,6 +64,33 @@ class ReportExporter {
   static pw.Font? _pdfBaseFont;
   static pw.Font? _pdfBoldFont;
   static Future<void>? _fontLoadFuture;
+  static Future<pw.Document> Function()? _pdfDocumentFactoryOverride;
+  static Future<Directory> Function()? _exportDirOverride;
+  static DateTime Function()? _nowProviderOverride;
+  static List<int>? Function(Excel excel)? _excelEncodeOverride;
+
+  @visibleForTesting
+  static void setTestOverrides({
+    Future<pw.Document> Function()? pdfDocumentFactory,
+    Future<Directory> Function()? exportDirResolver,
+    DateTime Function()? nowProvider,
+    List<int>? Function(Excel excel)? excelEncode,
+  }) {
+    _pdfDocumentFactoryOverride = pdfDocumentFactory;
+    _exportDirOverride = exportDirResolver;
+    _nowProviderOverride = nowProvider;
+    _excelEncodeOverride = excelEncode;
+  }
+
+  @visibleForTesting
+  static void resetTestOverrides() {
+    _pdfDocumentFactoryOverride = null;
+    _exportDirOverride = null;
+    _nowProviderOverride = null;
+    _excelEncodeOverride = null;
+  }
+
+  static DateTime _now() => _nowProviderOverride?.call() ?? DateTime.now();
 
   static Future<void> _ensurePdfFonts() {
     if (_pdfBaseFont != null && _pdfBoldFont != null) {
@@ -80,6 +108,10 @@ class ReportExporter {
   }
 
   static Future<pw.Document> _newPdfDocument() async {
+    final overrideFactory = _pdfDocumentFactoryOverride;
+    if (overrideFactory != null) {
+      return overrideFactory();
+    }
     await _ensurePdfFonts();
     return pw.Document(
       theme: pw.ThemeData.withFont(base: _pdfBaseFont!, bold: _pdfBoldFont!),
@@ -114,6 +146,10 @@ class ReportExporter {
   }
 
   static Future<Directory> _exportDir() async {
+    final resolver = _exportDirOverride;
+    if (resolver != null) {
+      return resolver();
+    }
     final downloads = await getDownloadsDirectory();
     if (downloads != null) return downloads;
     return getApplicationSupportDirectory();
@@ -387,7 +423,10 @@ class ReportExporter {
     final dir = await _exportDir();
     final name = _fileName('report', range, 'xlsx');
     final file = File('${dir.path}/$name');
-    final bytes = excel.encode();
+    final encodeOverride = _excelEncodeOverride;
+    final bytes = encodeOverride != null
+        ? encodeOverride(excel)
+        : excel.encode();
     if (bytes == null) {
       throw Exception(
         '\u0641\u0634\u0644 \u062a\u0635\u062f\u064a\u0631 Excel',
@@ -529,7 +568,7 @@ class ReportExporter {
     );
 
     final dir = await _exportDir();
-    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final stamp = _now().millisecondsSinceEpoch;
     final file = File('${dir.path}/customer_report_$stamp.pdf');
     await file.writeAsBytes(await doc.save(), flush: true);
     return file.path;
@@ -581,9 +620,12 @@ class ReportExporter {
     }
 
     final dir = await _exportDir();
-    final stamp = DateTime.now().millisecondsSinceEpoch;
+    final stamp = _now().millisecondsSinceEpoch;
     final file = File('${dir.path}/customer_report_$stamp.xlsx');
-    final bytes = excel.encode();
+    final encodeOverride = _excelEncodeOverride;
+    final bytes = encodeOverride != null
+        ? encodeOverride(excel)
+        : excel.encode();
     if (bytes == null) throw Exception('Failed to export customer Excel');
     await file.writeAsBytes(bytes, flush: true);
     return file.path;
