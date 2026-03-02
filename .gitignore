@@ -58,3 +58,18 @@ temp_*.jpeg
 qa/sauce/node_modules/
 qa/sauce/package-lock.json
 qa/health/*.txt
+# Firebase Functions local deps
+functions/node_modules/
+functions/.firebase/
+# temp artifacts
+/temp/
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.mp4
+
+# local build outputs
+/build/
+/dist/
+/coverage/

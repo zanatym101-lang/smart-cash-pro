@@ -246,6 +246,73 @@ void main() {
   );
 
   test(
+    'pending receive balance can be consumed while transfer stays pending until confirm',
+    () async {
+      final db = AppDb.instance;
+
+      final walletId = await db.addWallet(
+        name: 'Pending Flow Wallet',
+        phone: '01044445555',
+        openingBalance: 0,
+      );
+
+      await db.addReceive(
+        walletId: walletId,
+        amount: 100,
+        commission: 0,
+        receiveType: 'cash',
+        isPending: true,
+        note: 'pending receive',
+      );
+
+      expect(await db.getWalletBalance(walletId), closeTo(0, 0.0001));
+      expect(
+        await db.getWalletAvailableBalance(walletId),
+        closeTo(100, 0.0001),
+      );
+
+      final postedRequestId = await db.addTransfer(
+        walletId: walletId,
+        amount: 100,
+        clientFee: 0,
+        networkFee: 0,
+        transferType: 'type1',
+        isPending: false,
+        note: 'immediate transfer against pending receive',
+      );
+
+      final requestedTxn = (await db.listTxns()).firstWhere(
+        (t) => t.id == postedRequestId,
+      );
+      expect(requestedTxn.status, 'pending');
+      expect(await db.getWalletBalance(walletId), closeTo(0, 0.0001));
+      expect(await db.getWalletAvailableBalance(walletId), closeTo(0, 0.0001));
+
+      await db.addReceive(
+        walletId: walletId,
+        amount: 100,
+        commission: 0,
+        receiveType: 'cash',
+        isPending: true,
+        note: 'pending receive for pending transfer',
+      );
+
+      await db.addTransfer(
+        walletId: walletId,
+        amount: 100,
+        clientFee: 0,
+        networkFee: 0,
+        transferType: 'type1',
+        isPending: true,
+        note: 'pending transfer against pending receive',
+      );
+
+      expect(await db.getWalletBalance(walletId), closeTo(0, 0.0001));
+      expect(await db.getWalletAvailableBalance(walletId), closeTo(0, 0.0001));
+    },
+  );
+
+  test(
     'daily close is single-use per date and new transactions move to next day',
     () async {
       final db = AppDb.instance;
@@ -864,6 +931,77 @@ void main() {
     },
   );
 
+  test(
+    'admin PIN locks after repeated failures and resets after success',
+    () async {
+      final db = AppDb.instance;
+
+      await db.setAdminPin('1234');
+      for (var i = 0; i < 5; i++) {
+        final ok = await db.verifyAdminPin('0000');
+        expect(ok, isFalse);
+      }
+
+      var status = await db.getAdminPinStatus();
+      expect(status.locked, isTrue);
+      expect(status.remainingAttempts, 0);
+      expect(await db.verifyAdminPin('1234'), isFalse);
+
+      await db.setAdminPin('1234');
+      status = await db.getAdminPinStatus();
+      expect(status.locked, isFalse);
+      expect(status.remainingAttempts, 5);
+      expect(await db.verifyAdminPin('1234'), isTrue);
+    },
+  );
+
+  test(
+    'json restore fails when checksum sidecar exists and is mismatched',
+    () async {
+      final db = AppDb.instance;
+
+      await db.addWallet(
+        name: 'Checksum Wallet',
+        phone: '01191919191',
+        openingBalance: 77,
+      );
+
+      final backupPath = await db.exportJsonBackupToPath(supportDir.path);
+      final backupFile = File(backupPath);
+      await backupFile.writeAsString(
+        '${await backupFile.readAsString()}\n',
+        flush: true,
+      );
+
+      await db.resetDatabaseEmpty();
+      expect(() => db.restoreJsonBackupFromPath(backupPath), throwsException);
+    },
+  );
+
+  test(
+    'json restore keeps backward compatibility when checksum sidecar is absent',
+    () async {
+      final db = AppDb.instance;
+
+      await db.addWallet(
+        name: 'Legacy Restore Wallet',
+        phone: '01192929292',
+        openingBalance: 88,
+      );
+
+      final backupPath = await db.exportJsonBackupToPath(supportDir.path);
+      final sidecar = File('$backupPath.sha256');
+      if (sidecar.existsSync()) {
+        sidecar.deleteSync();
+      }
+
+      await db.resetDatabaseEmpty();
+      await db.restoreJsonBackupFromPath(backupPath);
+      final wallets = await db.listWallets();
+      expect(wallets.any((w) => w.name == 'Legacy Restore Wallet'), isTrue);
+    },
+  );
+
   test('empty reset stays empty after backup restore cycle', () async {
     final db = AppDb.instance;
 
@@ -933,7 +1071,8 @@ void main() {
     final raw = await File(backupPath).readAsString();
     final j = jsonDecode(raw) as Map<String, dynamic>;
 
-    final wallets = (j['wallets'] as List<dynamic>).cast<Map<String, dynamic>>();
+    final wallets = (j['wallets'] as List<dynamic>)
+        .cast<Map<String, dynamic>>();
     final txns = (j['txns'] as List<dynamic>).cast<Map<String, dynamic>>();
     wallets.add(Map<String, dynamic>.from(wallets.first));
     txns.add(Map<String, dynamic>.from(txns.first));
@@ -951,7 +1090,10 @@ void main() {
     await db.restoreJsonBackupFromPath(brokenPath);
 
     final repairedWallets = await db.listWallets();
-    expect(repairedWallets.map((w) => w.id).toSet().length, repairedWallets.length);
+    expect(
+      repairedWallets.map((w) => w.id).toSet().length,
+      repairedWallets.length,
+    );
     final txnsAfter = await db.listTxns();
     expect(txnsAfter.map((t) => t.id).toSet().length, txnsAfter.length);
 
@@ -997,47 +1139,50 @@ void main() {
     expect(integrity.issues, isEmpty);
   });
 
-  test('json restore with missing next ids still allocates unique ids', () async {
-    final db = AppDb.instance;
+  test(
+    'json restore with missing next ids still allocates unique ids',
+    () async {
+      final db = AppDb.instance;
 
-    await db.addWallet(
-      name: 'Restore Counter A',
-      phone: '01011111111',
-      openingBalance: 50,
-    );
-    await db.addWallet(
-      name: 'Restore Counter B',
-      phone: '01022222222',
-      openingBalance: 75,
-    );
+      await db.addWallet(
+        name: 'Restore Counter A',
+        phone: '01011111111',
+        openingBalance: 50,
+      );
+      await db.addWallet(
+        name: 'Restore Counter B',
+        phone: '01022222222',
+        openingBalance: 75,
+      );
 
-    final backupPath = await db.exportJsonBackupToPath(supportDir.path);
-    final raw = await File(backupPath).readAsString();
-    final j = jsonDecode(raw) as Map<String, dynamic>;
-    j.remove('nextWalletId');
-    j.remove('nextTxnId');
-    j.remove('nextClaimId');
-    j.remove('nextCloseId');
-    final brokenPath =
-        '${supportDir.path}${Platform.pathSeparator}broken_restore.json';
-    await File(brokenPath).writeAsString(jsonEncode(j));
+      final backupPath = await db.exportJsonBackupToPath(supportDir.path);
+      final raw = await File(backupPath).readAsString();
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      j.remove('nextWalletId');
+      j.remove('nextTxnId');
+      j.remove('nextClaimId');
+      j.remove('nextCloseId');
+      final brokenPath =
+          '${supportDir.path}${Platform.pathSeparator}broken_restore.json';
+      await File(brokenPath).writeAsString(jsonEncode(j));
 
-    await db.resetDatabaseEmpty();
-    await db.restoreJsonBackupFromPath(brokenPath);
+      await db.resetDatabaseEmpty();
+      await db.restoreJsonBackupFromPath(brokenPath);
 
-    final before = await db.listWallets();
-    final maxId = before.map((w) => w.id).reduce((a, b) => a > b ? a : b);
-    final newId = await db.addWallet(
-      name: 'Restore Counter C',
-      phone: '01033333333',
-      openingBalance: 10,
-    );
-    expect(newId, greaterThan(maxId));
+      final before = await db.listWallets();
+      final maxId = before.map((w) => w.id).reduce((a, b) => a > b ? a : b);
+      final newId = await db.addWallet(
+        name: 'Restore Counter C',
+        phone: '01033333333',
+        openingBalance: 10,
+      );
+      expect(newId, greaterThan(maxId));
 
-    final after = await db.listWallets();
-    expect(after.map((w) => w.id).toSet().length, after.length);
-    final integrity = await db.runIntegrityCheck(force: true);
-    expect(integrity.ok, isTrue);
-    expect(integrity.issues, isEmpty);
-  });
+      final after = await db.listWallets();
+      expect(after.map((w) => w.id).toSet().length, after.length);
+      final integrity = await db.runIntegrityCheck(force: true);
+      expect(integrity.ok, isTrue);
+      expect(integrity.issues, isEmpty);
+    },
+  );
 }

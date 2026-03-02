@@ -1,6 +1,16 @@
 part of 'app_db.dart';
 
 extension _AppDbInternal on AppDb {
+  bool _hasStatus(Txn t, String status) =>
+      t.status.trim().toLowerCase() == status;
+
+  String _txnKind(Txn t) => t.kind.trim().toLowerCase();
+
+  bool _walletPendingAffectsBalance(Txn t) {
+    final kind = _txnKind(t);
+    return kind == 'transfer' || kind == 'receive';
+  }
+
   Future<void> _closeSqlite() async {
     try {
       await _sqlite.close();
@@ -95,6 +105,7 @@ extension _AppDbInternal on AppDb {
     _nextTxnId = readCounter(j['nextTxnId'], 1);
     _nextClaimId = readCounter(j['nextClaimId'], 1);
     _nextCloseId = readCounter(j['nextCloseId'], 1);
+    _nextAttachmentId = readCounter(j['nextAttachmentId'], 1);
 
     final walletsJson = (j['wallets'] ?? []) as List<dynamic>;
     _wallets
@@ -127,6 +138,15 @@ extension _AppDbInternal on AppDb {
       ..clear()
       ..addAll(
         recentJson.map((e) => RecentNumber.fromJson(e as Map<String, dynamic>)),
+      );
+
+    final attachmentsJson = (j['customerAttachments'] ?? []) as List<dynamic>;
+    _customerAttachments
+      ..clear()
+      ..addAll(
+        attachmentsJson.map(
+          (e) => CustomerAttachment.fromJson(e as Map<String, dynamic>),
+        ),
       );
 
     _lastPendingAlertDate = (j['lastPendingAlertDate'] as String?)?.trim();
@@ -181,10 +201,15 @@ extension _AppDbInternal on AppDb {
     for (final c in _dailyCloses) {
       if (c.id > maxCloseId) maxCloseId = c.id;
     }
+    int maxAttachmentId = 0;
+    for (final a in _customerAttachments) {
+      if (a.id > maxAttachmentId) maxAttachmentId = a.id;
+    }
     _nextWalletId = max(_nextWalletId, maxWalletId + 1);
     _nextTxnId = max(_nextTxnId, maxTxnId + 1);
     _nextClaimId = max(_nextClaimId, maxClaimId + 1);
     _nextCloseId = max(_nextCloseId, maxCloseId + 1);
+    _nextAttachmentId = max(_nextAttachmentId, maxAttachmentId + 1);
   }
 
   Future<void> _loadFromSqlite() async {
@@ -209,6 +234,20 @@ extension _AppDbInternal on AppDb {
     _nextTxnId = int.tryParse(meta['nextTxnId'] ?? '') ?? 1;
     _nextClaimId = int.tryParse(meta['nextClaimId'] ?? '') ?? 1;
     _nextCloseId = int.tryParse(meta['nextCloseId'] ?? '') ?? 1;
+    _nextAttachmentId = int.tryParse(meta['nextAttachmentId'] ?? '') ?? 1;
+
+    final attachmentsRaw = (meta['customerAttachments'] ?? '').trim();
+    _customerAttachments.clear();
+    if (attachmentsRaw.isNotEmpty) {
+      try {
+        final list = jsonDecode(attachmentsRaw) as List<dynamic>;
+        _customerAttachments.addAll(
+          list.map(
+            (e) => CustomerAttachment.fromJson(e as Map<String, dynamic>),
+          ),
+        );
+      } catch (_) {}
+    }
     int maxWalletId = 0;
     for (final w in _wallets) {
       if (w.id > maxWalletId) maxWalletId = w.id;
@@ -225,11 +264,16 @@ extension _AppDbInternal on AppDb {
     for (final c in _dailyCloses) {
       if (c.id > maxCloseId) maxCloseId = c.id;
     }
+    int maxAttachmentId = 0;
+    for (final a in _customerAttachments) {
+      if (a.id > maxAttachmentId) maxAttachmentId = a.id;
+    }
     // Safety: if meta was missing/corrupted, never reuse existing ids.
     _nextWalletId = max(_nextWalletId, maxWalletId + 1);
     _nextTxnId = max(_nextTxnId, maxTxnId + 1);
     _nextClaimId = max(_nextClaimId, maxClaimId + 1);
     _nextCloseId = max(_nextCloseId, maxCloseId + 1);
+    _nextAttachmentId = max(_nextAttachmentId, maxAttachmentId + 1);
 
     final lastPending = (meta['lastPendingAlertDate'] ?? '').trim();
     _lastPendingAlertDate = lastPending.isEmpty ? null : lastPending;
@@ -332,10 +376,12 @@ extension _AppDbInternal on AppDb {
     _claims.clear();
     _dailyCloses.clear();
     _recentNumbers.clear();
+    _customerAttachments.clear();
     _nextWalletId = 1;
     _nextTxnId = 1;
     _nextClaimId = 1;
     _nextCloseId = 1;
+    _nextAttachmentId = 1;
     _lastPendingAlertDate = null;
     _lowBalanceAlertDate.clear();
     _dailyUsageResetAt.clear();
@@ -374,10 +420,12 @@ extension _AppDbInternal on AppDb {
     _claims.clear();
     _dailyCloses.clear();
     _recentNumbers.clear();
+    _customerAttachments.clear();
     _nextWalletId = 1;
     _nextTxnId = 1;
     _nextClaimId = 1;
     _nextCloseId = 1;
+    _nextAttachmentId = 1;
     _lastPendingAlertDate = null;
     _lowBalanceAlertDate.clear();
     _dailyUsageResetAt.clear();
@@ -444,6 +492,7 @@ extension _AppDbInternal on AppDb {
       'nextTxnId': _nextTxnId.toString(),
       'nextClaimId': _nextClaimId.toString(),
       'nextCloseId': _nextCloseId.toString(),
+      'nextAttachmentId': _nextAttachmentId.toString(),
       'lastPendingAlertDate': _lastPendingAlertDate ?? '',
       'lowBalanceAlertDate': jsonEncode(
         _lowBalanceAlertDate.map((k, v) => MapEntry(k.toString(), v)),
@@ -457,6 +506,9 @@ extension _AppDbInternal on AppDb {
         _monthlyUsageResetAt.map(
           (k, v) => MapEntry(k.toString(), v.toIso8601String()),
         ),
+      ),
+      'customerAttachments': jsonEncode(
+        _customerAttachments.map((a) => a.toJson()).toList(),
       ),
     };
     try {
@@ -559,12 +611,12 @@ extension _AppDbInternal on AppDb {
       final txId = _txId(t.id);
       final spec = _specFromTxn(t);
 
-      if (t.status == 'pending') {
+      if (_hasStatus(t, 'pending')) {
         _engine.createPending(txId: txId, spec: spec, payload: t.toJson());
         continue;
       }
 
-      if (t.status == 'posted') {
+      if (_hasStatus(t, 'posted')) {
         // Use engine path to ensure validation is respected.
         _engine.createPending(txId: txId, spec: spec, payload: t.toJson());
         _engine.approve(txId: txId, spec: spec);
@@ -578,10 +630,7 @@ extension _AppDbInternal on AppDb {
   String _txId(int txnId) => 'txn:$txnId';
 
   ({int drawerQirsh, int fawryQirsh, Map<String, int> walletsQirsh})
-  _projectedBalances({
-    Txn? includeTxn,
-    int? excludeTxnId,
-  }) {
+  _projectedBalances({Txn? includeTxn, int? excludeTxnId}) {
     final wallets = <String, int>{};
     for (final w in _wallets) {
       wallets[w.id.toString()] = _state.getWalletQirsh(w.id.toString());
@@ -610,22 +659,21 @@ extension _AppDbInternal on AppDb {
         _txns
             .where(
               (t) =>
-                  t.status == 'pending' &&
+                  _hasStatus(t, 'pending') &&
                   (excludeTxnId == null || t.id != excludeTxnId),
             )
             .toList()
           ..sort((a, b) => a.entryDate.compareTo(b.entryDate));
     for (final t in pendingSorted) {
-      final walletOnly = t.kind == 'transfer' || t.kind == 'receive';
+      final walletOnly = _walletPendingAffectsBalance(t);
       // Pending projection policy:
       // - transfer/receive impact wallets only
       // - other pending kinds have no projected balance impact
       if (!walletOnly) continue;
       applyTxn(t, walletOnly: true);
     }
-    if (includeTxn != null && includeTxn.status == 'pending') {
-      final walletOnly =
-          includeTxn.kind == 'transfer' || includeTxn.kind == 'receive';
+    if (includeTxn != null && _hasStatus(includeTxn, 'pending')) {
+      final walletOnly = _walletPendingAffectsBalance(includeTxn);
       if (walletOnly) {
         applyTxn(includeTxn, walletOnly: true);
       }
@@ -743,16 +791,17 @@ extension _AppDbInternal on AppDb {
       return DrawerFundingTxSpec(amountQirsh: amtQ, note: label);
     }
 
+    if (kind == 'pending_settlement_adjust') {
+      final amtQ = Money.fromEgpDouble(t.amount);
+      final label = (t.note ?? 'تسوية تحصيل معلّق').toString();
+      return DrawerFundingTxSpec(amountQirsh: amtQ, note: label);
+    }
 
     if (kind == 'fawry_cash') {
       final amountQ = Money.fromEgpDouble(t.amount);
       final feeQ = Money.fromEgpDouble(t.clientFee);
       final label = (t.note ?? 'Fawry cash').toString();
-      return FawryCashTxSpec(
-        amountQirsh: amountQ,
-        feeQirsh: feeQ,
-        note: label,
-      );
+      return FawryCashTxSpec(amountQirsh: amountQ, feeQirsh: feeQ, note: label);
     }
 
     if (kind == 'fawry_credit') {
@@ -779,4 +828,3 @@ extension _AppDbInternal on AppDb {
     throw Exception('Unknown txn kind: $kind');
   }
 }
-

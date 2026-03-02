@@ -376,8 +376,8 @@ extension AppDbWallets on AppDb {
     final monthlyByWallet = <int, double>{};
 
     for (final t in _txns) {
-      if (t.kind != 'transfer') continue;
-      if (t.status != 'posted' && t.status != 'pending') continue;
+      if (_txnKind(t) != 'transfer') continue;
+      if (!_hasStatus(t, 'posted') && !_hasStatus(t, 'pending')) continue;
       final walletId = t.walletFromId;
       if (walletId == null) continue;
 
@@ -438,7 +438,7 @@ extension AppDbWallets on AppDb {
     final fawryBalance = Money.toEgpDouble(projected.fawryQirsh);
 
     // Pending txns count
-    final pendingCount = _txns.where((t) => t.status == 'pending').length;
+    final pendingCount = _txns.where((t) => _hasStatus(t, 'pending')).length;
     final pendingFlow = _pendingLiquidityFlowQirsh();
     final pendingInflow = Money.toEgpDouble(pendingFlow.inflowQirsh);
     final pendingOutflow = Money.toEgpDouble(pendingFlow.outflowQirsh);
@@ -506,8 +506,7 @@ extension AppDbWallets on AppDb {
         _txns
             .where(
               (t) =>
-                  t.status == 'pending' &&
-                  (t.kind == 'receive' || t.kind == 'transfer'),
+                  _hasStatus(t, 'pending') && _walletPendingAffectsBalance(t),
             )
             .toList()
           ..sort((a, b) => a.entryDate.compareTo(b.entryDate));

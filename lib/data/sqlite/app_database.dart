@@ -145,7 +145,11 @@ LazyDatabase _openConnection([String? customPath]) {
   tables: [Wallets, Txns, Claims, DailyCloses, RecentNumbers, Meta, SyncOutbox],
 )
 class AppDatabase extends _$AppDatabase {
-  AppDatabase({String? customPath}) : super(_openConnection(customPath));
+  final bool _hardenRuntimePragmas;
+
+  AppDatabase({String? customPath, bool hardenRuntimePragmas = true})
+    : _hardenRuntimePragmas = hardenRuntimePragmas,
+      super(_openConnection(customPath));
 
   @override
   int get schemaVersion => 2;
@@ -158,6 +162,15 @@ class AppDatabase extends _$AppDatabase {
     onUpgrade: (m, from, to) async {
       if (from < 2) {
         await m.createTable(syncOutbox);
+      }
+    },
+    beforeOpen: (details) async {
+      await customStatement('PRAGMA foreign_keys = ON;');
+      await customStatement('PRAGMA busy_timeout = 5000;');
+      if (_hardenRuntimePragmas) {
+        await customStatement('PRAGMA journal_mode = WAL;');
+        await customStatement('PRAGMA synchronous = NORMAL;');
+        await customStatement('PRAGMA temp_store = MEMORY;');
       }
     },
   );

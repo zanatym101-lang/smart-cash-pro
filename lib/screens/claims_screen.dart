@@ -172,7 +172,7 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
     required Claim claim,
     required String actionLabel,
   }) async {
-    final ctrl = TextEditingController(text: claim.amount.toStringAsFixed(2));
+    final ctrl = TextEditingController();
     String? error;
 
     try {

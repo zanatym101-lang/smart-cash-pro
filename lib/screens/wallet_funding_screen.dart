@@ -22,7 +22,7 @@ class _WalletFundingScreenState extends State<WalletFundingScreen> {
   List<Wallet> _wallets = [];
   int? _walletId;
 
-  final _amountCtrl = TextEditingController(text: '500');
+  final _amountCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
 
   Future<void> _load() async {
@@ -65,6 +65,13 @@ class _WalletFundingScreenState extends State<WalletFundingScreen> {
     if (wid == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('لا توجد محافظ. أضف محفظة أولاً.')),
+      );
+      return;
+    }
+
+    if (_amountCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('أدخل المبلغ')),
       );
       return;
     }

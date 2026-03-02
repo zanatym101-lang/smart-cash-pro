@@ -9,7 +9,6 @@ import 'package:path_provider/path_provider.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
-import '../models/app_settings.dart';
 import '../models/license_info.dart';
 import 'developer_gate_screen.dart';
 import 'audit_log_screen.dart';
@@ -396,7 +395,8 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
 
     setState(() => _settingsSaving = true);
     try {
-      final settings = AppSettings(
+      final existing = await AppDb.instance.getAppSettings();
+      final settings = existing.copyWith(
         businessName: _bizCtrl.text.trim(),
         currency: _currencyCtrl.text.trim(),
         dayStartHour: _dayStartHour,

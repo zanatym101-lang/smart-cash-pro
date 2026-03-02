@@ -33,12 +33,15 @@ class _TransferScreenState extends State<TransferScreen> {
 
   List<Wallet> _wallets = [];
   int? _walletId;
+  double? _walletAvailableBalance;
+  double? _walletActualBalance;
+  bool _walletBalanceLoading = false;
   List<RecentNumber> _recentNumbers = [];
   String? _selectedContactName;
 
-  final _amountCtrl = TextEditingController(text: '100');
-  final _clientFeeCtrl = TextEditingController(text: '4');
-  final _networkFeeCtrl = TextEditingController(text: '1');
+  final _amountCtrl = TextEditingController();
+  final _clientFeeCtrl = TextEditingController();
+  final _networkFeeCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
   final _partyNameCtrl = TextEditingController();
   final _customerPhoneCtrl = TextEditingController();
@@ -81,10 +84,43 @@ class _TransferScreenState extends State<TransferScreen> {
         _wallets = wallets;
         _walletId = wallets.isNotEmpty ? wallets.first.id : null;
       });
+      await _refreshSelectedWalletBalance();
       await _loadRecentNumbers();
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _refreshSelectedWalletBalance() async {
+    final walletId = _walletId;
+    if (walletId == null) {
+      if (!mounted) return;
+      setState(() {
+        _walletAvailableBalance = null;
+        _walletActualBalance = null;
+        _walletBalanceLoading = false;
+      });
+      return;
+    }
+    setState(() => _walletBalanceLoading = true);
+    try {
+      final available = await AppDb.instance.getWalletAvailableBalance(
+        walletId,
+      );
+      final actual = await AppDb.instance.getWalletBalance(walletId);
+      if (!mounted) return;
+      setState(() {
+        _walletAvailableBalance = available;
+        _walletActualBalance = actual;
+      });
+    } finally {
+      if (mounted) setState(() => _walletBalanceLoading = false);
+    }
+  }
+
+  void _onWalletChanged(int? walletId) {
+    setState(() => _walletId = walletId);
+    _refreshSelectedWalletBalance();
   }
 
   Future<void> _loadRecentNumbers() async {
@@ -273,7 +309,12 @@ class _TransferScreenState extends State<TransferScreen> {
       );
       return;
     }
-
+    if (_amountCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('أدخل المبلغ')),
+      );
+      return;
+    }
     final amt = _toDouble(_amountCtrl.text);
     final cf = _toDouble(_clientFeeCtrl.text);
     final nf = _toDouble(_networkFeeCtrl.text);
@@ -450,7 +491,20 @@ class _TransferScreenState extends State<TransferScreen> {
     }
   }
 
-  @override
+  
+  void _clearForm() {
+    _amountCtrl.clear();
+    _clientFeeCtrl.clear();
+    _networkFeeCtrl.clear();
+    _noteCtrl.clear();
+    _partyNameCtrl.clear();
+    _customerPhoneCtrl.clear();
+    _selectedContactName = null;
+    _viaPhone = false;
+    setState(() {});
+  }
+
+@override
   Widget build(BuildContext context) {
     final title = AppSession.isAdmin ? 'تحويل' : 'تحويل (كمعلقة للمستخدم)';
     final wallet = _selectedWallet();
@@ -509,15 +563,14 @@ class _TransferScreenState extends State<TransferScreen> {
                               ),
                             )
                             .toList(),
-                        onChanged: _saving
-                            ? null
-                            : (v) => setState(() => _walletId = v),
+                        onChanged: _saving ? null : _onWalletChanged,
                         decoration: const InputDecoration(
                           labelText: 'المحفظة (يُخصم منها)',
                         ),
                       ),
                       const SizedBox(height: 6),
                       _infoPill('مزوّد المحفظة: $providerName'),
+                      _walletBalanceInfo(),
                       const SizedBox(height: 12),
                       TextField(
                         controller: _partyNameCtrl,
@@ -646,6 +699,12 @@ class _TransferScreenState extends State<TransferScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _saving ? null : _clearForm,
+                  icon: const Icon(Icons.cleaning_services),
+                  label: const Text('مسح الحقول'),
+                ),
+                const SizedBox(height: 10),
                 ElevatedButton.icon(
                   onPressed: _saving ? null : _submit,
                   icon: _saving
@@ -711,6 +770,27 @@ class _TransferScreenState extends State<TransferScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _walletBalanceInfo() {
+    if (_walletId == null) return const SizedBox.shrink();
+    if (_walletBalanceLoading) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 6),
+        child: LinearProgressIndicator(minHeight: 2),
+      );
+    }
+    final available = _walletAvailableBalance;
+    final actual = _walletActualBalance;
+    if (available == null) return const SizedBox.shrink();
+    return Wrap(
+      spacing: 8,
+      runSpacing: 6,
+      children: [
+        _infoPill('الرصيد الحالي: ${available.toStringAsFixed(2)}'),
+        if (actual != null) _infoPill('المعتمد: ${actual.toStringAsFixed(2)}'),
+      ],
     );
   }
 

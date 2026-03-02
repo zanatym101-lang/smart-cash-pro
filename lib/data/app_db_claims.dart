@@ -13,6 +13,13 @@ extension AppDbClaims on AppDb {
     return buf.toString();
   }
 
+  int? _extractClaimIdFromNote(String? note) {
+    if (note == null || note.trim().isEmpty) return null;
+    final m = RegExp(r'claim_id:(\d+)').firstMatch(note);
+    if (m == null) return null;
+    return int.tryParse(m.group(1) ?? '');
+  }
+
   // ==========================
   // Claims (Receivables/Payables)
   // ==========================
@@ -201,6 +208,7 @@ extension AppDbClaims on AppDb {
     if (claim.note != null && claim.note!.trim().isNotEmpty) {
       noteParts.add(claim.note!.trim());
     }
+    noteParts.add('claim_id:${claim.id}');
 
     final txn = Txn(
       id: _nextTxnId++,
@@ -255,5 +263,102 @@ extension AppDbClaims on AppDb {
     );
     await _incrementOperationUsed();
     return txn.id;
+  }
+
+  Future<void> rollbackClaimSettlement(int txnId) async {
+    await _ensureLoaded();
+    if (!AppSession.isAdmin) {
+      throw Exception('هذا الإجراء متاح للأدمن فقط');
+    }
+
+    final txnIdx = _txns.indexWhere((t) => t.id == txnId);
+    if (txnIdx < 0) {
+      throw Exception('المعاملة غير موجودة.');
+    }
+    final txn = _txns[txnIdx];
+    if (txn.status != 'posted') {
+      throw Exception('لا يمكن حذف/تعديل هذه العملية لأنها ليست منفذة.');
+    }
+    if (txn.kind != 'claim_collect' && txn.kind != 'claim_pay') {
+      throw Exception('العملية ليست تحصيل/سداد مستحقات.');
+    }
+    _ensureNotClosed(txn.entryDate);
+
+    int? claimId = _extractClaimIdFromNote(txn.note);
+    Claim? claim;
+    if (claimId != null) {
+      final idx = _claims.indexWhere((c) => c.id == claimId);
+      if (idx >= 0) claim = _claims[idx];
+    }
+    if (claim == null) {
+      final idx = _claims.indexWhere((c) => c.settledTxnId == txnId);
+      if (idx >= 0) {
+        claim = _claims[idx];
+        claimId = claim.id;
+      }
+    }
+    if (claim == null || claimId == null) {
+      throw Exception('تعذر تحديد المستحق المرتبط بهذه العملية.');
+    }
+
+    final settlements = _txns
+        .where((t) =>
+            t.status == 'posted' &&
+            (t.kind == 'claim_collect' || t.kind == 'claim_pay') &&
+            _extractClaimIdFromNote(t.note) == claimId)
+        .toList()
+      ..sort((a, b) {
+        final c = a.entryDate.compareTo(b.entryDate);
+        if (c != 0) return c;
+        return a.id.compareTo(b.id);
+      });
+    if (settlements.isNotEmpty && settlements.last.id != txn.id) {
+      throw Exception('لا يمكن تعديل/حذف تسوية ليست الأحدث على المستحق.');
+    }
+
+    final claimIdx = _claims.indexWhere((c) => c.id == claimId);
+    if (claimIdx < 0) {
+      throw Exception('المستحق غير موجود.');
+    }
+    final current = _claims[claimIdx];
+    if (current.status == 'closed') {
+      if (current.settledTxnId != null && current.settledTxnId != txn.id) {
+        throw Exception('لا يمكن تعديل تسوية ليست الأخيرة على هذا المستحق.');
+      }
+      _claims[claimIdx] = current.copyWith(
+        status: 'open',
+        settledTxnId: null,
+        settledDate: null,
+      );
+    } else {
+      final newAmountQ = Money.fromEgpDouble(current.amount) +
+          Money.fromEgpDouble(txn.amount);
+      _claims[claimIdx] = current.copyWith(
+        amount: Money.toEgpDouble(newAmountQ),
+      );
+    }
+
+    _txns[txnIdx] = txn.copyWith(status: 'rolled_back');
+    _rebuildEngineFromTxns();
+    await _save();
+    await enqueueOutbox(
+      entity: 'claim',
+      entityId: claimId.toString(),
+      action: 'update',
+      payload: _claims[claimIdx].toJson(),
+    );
+    await enqueueOutbox(
+      entity: 'txn',
+      entityId: txn.id.toString(),
+      action: 'update',
+      payload: _txns[txnIdx].toJson(),
+    );
+    await appendAudit(
+      type: 'claim_settlement_rollback',
+      txnId: txn.id,
+      claimId: claimId,
+      amount: txn.amount,
+      note: '${current.type}:${current.party}',
+    );
   }
 }

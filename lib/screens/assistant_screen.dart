@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/app_db.dart';
 import '../models/claim.dart';
 import '../models/transaction.dart';
+import '../services/cloud_assistant_service.dart';
 import '../widgets/app_title.dart';
 
 class AssistantScreen extends StatefulWidget {
@@ -56,12 +57,24 @@ class _AssistantScreenState extends State<AssistantScreen> {
       final txns = result[1] as List<Txn>;
       final claims = result[2] as List<Claim>;
 
-      final answer = _buildAnswer(
+      final payload = _buildCloudPayload(
         question: q,
         snap: snap,
         txns: txns,
         claims: claims,
       );
+
+      String answer;
+      try {
+        answer = await CloudAssistantService.ask(payload);
+      } catch (_) {
+        answer = _buildAnswer(
+          question: q,
+          snap: snap,
+          txns: txns,
+          claims: claims,
+        );
+      }
 
       if (!mounted) return;
       setState(
@@ -77,6 +90,77 @@ class _AssistantScreenState extends State<AssistantScreen> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  String _stripTags(String? note) {
+    if (note == null || note.trim().isEmpty) return '';
+    var v = note;
+    v = v.replaceAll(RegExp(r'claim_id:\d+'), '');
+    v = v.replaceAll(RegExp(r'pending_txn:\d+'), '');
+    v = v.replaceAll(RegExp(r'\s+-\s+-+'), ' - ');
+    return v.replaceAll(RegExp(r'\s{2,}'), ' ').trim();
+  }
+
+  Map<String, dynamic> _buildCloudPayload({
+    required String question,
+    required TreasurySnapshot snap,
+    required List<Txn> txns,
+    required List<Claim> claims,
+  }) {
+    final posted = txns.where((t) => t.status == 'posted').toList()
+      ..sort((a, b) => b.entryDate.compareTo(a.entryDate));
+    final recent = posted.take(20).map((t) {
+      return {
+        'id': t.id,
+        'kind': t.kind,
+        'status': t.status,
+        'amount': t.amount,
+        'clientFee': t.clientFee,
+        'networkFee': t.networkFee,
+        'mode': t.mode,
+        'entryDate': t.entryDate.toIso8601String(),
+        'party': (t.party ?? '').trim(),
+        'note': _stripTags(t.note),
+        'reference': (t.reference ?? '').trim(),
+        'service': (t.serviceName ?? '').trim(),
+      };
+    }).toList();
+
+    final openClaims = claims.where((c) => c.status == 'open').toList();
+    final receivable = openClaims
+        .where((c) => c.type == 'receivable')
+        .fold<double>(0, (s, c) => s + c.amount);
+    final payable = openClaims
+        .where((c) => c.type == 'payable')
+        .fold<double>(0, (s, c) => s + c.amount);
+
+    return {
+      'question': question,
+      'snapshot': {
+        'availableLiquidityNow': snap.availableLiquidityNow,
+        'actualTreasuryApproved': snap.actualTreasuryApproved,
+        'realCapitalApproved': snap.realCapitalApproved,
+        'drawerActualBalance': snap.drawerActualBalance,
+        'drawerBalance': snap.drawerBalance,
+        'walletsActualTotal': snap.walletsActualTotal,
+        'walletsTotal': snap.walletsTotal,
+        'fawryActualBalance': snap.fawryActualBalance,
+        'fawryBalance': snap.fawryBalance,
+        'pendingCount': snap.pendingCount,
+        'pendingInflow': snap.pendingInflow,
+        'pendingOutflow': snap.pendingOutflow,
+        'pendingNet': snap.pendingNet,
+        'dailyProfit': snap.dailyProfit,
+        'monthlyProfit': snap.monthlyProfit,
+        'profitApprovedTotal': snap.profitApprovedTotal,
+      },
+      'claims': {
+        'openReceivable': receivable,
+        'openPayable': payable,
+        'count': openClaims.length,
+      },
+      'recentTxns': recent,
+    };
   }
 
   String _buildAnswer({

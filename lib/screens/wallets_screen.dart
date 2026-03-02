@@ -105,7 +105,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
     final lowBalCtrl = TextEditingController(
       text: (wallet?.lowBalanceThreshold ?? 0).toStringAsFixed(0),
     );
-    final openingBalanceCtrl = TextEditingController(text: '0');
+    final openingBalanceCtrl = TextEditingController(text: '');
 
     String? error;
 
@@ -194,8 +194,11 @@ class _WalletsScreenState extends State<WalletsScreen> {
                 final daily = double.tryParse(dailyCtrl.text.trim()) ?? -1;
                 final monthly = double.tryParse(monthlyCtrl.text.trim()) ?? -1;
                 final lowBal = double.tryParse(lowBalCtrl.text.trim()) ?? -1;
+                final openingBalanceText = openingBalanceCtrl.text.trim();
                 final openingBalance = wallet == null
-                    ? (double.tryParse(openingBalanceCtrl.text.trim()) ?? -1.0)
+                    ? (openingBalanceText.isEmpty
+                        ? 0.0
+                        : (double.tryParse(openingBalanceText) ?? -1.0))
                     : 0.0;
 
                 if (name.isEmpty) {
