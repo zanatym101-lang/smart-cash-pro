@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import '../widgets/app_title.dart';
 import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
@@ -21,6 +21,13 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
   final _auth = LocalAuthentication();
   bool _biometricAvailable = false;
   bool _biometricEnabled = false;
+  SecureRestoreStatus _pinStatus = const SecureRestoreStatus(
+    failedAttempts: 0,
+    maxAttempts: 5,
+    remainingAttempts: 5,
+    lockedUntil: null,
+    locked: false,
+  );
 
   @override
   void initState() {
@@ -32,19 +39,31 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
     try {
       // Ensures settings file exists (default PIN = 1234)
       await AppDb.instance.getAdminPin();
+      _pinStatus = await AppDb.instance.getAdminPinStatus();
       _biometricEnabled = await AppDb.instance.getBiometricEnabled();
       final supported = await _auth.isDeviceSupported();
       final canCheck = await _auth.canCheckBiometrics;
       _biometricAvailable = _biometricEnabled && (supported || canCheck);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('خطأ في تهيئة الدخول: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('خطأ في تهيئة الدخول: $e')));
       }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  String _minutesLabel(Duration d) {
+    final mins = d.inMinutes + ((d.inSeconds % 60) > 0 ? 1 : 0);
+    return mins <= 0 ? '1' : mins.toString();
+  }
+
+  Future<void> _refreshPinStatus() async {
+    final status = await AppDb.instance.getAdminPinStatus();
+    if (!mounted) return;
+    setState(() => _pinStatus = status);
   }
 
   @override
@@ -62,13 +81,40 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
 
   Future<void> _enterAdmin() async {
     try {
+      await _refreshPinStatus();
+      if (_pinStatus.locked && _pinStatus.lockedUntil != null) {
+        final left = _pinStatus.lockedUntil!.difference(DateTime.now());
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'تم قفل الإدخال مؤقتًا. حاول بعد ${_minutesLabel(left)} دقيقة.',
+            ),
+          ),
+        );
+        return;
+      }
+
       final ok = await AppDb.instance.verifyAdminPin(_pinCtrl.text);
+      await _refreshPinStatus();
       if (!mounted) return;
 
       if (!ok) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PIN غير صحيح')),
-        );
+        if (_pinStatus.locked && _pinStatus.lockedUntil != null) {
+          final left = _pinStatus.lockedUntil!.difference(DateTime.now());
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'تم قفل الإدخال مؤقتًا. حاول بعد ${_minutesLabel(left)} دقيقة.',
+              ),
+            ),
+          );
+        } else {
+          final remaining = _pinStatus.remainingAttempts;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('PIN غير صحيح. المتبقي: $remaining')),
+          );
+        }
         return;
       }
 
@@ -78,9 +124,9 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ أثناء التحقق من PIN: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ أثناء التحقق من PIN: $e')));
     }
   }
 
@@ -102,9 +148,9 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('تعذر استخدام البصمة: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('تعذر استخدام البصمة: $e')));
     }
   }
 
@@ -118,8 +164,14 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
           'ملاحظة: زر تجريبي أثناء التطوير.',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('تأكيد')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('تأكيد'),
+          ),
         ],
       ),
     );
@@ -128,15 +180,16 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
 
     try {
       await AppDb.instance.setAdminPin('1234');
+      await _refreshPinStatus();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم ضبط PIN إلى 1234 ✅')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم ضبط PIN إلى 1234 ✅')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('فشل إعادة التعيين: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('فشل إعادة التعيين: $e')));
     }
   }
 
@@ -167,7 +220,10 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
                           const SizedBox(height: 10),
                           Text(
                             AppBranding.nameAr,
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                           Text(
                             AppBranding.nameEn,
@@ -181,7 +237,10 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
                           const SizedBox(height: 12),
                           const Text(
                             'اختر وضع الدخول',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                           const SizedBox(height: 12),
                           ElevatedButton.icon(
@@ -221,7 +280,9 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
                             TextButton.icon(
                               onPressed: _resetPinToDefault,
                               icon: const Icon(Icons.restart_alt),
-                              label: const Text('إعادة تعيين PIN إلى 1234 (تجريبي)'),
+                              label: const Text(
+                                'إعادة تعيين PIN إلى 1234 (تجريبي)',
+                              ),
                             ),
                           ],
                         ],

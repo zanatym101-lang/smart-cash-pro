@@ -223,6 +223,9 @@ class ReportCalculator {
       case 'claim_open_payable':
         return (drawerDelta: t.amount, walletsDelta: 0);
 
+      case 'pending_settlement_adjust':
+        return (drawerDelta: t.amount, walletsDelta: 0);
+
       case 'fawry_cash':
         return (drawerDelta: t.amount + t.clientFee, walletsDelta: 0);
 
@@ -463,6 +466,14 @@ class ReportCalculator {
         case 'claim_pay':
           claimPayCount++;
           addOutflow('سداد مستحقات علينا', t.amount);
+          break;
+
+        case 'pending_settlement_adjust':
+          if (t.amount >= 0) {
+            addInflow('تسوية تحصيل معلّق', t.amount);
+          } else {
+            addOutflow('تسوية تحصيل معلّق', -t.amount);
+          }
           break;
 
         default:

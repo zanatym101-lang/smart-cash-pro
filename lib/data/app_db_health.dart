@@ -444,6 +444,7 @@ extension AppDbHealth on AppDb {
     _nextTxnId = _maxId(_txns, (t) => t.id) + 1;
     _nextClaimId = _maxId(_claims, (c) => c.id) + 1;
     _nextCloseId = _maxId(_dailyCloses, (c) => c.id) + 1;
+    _nextAttachmentId = _maxId(_customerAttachments, (a) => a.id) + 1;
 
     final validWalletIds = _wallets.map((w) => w.id).toSet();
     _lowBalanceAlertDate.removeWhere((id, _) => !validWalletIds.contains(id));

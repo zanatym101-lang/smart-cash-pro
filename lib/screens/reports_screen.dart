@@ -122,8 +122,14 @@ class _ReportsScreenState extends State<ReportsScreen> {
       final settings = await AppDb.instance.getAppSettings();
       _dayStartHour = settings.dayStartHour;
       _txns = await AppDb.instance.listTxns();
+      _txns.sort((a, b) {
+        final c = b.entryDate.compareTo(a.entryDate);
+        if (c != 0) return c;
+        return b.id.compareTo(a.id);
+      });
       _claims = await AppDb.instance.listClaims();
       _closes = await AppDb.instance.listDailyCloses();
+      _closes.sort((a, b) => b.dateKey.compareTo(a.dateKey));
       _treasury = await AppDb.instance.getTreasurySnapshot();
       _report = ReportCalculator.build(
         txns: _txns,
@@ -739,9 +745,23 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   Widget _opsTab(ReportData? report) {
     if (report == null) return const SizedBox.shrink();
+    final range = _activeRange();
+    final expenseTotal = _expenseTotalForRange(range);
+    final expenseArchive = _expenseArchiveTotal(range);
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
+        _kpiCard(
+          'إجمالي المصروفات (الفترة)',
+          expenseTotal,
+          icon: Icons.payments_outlined,
+        ),
+        _kpiCard(
+          'أرشيف المصروفات (قبل الفترة)',
+          expenseArchive,
+          icon: Icons.archive_outlined,
+        ),
+        const Divider(),
         _countTile(
           'عدد التحويلات',
           report.ops.transferCount,
@@ -964,6 +984,28 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ),
       ],
     );
+  }
+
+  double _expenseTotalForRange(DateRange range) {
+    return _txns
+        .where(
+          (t) =>
+              t.kind == 'expense' &&
+              t.status == 'posted' &&
+              range.contains(t.entryDate),
+        )
+        .fold<double>(0, (s, t) => s + t.amount);
+  }
+
+  double _expenseArchiveTotal(DateRange range) {
+    return _txns
+        .where(
+          (t) =>
+              t.kind == 'expense' &&
+              t.status == 'posted' &&
+              t.entryDate.isBefore(range.start),
+        )
+        .fold<double>(0, (s, t) => s + t.amount);
   }
 
   Widget _kpiCard(String title, double value, {IconData? icon}) {

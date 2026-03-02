@@ -33,9 +33,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
 
   List<Wallet> _wallets = [];
   int? _walletId;
+  double? _walletAvailableBalance;
+  double? _walletActualBalance;
+  bool _walletBalanceLoading = false;
 
-  final _amountCtrl = TextEditingController(text: '1000');
-  final _feeCtrl = TextEditingController(text: '10');
+  final _amountCtrl = TextEditingController();
+  final _feeCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
   final _partyCtrl = TextEditingController();
   final _partyPhoneCtrl = TextEditingController();
@@ -79,9 +82,72 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
         _wallets = wallets;
         _walletId = wallets.isNotEmpty ? wallets.first.id : null;
       });
+      await _refreshSelectedWalletBalance();
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _refreshSelectedWalletBalance() async {
+    final walletId = _walletId;
+    if (walletId == null) {
+      if (!mounted) return;
+      setState(() {
+        _walletAvailableBalance = null;
+        _walletActualBalance = null;
+        _walletBalanceLoading = false;
+      });
+      return;
+    }
+    setState(() => _walletBalanceLoading = true);
+    try {
+      final available = await AppDb.instance.getWalletAvailableBalance(walletId);
+      final actual = await AppDb.instance.getWalletBalance(walletId);
+      if (!mounted) return;
+      setState(() {
+        _walletAvailableBalance = available;
+        _walletActualBalance = actual;
+      });
+    } finally {
+      if (mounted) setState(() => _walletBalanceLoading = false);
+    }
+  }
+
+  void _onWalletChanged(int? walletId) {
+    setState(() => _walletId = walletId);
+    _refreshSelectedWalletBalance();
+  }
+
+  Widget _walletBalanceInfo() {
+    if (_walletId == null) return const SizedBox.shrink();
+    if (_walletBalanceLoading) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 6),
+        child: LinearProgressIndicator(minHeight: 2),
+      );
+    }
+    final available = _walletAvailableBalance;
+    final actual = _walletActualBalance;
+    if (available == null) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        children: [
+          Chip(
+            label: Text(
+              'الرصيد الحالي: ${available.toStringAsFixed(2)}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          if (actual != null)
+            Chip(
+              label: Text('المعتمد: ${actual.toStringAsFixed(2)}'),
+            ),
+        ],
+      ),
+    );
   }
 
   double _toDouble(String s) => double.tryParse(s.trim()) ?? 0;
@@ -285,6 +351,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
       return;
     }
 
+    if (_amountCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('أدخل المبلغ')),
+      );
+      return;
+    }
     final amt = _toDouble(_amountCtrl.text);
     final fee = _toDouble(_feeCtrl.text);
     final note = _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim();
@@ -374,7 +446,18 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     }
   }
 
-  @override
+  
+  void _clearForm() {
+    _amountCtrl.clear();
+    _feeCtrl.clear();
+    _noteCtrl.clear();
+    _partyCtrl.clear();
+    _partyPhoneCtrl.clear();
+    _selectedContactName = null;
+    setState(() {});
+  }
+
+@override
   Widget build(BuildContext context) {
     final title = AppSession.isAdmin ? 'استلام' : 'استلام (كمعلقة للمستخدم)';
 
@@ -413,11 +496,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                             .toList(),
                         onChanged: _saving
                             ? null
-                            : (v) => setState(() => _walletId = v),
+                            : _onWalletChanged,
                         decoration: const InputDecoration(
                           labelText: 'المحفظة (تزيد)',
                         ),
                       ),
+                      _walletBalanceInfo(),
                       const SizedBox(height: 10),
                       TextField(
                         controller: _partyCtrl,
@@ -500,6 +584,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _saving ? null : _clearForm,
+                  icon: const Icon(Icons.cleaning_services),
+                  label: const Text('مسح الحقول'),
+                ),
+                const SizedBox(height: 10),
                 ElevatedButton.icon(
                   onPressed: _saving ? null : _submit,
                   icon: _saving

@@ -293,6 +293,8 @@ extension AppDbAdmin on AppDb {
 
   static const String _pinFormatPrefix = 'v2';
   static const int _pinIterations = 25000;
+  static const int _adminPinMaxAttempts = 5;
+  static const int _adminPinLockMinutes = 15;
 
   String _legacyDecodePin(String stored) {
     if (!stored.startsWith('enc:')) return stored;
@@ -449,13 +451,25 @@ extension AppDbAdmin on AppDb {
       m['adminPin'] = _pinRecord('1234');
       await _writeSettingsMap(m);
     }
+    final status = await getAdminPinStatus();
+    if (status.locked) {
+      return false;
+    }
     final stored = (m['adminPin'] ?? '').toString().trim();
     final ok = _verifyPinRecord(stored, pin);
-    if (ok && !stored.startsWith('$_pinFormatPrefix:')) {
-      m['adminPin'] = _pinRecord(pin.trim());
+    if (ok) {
+      if (!stored.startsWith('$_pinFormatPrefix:')) {
+        m['adminPin'] = _pinRecord(pin.trim());
+      }
+      m['adminPinGuard'] = <String, dynamic>{
+        'failedAttempts': 0,
+        'lockedUntil': '',
+      };
       await _writeSettingsMap(m);
+      return true;
     }
-    return ok;
+    await _recordAdminPinFailure();
+    return false;
   }
 
   Future<void> setAdminPin(String newPin) async {
@@ -465,6 +479,82 @@ extension AppDbAdmin on AppDb {
     }
     final m = await _readSettingsMap();
     m['adminPin'] = _pinRecord(pin);
+    m['adminPinGuard'] = <String, dynamic>{
+      'failedAttempts': 0,
+      'lockedUntil': '',
+    };
+    await _writeSettingsMap(m);
+  }
+
+  Map<String, dynamic> _adminPinGuardMap(Map<String, dynamic> m) {
+    final raw = m['adminPinGuard'];
+    if (raw is Map) {
+      return Map<String, dynamic>.from(
+        raw.map((k, v) => MapEntry(k.toString(), v)),
+      );
+    }
+    return <String, dynamic>{};
+  }
+
+  SecureRestoreStatus _adminPinStatusFromMap(Map<String, dynamic> map) {
+    final failed =
+        int.tryParse(
+          (map['failedAttempts'] ?? '0').toString(),
+        )?.clamp(0, _adminPinMaxAttempts) ??
+        0;
+    final lockIso = (map['lockedUntil'] ?? '').toString().trim();
+    final lockTime = lockIso.isEmpty ? null : DateTime.tryParse(lockIso);
+    final now = DateTime.now();
+    final locked = lockTime != null && lockTime.isAfter(now);
+    final remaining = locked
+        ? 0
+        : (_adminPinMaxAttempts - failed).clamp(0, _adminPinMaxAttempts);
+    return SecureRestoreStatus(
+      failedAttempts: failed,
+      maxAttempts: _adminPinMaxAttempts,
+      remainingAttempts: remaining,
+      lockedUntil: lockTime,
+      locked: locked,
+    );
+  }
+
+  Future<SecureRestoreStatus> getAdminPinStatus() async {
+    final m = await _readSettingsMap();
+    final guard = _adminPinGuardMap(m);
+    final status = _adminPinStatusFromMap(guard);
+    if (!status.locked &&
+        status.lockedUntil != null &&
+        status.failedAttempts >= _adminPinMaxAttempts) {
+      guard['failedAttempts'] = 0;
+      guard['lockedUntil'] = '';
+      m['adminPinGuard'] = guard;
+      await _writeSettingsMap(m);
+      return const SecureRestoreStatus(
+        failedAttempts: 0,
+        maxAttempts: _adminPinMaxAttempts,
+        remainingAttempts: _adminPinMaxAttempts,
+        lockedUntil: null,
+        locked: false,
+      );
+    }
+    return status;
+  }
+
+  Future<void> _recordAdminPinFailure() async {
+    final m = await _readSettingsMap();
+    final guard = _adminPinGuardMap(m);
+    final current =
+        int.tryParse((guard['failedAttempts'] ?? '0').toString()) ?? 0;
+    final failed = (current + 1).clamp(1, _adminPinMaxAttempts);
+    guard['failedAttempts'] = failed;
+    if (failed >= _adminPinMaxAttempts) {
+      guard['lockedUntil'] = DateTime.now()
+          .add(const Duration(minutes: _adminPinLockMinutes))
+          .toIso8601String();
+    } else {
+      guard['lockedUntil'] = '';
+    }
+    m['adminPinGuard'] = guard;
     await _writeSettingsMap(m);
   }
 
@@ -522,6 +612,33 @@ extension AppDbAdmin on AppDb {
       changed = true;
     }
 
+    List<String> pinnedCustomers = [];
+    final rawPinned = m['pinnedCustomers'];
+    if (rawPinned is List) {
+      pinnedCustomers = rawPinned.map((e) => e.toString()).toList();
+    }
+    if (!m.containsKey('pinnedCustomers')) {
+      m['pinnedCustomers'] = pinnedCustomers;
+      changed = true;
+    }
+
+    double customerAlertThreshold = 0;
+    final rawThreshold = m['customerAlertThreshold'];
+    if (rawThreshold is num) {
+      customerAlertThreshold = rawThreshold.toDouble();
+    } else if (rawThreshold != null) {
+      customerAlertThreshold =
+          double.tryParse(rawThreshold.toString().trim()) ?? 0;
+    }
+    if (customerAlertThreshold < 0) {
+      customerAlertThreshold = 0;
+      changed = true;
+    }
+    if (!m.containsKey('customerAlertThreshold')) {
+      m['customerAlertThreshold'] = customerAlertThreshold;
+      changed = true;
+    }
+
     if (changed) {
       m['businessName'] = businessName;
       m['currency'] = currency;
@@ -539,6 +656,8 @@ extension AppDbAdmin on AppDb {
       currency: currency,
       dayStartHour: dayStartHour,
       quickActionsOrder: quickActionsOrder,
+      pinnedCustomers: pinnedCustomers,
+      customerAlertThreshold: customerAlertThreshold,
     );
   }
 
@@ -568,6 +687,8 @@ extension AppDbAdmin on AppDb {
     m['currency'] = currency;
     m['dayStartHour'] = hour;
     m['quickActionsOrder'] = settings.quickActionsOrder;
+    m['pinnedCustomers'] = settings.pinnedCustomers;
+    m['customerAlertThreshold'] = settings.customerAlertThreshold;
     if (!m.containsKey('adminPin')) {
       m['adminPin'] = _pinRecord('1234');
     }
@@ -581,6 +702,7 @@ extension AppDbAdmin on AppDb {
     final dir = await getApplicationSupportDirectory();
     final backup = File('${dir.path}/king_wallet_backup.db');
     await _copyDatabaseSnapshotTo(backup.path);
+    await _writeBackupChecksumSidecar(backup.path);
     await _markBackupMeta(type: 'db', path: backup.path);
     return backup.path;
   }
@@ -623,6 +745,63 @@ extension AppDbAdmin on AppDb {
     final min = now.minute.toString().padLeft(2, '0');
     final s = now.second.toString().padLeft(2, '0');
     return 'smart_cash_backup_$y$m${d}_$h$min$s.scpb';
+  }
+
+  String _backupChecksumSidecarPath(String path) => '$path.sha256';
+
+  Future<void> _writeBackupChecksumSidecar(String path) async {
+    final file = File(path);
+    if (!await file.exists()) return;
+    final bytes = await file.readAsBytes();
+    final digest = sha256.convert(bytes).toString().toLowerCase();
+    final sidecar = File(_backupChecksumSidecarPath(path));
+    final payload = <String, dynamic>{
+      'algo': 'sha256',
+      'digest': digest,
+      'size': bytes.length,
+      'createdAt': DateTime.now().toIso8601String(),
+    };
+    await sidecar.writeAsString(jsonEncode(payload), flush: true);
+  }
+
+  Future<void> _verifyBackupChecksumIfPresent(String path) async {
+    final file = File(path);
+    if (!await file.exists()) return;
+    final sidecar = File(_backupChecksumSidecarPath(path));
+    if (!await sidecar.exists()) return;
+
+    final raw = await sidecar.readAsString();
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return;
+
+    String expectedDigest = '';
+    int? expectedSize;
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is Map<String, dynamic>) {
+        expectedDigest = (decoded['digest'] ?? '').toString().trim();
+        expectedSize = int.tryParse((decoded['size'] ?? '').toString());
+      } else {
+        expectedDigest = trimmed;
+      }
+    } catch (_) {
+      expectedDigest = trimmed;
+    }
+
+    if (expectedDigest.isEmpty) return;
+
+    final bytes = await file.readAsBytes();
+    final actualDigest = sha256.convert(bytes).toString().toLowerCase();
+    if (expectedSize != null && expectedSize != bytes.length) {
+      throw Exception(
+        'فشل التحقق من سلامة النسخة الاحتياطية (حجم الملف غير مطابق)',
+      );
+    }
+    if (expectedDigest.toLowerCase() != actualDigest) {
+      throw Exception(
+        'فشل التحقق من سلامة النسخة الاحتياطية (تلف أو تعديل غير متوقع)',
+      );
+    }
   }
 
   static const int _secureRestoreMaxAttempts = 3;
@@ -863,11 +1042,15 @@ extension AppDbAdmin on AppDb {
       'nextTxnId': _nextTxnId,
       'nextClaimId': _nextClaimId,
       'nextCloseId': _nextCloseId,
+      'nextAttachmentId': _nextAttachmentId,
       'wallets': _wallets.map((w) => w.toJson()).toList(),
       'txns': _txns.map((t) => t.toJson()).toList(),
       'claims': _claims.map((c) => c.toJson()).toList(),
       'dailyCloses': _dailyCloses.map((c) => c.toJson()).toList(),
       'recentNumbers': _recentNumbers.map((r) => r.toJson()).toList(),
+      'customerAttachments': _customerAttachments
+          .map((a) => a.toJson())
+          .toList(),
       'lastPendingAlertDate': _lastPendingAlertDate,
       'lowBalanceAlertDate': _lowBalanceAlertDate.map(
         (k, v) => MapEntry(k.toString(), v),
@@ -889,6 +1072,7 @@ extension AppDbAdmin on AppDb {
     final name = _backupFileName(DateTime.now());
     final backup = File('${dir.path}/$name');
     await _copyDatabaseSnapshotTo(backup.path);
+    await _writeBackupChecksumSidecar(backup.path);
     await _markBackupMeta(type: 'db', path: backup.path);
     return backup.path;
   }
@@ -899,6 +1083,7 @@ extension AppDbAdmin on AppDb {
     final name = _backupFileName(DateTime.now());
     final path = p.join(directoryPath, name);
     await _copyDatabaseSnapshotTo(path);
+    await _writeBackupChecksumSidecar(path);
     await _markBackupMeta(type: 'db', path: path);
     return path;
   }
@@ -909,7 +1094,11 @@ extension AppDbAdmin on AppDb {
     if (!await src.exists()) {
       throw Exception('ملف النسخة الاحتياطية غير موجود');
     }
-    final sourceDb = AppDatabase(customPath: src.path);
+    await _verifyBackupChecksumIfPresent(path);
+    final sourceDb = AppDatabase(
+      customPath: src.path,
+      hardenRuntimePragmas: false,
+    );
     try {
       final snapshot = (
         wallets: await sourceDb.loadWallets(),
@@ -946,6 +1135,7 @@ extension AppDbAdmin on AppDb {
     final file = File('${dir.path}/$name');
     final j = _buildJsonBackup();
     await file.writeAsString(jsonEncode(j));
+    await _writeBackupChecksumSidecar(file.path);
     await _markBackupMeta(type: 'json', path: file.path);
     return file.path;
   }
@@ -958,6 +1148,7 @@ extension AppDbAdmin on AppDb {
     final file = File(path);
     final j = _buildJsonBackup();
     await file.writeAsString(jsonEncode(j));
+    await _writeBackupChecksumSidecar(file.path);
     await _markBackupMeta(type: 'json', path: file.path);
     return file.path;
   }
@@ -976,6 +1167,7 @@ extension AppDbAdmin on AppDb {
       passphrase: passphrase,
     );
     await file.writeAsString(encrypted);
+    await _writeBackupChecksumSidecar(file.path);
     await _markBackupMeta(type: 'json_encrypted', path: file.path);
     return file.path;
   }
@@ -994,6 +1186,7 @@ extension AppDbAdmin on AppDb {
       passphrase: passphrase,
     );
     await file.writeAsString(encrypted);
+    await _writeBackupChecksumSidecar(file.path);
     await _markBackupMeta(type: 'json_encrypted', path: file.path);
     return file.path;
   }
@@ -1004,6 +1197,7 @@ extension AppDbAdmin on AppDb {
     if (!await src.exists()) {
       throw Exception('ملف النسخة الاحتياطية غير موجود');
     }
+    await _verifyBackupChecksumIfPresent(path);
     final raw = await src.readAsString();
     if (raw.trim().isEmpty) {
       throw Exception('ملف النسخة الاحتياطية فارغ');
@@ -1029,6 +1223,7 @@ extension AppDbAdmin on AppDb {
     if (!await src.exists()) {
       throw Exception('ملف النسخة المشفرة غير موجود');
     }
+    await _verifyBackupChecksumIfPresent(path);
     final raw = await src.readAsString();
     if (raw.trim().isEmpty) {
       throw Exception('ملف النسخة المشفرة فارغ');

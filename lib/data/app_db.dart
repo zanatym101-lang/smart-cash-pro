@@ -16,6 +16,7 @@ import '../models/daily_close.dart';
 import '../models/recent_number.dart';
 import '../models/app_settings.dart';
 import '../models/license_info.dart';
+import '../models/customer_attachment.dart';
 import 'sqlite/app_database.dart';
 import '../services/notification_service.dart';
 import 'app_session.dart';
@@ -35,6 +36,7 @@ part 'app_db_contacts.dart';
 part 'app_db_audit.dart';
 part 'app_db_sync.dart';
 part 'app_db_health.dart';
+part 'app_db_customer_files.dart';
 
 class TreasurySnapshot {
   final double drawerBalance; // Projected EGP for UI
@@ -250,12 +252,14 @@ class AppDb {
   int _nextTxnId = 1;
   int _nextClaimId = 1;
   int _nextCloseId = 1;
+  int _nextAttachmentId = 1;
 
   final List<Wallet> _wallets = [];
   final List<Txn> _txns = [];
   final List<Claim> _claims = [];
   final List<DailyClose> _dailyCloses = [];
   final List<RecentNumber> _recentNumbers = [];
+  final List<CustomerAttachment> _customerAttachments = [];
 
   String? _lastPendingAlertDate; // yyyy-MM-dd
   final Map<int, String> _lowBalanceAlertDate = {};

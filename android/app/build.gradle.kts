@@ -13,11 +13,24 @@ val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
+val storeFileProp = keystoreProperties.getProperty("storeFile") ?: ""
+val storePasswordProp = keystoreProperties.getProperty("storePassword") ?: ""
+val keyAliasProp = keystoreProperties.getProperty("keyAlias") ?: ""
+val keyPasswordProp = keystoreProperties.getProperty("keyPassword") ?: ""
+val storeFileRef =
+    if (storeFileProp.isNotBlank()) rootProject.file(storeFileProp) else null
+val storeFileFallback =
+    if (storeFileProp.isNotBlank()) rootProject.file("app/$storeFileProp") else null
+val resolvedStoreFile = when {
+    storeFileRef?.exists() == true -> storeFileRef
+    storeFileFallback?.exists() == true -> storeFileFallback
+    else -> null
+}
 val hasReleaseSigning =
-    keystoreProperties.getProperty("storeFile")?.isNotBlank() == true &&
-    keystoreProperties.getProperty("storePassword")?.isNotBlank() == true &&
-    keystoreProperties.getProperty("keyAlias")?.isNotBlank() == true &&
-    keystoreProperties.getProperty("keyPassword")?.isNotBlank() == true
+    resolvedStoreFile != null &&
+        storePasswordProp.isNotBlank() &&
+        keyAliasProp.isNotBlank() &&
+        keyPasswordProp.isNotBlank()
 
 android {
     namespace = "com.smartcashpro.app"
@@ -45,10 +58,10 @@ android {
     signingConfigs {
         create("release") {
             if (hasReleaseSigning) {
-                storeFile = file(keystoreProperties.getProperty("storeFile"))
-                storePassword = keystoreProperties.getProperty("storePassword")
-                keyAlias = keystoreProperties.getProperty("keyAlias")
-                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = resolvedStoreFile
+                storePassword = storePasswordProp
+                keyAlias = keyAliasProp
+                keyPassword = keyPasswordProp
             }
         }
     }

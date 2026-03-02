@@ -46,6 +46,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<String> _actionOrder = [];
   Map<int, WalletLimitUsage> _walletUsage = {};
   int _dayStartHour = 0;
+  double _customersReceivable = 0;
+  double _customersPayable = 0;
+  double _expensesTotalAll = 0;
+  double _expensesTotalToday = 0;
 
   DateTime _businessShift(DateTime d) {
     if (_dayStartHour <= 0) return d;
@@ -77,6 +81,56 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ops.claimPayCount;
   }
 
+  double _pendingTransferDue(Txn t) {
+    if (t.mode == 'type2_v2') return t.amount + t.clientFee;
+    final base = t.amount - t.networkFee;
+    if (t.mode == 'type1') return base + t.clientFee;
+    return base;
+  }
+
+  double _pendingReceiveDue(Txn t) {
+    if (t.mode == 'cash') return t.amount;
+    if (t.mode == 'deduct') {
+      return (t.amount - t.clientFee).clamp(0, 1e18).toDouble();
+    }
+    return 0;
+  }
+
+  ({double receivable, double payable}) _customerTotals({
+    required List<Txn> txns,
+    required List<Claim> claims,
+  }) {
+    double receivable = 0;
+    double payable = 0;
+
+    for (final c in claims) {
+      if (c.status != 'open') continue;
+      if (c.party.trim().isEmpty) continue;
+      if (c.type == 'receivable') {
+        receivable += c.amount;
+      } else if (c.type == 'payable') {
+        payable += c.amount;
+      }
+    }
+
+    for (final t in txns) {
+      if (t.status != 'pending') continue;
+      if ((t.party ?? '').trim().isEmpty) continue;
+      if (t.kind == 'transfer') {
+        final due = _pendingTransferDue(t);
+        if (due > 0) receivable += due;
+      } else if (t.kind == 'receive') {
+        final due = _pendingReceiveDue(t);
+        if (due > 0) payable += due;
+      } else if (t.kind == 'fawry_credit') {
+        final due = t.amount + t.clientFee;
+        if (due > 0) receivable += due;
+      }
+    }
+
+    return (receivable: receivable, payable: payable);
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -100,12 +154,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final settings = results[4] as AppSettings;
       final txns = results[5] as List<Txn>;
       final claims = results[6] as List<Claim>;
+      final customerTotals = _customerTotals(txns: txns, claims: claims);
       _dayStartHour = settings.dayStartHour;
+      final todayRange = _todayRange();
       final todayReport = ReportCalculator.build(
         txns: txns,
         claims: claims,
-        range: _todayRange(),
+        range: todayRange,
       );
+      double expensesAll = 0;
+      double expensesToday = 0;
+      for (final t in txns) {
+        if (t.kind != 'expense' || t.status != 'posted') continue;
+        expensesAll += t.amount;
+        if (todayRange.contains(t.entryDate)) {
+          expensesToday += t.amount;
+        }
+      }
       if (!mounted) return;
       setState(() {
         _snap = s;
@@ -113,6 +178,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _actionOrder = order;
         _walletUsage = usage;
         _todayReport = todayReport;
+        _customersReceivable = customerTotals.receivable;
+        _customersPayable = customerTotals.payable;
+        _expensesTotalAll = expensesAll;
+        _expensesTotalToday = expensesToday;
         _lastUpdated = DateTime.now();
       });
     } catch (e) {
@@ -292,7 +361,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ? Icons.expand_less_rounded
                       : Icons.expand_more_rounded,
                 ),
-                label: Text(_showHeroDetails ? 'إخفاء التفاصيل' : 'عرض التفاصيل'),
+                label: Text(
+                  _showHeroDetails ? 'إخفاء التفاصيل' : 'عرض التفاصيل',
+                ),
               ),
             ),
             if (_showHeroDetails) ...[
@@ -612,6 +683,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   List<QuickActionItem> _actions(bool isAdmin) {
+    final snap = _snap;
+    double? treasuryAvailable;
+    double? claimsNet;
+    if (snap != null) {
+      treasuryAvailable =
+          snap.drawerBalance + snap.walletsTotal + snap.fawryBalance;
+      claimsNet = snap.claimsReceivableOpen - snap.claimsPayableOpen;
+    }
+    final customersNet = _customersReceivable - _customersPayable;
+
+    String? netValue(double? value) => value?.abs().toStringAsFixed(2);
+    String? netLabel(double? value) => value?.isNegative == true
+        ? '\u0639\u0644\u064a\u0646\u0627'
+        : (value?.isNegative == false ? '\u0644\u0646\u0627' : null);
+
     final items = <QuickActionItem>[
       QuickActionItem(
         id: 'help',
@@ -665,6 +751,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         title: 'المحافظ',
         icon: Icons.account_balance_wallet,
         color: const Color(0xFF64748B),
+        valueText: snap?.walletsTotal.toStringAsFixed(2),
+        metaText: snap == null
+            ? null
+            : '\u0625\u062c\u0645\u0627\u0644\u064a \u0627\u0644\u0645\u062d\u0627\u0641\u0638',
         onTap: () async {
           await Navigator.of(
             context,
@@ -677,6 +767,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         title: 'العملاء',
         icon: Icons.people_alt_outlined,
         color: const Color(0xFF0891B2),
+        valueText: netValue(customersNet),
+        metaText: netLabel(customersNet),
         onTap: () async {
           await Navigator.of(
             context,
@@ -689,6 +781,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         title: 'الخزنة',
         icon: Icons.account_balance,
         color: const Color(0xFF0F172A),
+        valueText: treasuryAvailable?.toStringAsFixed(2),
+        metaText: snap == null
+            ? null
+            : '\u0627\u0644\u0645\u0648\u062c\u0648\u062f \u0627\u0644\u0622\u0646',
         onTap: () async {
           await Navigator.of(
             context,
@@ -729,6 +825,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           title: 'المصروفات',
           icon: Icons.money_off_csred,
           color: const Color(0xFFEF4444),
+          valueText: _expensesTotalAll.toStringAsFixed(2),
+          metaText:
+              '\u0627\u0644\u064a\u0648\u0645: ${_expensesTotalToday.toStringAsFixed(2)}',
           onTap: () async {
             final changed = await Navigator.of(context).push<bool>(
               MaterialPageRoute(builder: (_) => const ExpensesScreen()),
@@ -741,6 +840,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           title: 'مستحقات',
           icon: Icons.request_quote,
           color: const Color(0xFF8B5CF6),
+          valueText: netValue(claimsNet),
+          metaText: netLabel(claimsNet),
           onTap: () async {
             await Navigator.of(
               context,
@@ -819,6 +920,24 @@ class _ActionTile extends StatelessWidget {
                 context,
               ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
             ),
+            if (item.valueText != null) ...[
+              const SizedBox(height: 2),
+              Text(
+                item.valueText!,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800),
+              ),
+            ],
+            if (item.metaText != null) ...[
+              const SizedBox(height: 1),
+              Text(
+                item.metaText!,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: Colors.black54),
+              ),
+            ],
           ],
         ),
       ),

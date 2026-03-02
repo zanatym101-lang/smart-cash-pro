@@ -31,8 +31,8 @@ class _FawryScreenState extends State<FawryScreen> {
 
   final _serviceCtrl = TextEditingController();
   final _referenceCtrl = TextEditingController();
-  final _amountCtrl = TextEditingController(text: '100');
-  final _feeCtrl = TextEditingController(text: '5');
+  final _amountCtrl = TextEditingController();
+  final _feeCtrl = TextEditingController();
   final _partyCtrl = TextEditingController();
   final _partyPhoneCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
@@ -95,8 +95,8 @@ class _FawryScreenState extends State<FawryScreen> {
         ? _selectedContactName ?? ''
         : _partyCtrl.text.trim();
     final partyPhone = normalizePhone(_partyPhoneCtrl.text);
-    final amt = _toDouble(_amountCtrl.text);
-    final fee = _toDouble(_feeCtrl.text);
+    final amountText = _amountCtrl.text.trim();
+    final feeText = _feeCtrl.text.trim();
     final note = _noteCtrl.text.trim();
 
     if (service.isEmpty) {
@@ -105,6 +105,15 @@ class _FawryScreenState extends State<FawryScreen> {
       ).showSnackBar(const SnackBar(content: Text('اسم الخدمة مطلوب')));
       return;
     }
+    if (amountText.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('أدخل قيمة الخدمة')),
+      );
+      return;
+    }
+    final amt = _toDouble(amountText);
+    final fee = _toDouble(feeText);
+
     if (amt <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('قيمة الخدمة يجب أن تكون أكبر من صفر')),
