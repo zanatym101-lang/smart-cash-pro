@@ -4,7 +4,7 @@ import 'package:http/http.dart' as http;
 
 class CloudAssistantService {
   static const String _endpoint =
-      'https://us-central1-smart-cash-pro-a8e6a.cloudfunctions.net/assistantAsk';
+      'https://smart-cash-pro-six.vercel.app/api/assistant';
 
   static Future<String> ask(Map<String, dynamic> payload) async {
     final res = await http.post(
