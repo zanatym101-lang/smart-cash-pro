@@ -1,18 +1,8 @@
 const GEMINI_API_BASE =
   "https://generativelanguage.googleapis.com/v1beta/models";
 const GEMINI_MODELS = [
-  // Prefer latest fast models first (from your available list)
+  // Known available model for this account
   "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-001",
-  "gemini-2.0-flash-lite-001",
-  "gemini-1.5-flash",
-  "gemini-1.5-flash-latest",
-  "gemini-1.5-pro",
-  "gemini-1.5-pro-latest",
-  "gemini-1.0-pro",
-  "gemini-pro",
 ];
 
 function setCors(res) {
