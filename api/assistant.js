@@ -1,5 +1,5 @@
 const GEMINI_API_BASE =
-  "https://generativelanguage.googleapis.com/v1/models";
+  "https://generativelanguage.googleapis.com/v1beta/models";
 const GEMINI_MODELS = [
   // Prefer latest fast models first (from your available list)
   "gemini-2.5-flash",
