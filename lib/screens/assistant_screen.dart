@@ -64,16 +64,23 @@ class _AssistantScreenState extends State<AssistantScreen> {
         claims: claims,
       );
 
+      final localAnswer = _buildAnswer(
+        question: q,
+        snap: snap,
+        txns: txns,
+        claims: claims,
+      );
+      final useLocal = !_isGenericAnswer(localAnswer);
+
       String answer;
-      try {
-        answer = await CloudAssistantService.ask(payload);
-      } catch (_) {
-        answer = _buildAnswer(
-          question: q,
-          snap: snap,
-          txns: txns,
-          claims: claims,
-        );
+      if (useLocal) {
+        answer = localAnswer;
+      } else {
+        try {
+          answer = await CloudAssistantService.ask(payload);
+        } catch (_) {
+          answer = localAnswer;
+        }
       }
 
       if (!mounted) return;
@@ -90,6 +97,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  bool _isGenericAnswer(String text) {
+    return text.contains('يمكنك سؤالي بصيغة مباشرة');
   }
 
   String _stripTags(String? note) {
