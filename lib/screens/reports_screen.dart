@@ -634,10 +634,18 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   Widget _profitTab(ReportData? report) {
     if (report == null) return const SizedBox.shrink();
+    final expenses = report.cashflow.outflowByType['مصروفات'] ?? 0;
+    final netProfit = report.profit.total - expenses;
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
         _kpiCard('إجمالي الربح', report.profit.total, icon: Icons.trending_up),
+        _kpiCard(
+          'صافي الربح بعد المصروفات',
+          netProfit,
+          icon: Icons.savings,
+        ),
+        _kpiCard('إجمالي المصروفات', expenses, icon: Icons.payments_outlined),
         _kpiCard(
           'ربح التحويل',
           report.profit.transfer,

@@ -33,7 +33,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
 
   String _statusLabel(String s) {
     if (s == 'posted') return 'معتمد';
-    if (s == 'rolled_back') return 'ملغي (Rollback)';
+    if (s == 'rolled_back') return 'ملغي (عكس التأثير)';
     if (s == 'pending') return 'معلّق';
     return 'غير معروف';
   }
@@ -48,6 +48,8 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
         return 'تمويل خارجي';
       case 'drawer_deposit':
         return 'تمويل درج';
+      case 'expense':
+        return 'مصروف';
       case 'claim_collect':
         return 'تحصيل مستحقات';
       case 'claim_pay':
@@ -56,10 +58,41 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
         return 'فوري نقدي (تحصيل)';
       case 'fawry_credit':
         return 'فوري آجل (خدمة)';
+      case 'fawry_fund_drawer':
+        return 'شحن رصيد فوري';
+      case 'pending_settlement':
+        return 'تسوية معلّق';
+      case 'pending_settlement_adjust':
+        return 'تعديل تسوية معلّق';
       case 'rollback':
-        return 'Rollback';
+        return 'عكس التأثير';
       default:
-        return k;
+        return 'عملية';
+    }
+  }
+
+  String _transferModeLabel(String? mode) {
+    switch (mode) {
+      case 'type1':
+        return 'النوع 1 (العمولة كاش)';
+      case 'type2':
+      case 'type2_v2':
+        return 'النوع 2 (خصم العمولة من المبلغ)';
+      default:
+        return '-';
+    }
+  }
+
+  String _receiveModeLabel(String? mode) {
+    switch (mode) {
+      case 'cash':
+        return 'نقدي (العمولة كاش)';
+      case 'deduct':
+        return 'نقدي (خصم العمولة من المبلغ)';
+      case 'electronic':
+        return 'إلكتروني';
+      default:
+        return '-';
     }
   }
 
@@ -202,12 +235,12 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('تم عمل Rollback ✅')));
+      ).showSnackBar(const SnackBar(content: Text('تم عكس التأثير ✅')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('فشل Rollback: $e')));
+      ).showSnackBar(SnackBar(content: Text('فشل عكس التأثير: $e')));
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -263,7 +296,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                           ElevatedButton.icon(
                             onPressed: _working ? null : _rollback,
                             icon: const Icon(Icons.undo),
-                            label: const Text('Rollback (عكس التأثير)'),
+                            label: const Text('عكس التأثير'),
                           ),
                       ],
                     ),
@@ -271,7 +304,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                       const Padding(
                         padding: EdgeInsets.only(top: 8),
                         child: Text(
-                          'تنبيه: Rollback لا يُسمح به إذا كانت المستحقات قد تم تحصيلها.',
+                          'تنبيه: لا يُسمح بعكس التأثير إذا كانت المستحقات قد تم تحصيلها.',
                           style: TextStyle(fontSize: 12),
                         ),
                       ),
@@ -295,6 +328,11 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                   '${_txn.createdBy} (${_roleLabel(_txn.createdRole)})',
                 ),
                 _infoRow('تاريخ الإنشاء', created),
+                _infoRow('نوع العملية', _kindLabel(_txn.kind)),
+                if (_txn.kind == 'transfer')
+                  _infoRow('نوع التحويل', _transferModeLabel(_txn.mode)),
+                if (_txn.kind == 'receive')
+                  _infoRow('نوع الاستلام', _receiveModeLabel(_txn.mode)),
                 _infoRow('المبلغ', _money(_txn.amount)),
                 if ((_txn.serviceName ?? '').trim().isNotEmpty)
                   _infoRow('الخدمة', _txn.serviceName!),
@@ -307,8 +345,8 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                     'إجمالي العميل',
                     _money(_txn.amount + _txn.clientFee),
                   ),
-                _infoRow('العمولة (CF)', _money(_txn.clientFee)),
-                _infoRow('رسوم الشبكة (NF)', _money(_txn.networkFee)),
+                _infoRow('العمولة', _money(_txn.clientFee)),
+                _infoRow('رسوم الشبكة', _money(_txn.networkFee)),
                 if ((_txn.note ?? '').trim().isNotEmpty)
                   _infoRow('ملاحظة', _txn.note!),
               ],
@@ -327,7 +365,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                 const Divider(),
                 _impactRow(
                   context,
-                  label: 'الدرج (Drawer)',
+                  label: 'الدرج',
                   delta: impact.drawerDelta,
                 ),
                 const Divider(),

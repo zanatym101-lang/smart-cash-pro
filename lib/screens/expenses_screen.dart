@@ -117,7 +117,8 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     final end = (period == 'month')
         ? DateTime(monthStart.year, monthStart.month + 1, 1, _dayStartHour)
             .subtract(const Duration(milliseconds: 1))
-        : start.add(const Duration(days: 1)).subtract(const Duration(milliseconds: 1));
+        : start.add(const Duration(days: 1))
+            .subtract(const Duration(milliseconds: 1));
     return _expenses.where((e) => _inRange(e.entryDate, start, end)).toList();
   }
 
@@ -145,17 +146,17 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   Future<void> _save() async {
     if (!AppSession.isAdmin) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('المصروفات للأدمن فقط')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('المصروفات للأدمن فقط')),
+      );
       return;
     }
 
     final amt = double.tryParse(_amountCtrl.text.trim());
     if (amt == null || amt <= 0) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('أدخل مبلغ صحيح')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('أدخل مبلغ صحيح')),
+      );
       return;
     }
 
@@ -180,17 +181,198 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       if (!mounted) return;
       await _loadExpenses();
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('تم تسجيل المصروف بنجاح')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم تسجيل المصروف بنجاح')),
+      );
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ: $e')),
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  String? _extractPhoneFromNote(String? note) {
+    if (note == null || note.trim().isEmpty) return null;
+    final m = RegExp(r'رقم الطرف:\s*(\d+)').firstMatch(note);
+    return m?.group(1);
+  }
+
+  String _stripPhoneFromNote(String? note) {
+    if (note == null) return '';
+    var cleaned =
+        note.replaceAll(RegExp(r'رقم الطرف:\s*\d+'), '').trim();
+    cleaned = cleaned.replaceAll(RegExp(r'\s*\|\s*'), ' ').trim();
+    cleaned = cleaned.replaceAll(RegExp(r'\s+-\s+'), ' ').trim();
+    return cleaned;
+  }
+
+  Future<void> _editExpenseDialog(Txn e) async {
+    if (!AppSession.isAdmin) return;
+    final amountCtrl = TextEditingController(text: e.amount.toStringAsFixed(2));
+    final partyCtrl = TextEditingController(text: e.party ?? '');
+    final phoneCtrl =
+        TextEditingController(text: _extractPhoneFromNote(e.note) ?? '');
+    final noteCtrl = TextEditingController(text: _stripPhoneFromNote(e.note));
+    String category = e.mode.isEmpty ? _category : e.mode;
+
+    try {
+      final ok = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('تعديل المصروف'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: partyCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'اسم الطرف (اختياري)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: InputDecoration(
+                    labelText: 'رقم الطرف (اختياري)',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    suffixIcon: IconButton(
+                      onPressed: () async {
+                        final picked = await pickContact(context);
+                        if (picked == null) return;
+                        partyCtrl.text = picked.name;
+                        phoneCtrl.text = picked.phone;
+                      },
+                      icon: const Icon(Icons.contacts),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue: category,
+                  items: _categories
+                      .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                      .toList(),
+                  onChanged: (v) => category = v ?? category,
+                  decoration: const InputDecoration(
+                    labelText: 'التصنيف',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: amountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'المبلغ (جنيه)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: noteCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظة (اختياري)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('حفظ'),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted || ok != true) return;
+      final amt = double.tryParse(amountCtrl.text.trim());
+      if (amt == null || amt <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('أدخل مبلغًا صحيحًا')),
+        );
+        return;
+      }
+
+      final partyPhone = normalizePhone(phoneCtrl.text);
+      await AppDb.instance.updateExpense(
+        txnId: e.id,
+        amount: amt,
+        category: category,
+        note: _composeNote(
+          noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
+          partyPhone,
+        ),
+        party: partyCtrl.text.trim(),
+      );
+      await _loadExpenses();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم تعديل المصروف')),
+      );
+    } finally {
+      amountCtrl.dispose();
+      partyCtrl.dispose();
+      phoneCtrl.dispose();
+      noteCtrl.dispose();
+    }
+  }
+
+  Future<void> _deleteExpenseDialog(Txn e) async {
+    if (!AppSession.isAdmin) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('حذف المصروف'),
+        content: Text(
+          'سيتم حذف مصروف بقيمة ${e.amount.toStringAsFixed(2)}. هل أنت متأكد؟',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('حذف'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || ok != true) return;
+    try {
+      await AppDb.instance.deleteExpense(e.id);
+      await _loadExpenses();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تم حذف المصروف')),
+      );
+    } catch (err) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ: $err')),
+      );
     }
   }
 
@@ -221,7 +403,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                 SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    'تسجيل مصروف جديد\nيخصم من الدرج فقط دون التأثير على المحافظ أو الأرباح.',
+                    'تسجيل مصروف جديد\nيُخصم من الدرج فقط دون التأثير على المحافظ أو الأرباح.',
                     style: TextStyle(color: Colors.white),
                   ),
                 ),
@@ -311,7 +493,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.save),
-                    label: Text(_saving ? 'جارٍ الحفظ...' : 'حفظ'),
+                    label: Text(_saving ? 'جاري الحفظ...' : 'حفظ'),
                   ),
                 ],
               ),
@@ -334,17 +516,17 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     runSpacing: 8,
                     children: [
                       ChoiceChip(
-                        label: const Text('\u0627\u0644\u064a\u0648\u0645'),
+                        label: const Text('اليوم'),
                         selected: _period == 'today',
                         onSelected: (_) => setState(() => _period = 'today'),
                       ),
                       ChoiceChip(
-                        label: const Text('\u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631'),
+                        label: const Text('هذا الشهر'),
                         selected: _period == 'month',
                         onSelected: (_) => setState(() => _period = 'month'),
                       ),
                       ChoiceChip(
-                        label: const Text('\u0627\u0644\u0623\u0631\u0634\u064a\u0641'),
+                        label: const Text('الأرشيف'),
                         selected: _period == 'archive',
                         onSelected: (_) => setState(() => _period = 'archive'),
                       ),
@@ -353,17 +535,11 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      Expanded(
-                        child: _statChip('\u0627\u0644\u064a\u0648\u0645', totalToday),
-                      ),
+                      Expanded(child: _statChip('اليوم', totalToday)),
                       const SizedBox(width: 8),
-                      Expanded(
-                        child: _statChip('\u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631', totalMonth),
-                      ),
+                      Expanded(child: _statChip('هذا الشهر', totalMonth)),
                       const SizedBox(width: 8),
-                      Expanded(
-                        child: _statChip('\u0627\u0644\u0623\u0631\u0634\u064a\u0641', totalArchive),
-                      ),
+                      Expanded(child: _statChip('الأرشيف', totalArchive)),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -390,7 +566,33 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                           leading: const Icon(Icons.payments_outlined),
                           title: Text(title),
                           subtitle: Text(subtitleParts.join(' | ')),
-                          trailing: Text('-${e.amount.toStringAsFixed(2)}'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('-${e.amount.toStringAsFixed(2)}'),
+                              if (AppSession.isAdmin)
+                                PopupMenuButton<int>(
+                                  icon: const Icon(Icons.more_vert, size: 18),
+                                  onSelected: (v) {
+                                    if (v == 1) {
+                                      _editExpenseDialog(e);
+                                    } else if (v == 2) {
+                                      _deleteExpenseDialog(e);
+                                    }
+                                  },
+                                  itemBuilder: (ctx) => const [
+                                    PopupMenuItem(
+                                      value: 1,
+                                      child: Text('تعديل'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 2,
+                                      child: Text('حذف'),
+                                    ),
+                                  ],
+                                ),
+                            ],
+                          ),
                         );
                       }).toList(),
                     ),
@@ -415,11 +617,12 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         children: [
           Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
           const SizedBox(height: 2),
-          Text(value.toStringAsFixed(2),
-              style: const TextStyle(fontWeight: FontWeight.w700)),
+          Text(
+            value.toStringAsFixed(2),
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );
   }
-
 }

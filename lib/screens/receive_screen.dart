@@ -45,6 +45,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   String? _selectedContactName;
 
   String _receiveType = 'cash'; // cash | deduct | electronic
+  bool _feeTouched = false;
 
   @override
   void initState() {
@@ -83,6 +84,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
         _walletId = wallets.isNotEmpty ? wallets.first.id : null;
       });
       await _refreshSelectedWalletBalance();
+      _applyDefaultReceiveFee();
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -116,6 +118,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   void _onWalletChanged(int? walletId) {
     setState(() => _walletId = walletId);
     _refreshSelectedWalletBalance();
+    _applyDefaultReceiveFee();
   }
 
   Widget _walletBalanceInfo() {
@@ -211,6 +214,30 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     }
   }
 
+  void _applyDefaultReceiveFee() {
+    if (_feeTouched) return;
+    final amt = _toDouble(_amountCtrl.text);
+    if (amt <= 0) {
+      _feeCtrl.text = '0.00';
+      return;
+    }
+    final fee = amt * 0.01;
+    _feeCtrl.text = fee.toStringAsFixed(2);
+  }
+
+  String _receiveTypeLabel(String type) {
+    switch (type) {
+      case 'cash':
+        return 'نقدي (العمولة كاش)';
+      case 'deduct':
+        return 'نقدي (خصم العمولة من المبلغ)';
+      case 'electronic':
+        return 'إلكتروني';
+      default:
+        return type;
+    }
+  }
+
   Future<bool> _showWalletBarcode(String phone, double amount) async {
     final res = await showDialog<bool>(
       context: context,
@@ -296,9 +323,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text('المحفظة: ${wallet.name}'),
-                Text('نوع الاستلام: $receiveType'),
+                Text('نوع الاستلام: ${_receiveTypeLabel(receiveType)}'),
                 Text('المبلغ: ${_fmtMoney(amount)}'),
-                Text('العمولة (CF): ${_fmtMoney(fee)}'),
+                Text('العمولة: ${_fmtMoney(fee)}'),
                 Text('تأثير المحفظة: ${_fmtMoney(walletDelta)}'),
                 Text('تأثير الدرج: ${_fmtMoney(drawerDelta)}'),
                 Text('الربح: ${_fmtMoney(fee)}'),
@@ -419,9 +446,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
         isPending: review.isPending,
         note: _composeNote(note, partyPhone),
         party: partyName,
-      );
-
-      if (!mounted) return;
+      );      if (!mounted) return;
       if (review.isPending) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('تم تسجيل استلام معلّق (ID=$id)')),
@@ -450,6 +475,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
   void _clearForm() {
     _amountCtrl.clear();
     _feeCtrl.clear();
+    _feeTouched = false;
     _noteCtrl.clear();
     _partyCtrl.clear();
     _partyPhoneCtrl.clear();
@@ -529,8 +555,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                         controller: _amountCtrl,
                         keyboardType: TextInputType.number,
                         enabled: !_saving,
+                        onChanged: (_) => _applyDefaultReceiveFee(),
                         decoration: const InputDecoration(
-                          labelText: 'المبلغ المستلم (EGP)',
+                          labelText: 'المبلغ المستلم (جنيه)',
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -539,8 +566,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                         keyboardType: TextInputType.number,
                         enabled: !_saving,
                         decoration: const InputDecoration(
-                          labelText: 'العمولة/الربح (EGP)',
+                          labelText: 'العمولة/الربح (جنيه)',
                         ),
+                        onChanged: (_) => _feeTouched = true,
                       ),
                     ],
                   ),
