@@ -1,5 +1,19 @@
-const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent";
+const GEMINI_API_BASE =
+  "https://generativelanguage.googleapis.com/v1/models";
+const GEMINI_MODELS = [
+  // Prefer latest fast models first (from your available list)
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-001",
+  "gemini-2.0-flash-lite-001",
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-latest",
+  "gemini-1.5-pro",
+  "gemini-1.5-pro-latest",
+  "gemini-1.0-pro",
+  "gemini-pro",
+];
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -53,31 +67,39 @@ module.exports = async (req, res) => {
   const prompt = `${blocks.join("\n\n")}\n\nQUESTION:\n${question}`.trim();
 
   try {
-    const geminiRes = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 512 },
-      }),
-    });
-
-    const data = await geminiRes.json();
-    if (!geminiRes.ok) {
-      return res.status(502).json({
-        error: "gemini_error",
-        status: geminiRes.status,
-        details: data?.error?.message || "unknown",
+    let lastError = "unknown";
+    for (const model of GEMINI_MODELS) {
+      const url = `${GEMINI_API_BASE}/${model}:generateContent?key=${apiKey}`;
+      const geminiRes = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 512 },
+        }),
       });
+
+      const data = await geminiRes.json();
+      if (!geminiRes.ok) {
+        lastError = data?.error?.message || "unknown";
+        continue;
+      }
+
+      const answer =
+        data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
+      if (!answer) {
+        lastError = "no_answer";
+        continue;
+      }
+
+      return res.status(200).json({ answer, model });
     }
 
-    const answer =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-    if (!answer) {
-      return res.status(502).json({ error: "no_answer" });
-    }
-
-    return res.status(200).json({ answer });
+    return res.status(502).json({
+      error: "gemini_error",
+      status: 404,
+      details: lastError,
+    });
   } catch (e) {
     return res.status(502).json({ error: "proxy_failed", details: `${e}` });
   }
