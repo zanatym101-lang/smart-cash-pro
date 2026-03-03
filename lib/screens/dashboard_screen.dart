@@ -50,6 +50,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _customersPayable = 0;
   double _expensesTotalAll = 0;
   double _expensesTotalToday = 0;
+  double _expensesTotalMonth = 0;
 
   DateTime _businessShift(DateTime d) {
     if (_dayStartHour <= 0) return d;
@@ -67,6 +68,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
     final end = start
         .add(const Duration(days: 1))
+        .subtract(const Duration(milliseconds: 1));
+    return DateRange(start: start, end: end);
+  }
+
+  DateRange _monthRange() {
+    final now = DateTime.now();
+    final shifted = _businessShift(now);
+    final start = DateTime(shifted.year, shifted.month, 1, _dayStartHour);
+    final end = DateTime(shifted.year, shifted.month + 1, 1, _dayStartHour)
         .subtract(const Duration(milliseconds: 1));
     return DateRange(start: start, end: end);
   }
@@ -157,6 +167,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final customerTotals = _customerTotals(txns: txns, claims: claims);
       _dayStartHour = settings.dayStartHour;
       final todayRange = _todayRange();
+      final monthRange = _monthRange();
       final todayReport = ReportCalculator.build(
         txns: txns,
         claims: claims,
@@ -164,11 +175,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
       double expensesAll = 0;
       double expensesToday = 0;
+      double expensesMonth = 0;
       for (final t in txns) {
         if (t.kind != 'expense' || t.status != 'posted') continue;
         expensesAll += t.amount;
         if (todayRange.contains(t.entryDate)) {
           expensesToday += t.amount;
+        }
+        if (monthRange.contains(t.entryDate)) {
+          expensesMonth += t.amount;
         }
       }
       if (!mounted) return;
@@ -182,6 +197,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _customersPayable = customerTotals.payable;
         _expensesTotalAll = expensesAll;
         _expensesTotalToday = expensesToday;
+        _expensesTotalMonth = expensesMonth;
         _lastUpdated = DateTime.now();
       });
     } catch (e) {
@@ -674,6 +690,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 title: 'ربح الشهر',
                 value: s.monthlyProfit.toStringAsFixed(2),
                 icon: Icons.calendar_month,
+                hint:
+                    'صافي الربح بعد المصروفات: ${(s.monthlyProfit - _expensesTotalMonth).toStringAsFixed(2)}',
               ),
             ],
           ],

@@ -101,15 +101,15 @@ class _LedgerScreenState extends State<LedgerScreen> {
       case 'fawry_fund_drawer':
         return 'شحن رصيد فوري';
       case 'rollback':
-        return 'Rollback';
+        return 'عكس التأثير';
       default:
-        return k;
+        return 'عملية';
     }
   }
 
   String _statusLabel(String s) {
     if (s == 'posted') return 'معتمد';
-    if (s == 'rolled_back') return 'تم إلغاء اعتمادها';
+    if (s == 'rolled_back') return 'ملغي';
     return 'معلّق';
   }
 
@@ -321,7 +321,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
                           ),
                           DropdownMenuItem(
                             value: 'rollback',
-                            child: Text('Rollback'),
+                            child: Text('عكس التأثير'),
                           ),
                         ],
                         onChanged: (v) {
@@ -373,7 +373,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
                     ),
                     if (isAdmin)
                       const Text(
-                        'للأدمن: يمكن الاعتماد/الإلغاء/Rollback من تفاصيل العملية.',
+                        'للأدمن: يمكن الاعتماد/الإلغاء/عكس التأثير من تفاصيل العملية.',
                       ),
                   ],
                 ),

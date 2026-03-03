@@ -1079,6 +1079,22 @@ class _CustomersScreenState extends State<CustomersScreen> {
     );
   }
 
+  String? _txnStatusLabel(String? status) {
+    if (status == null) return null;
+    final trimmed = status.trim();
+    if (trimmed.isEmpty) return null;
+    switch (trimmed) {
+      case 'posted':
+        return 'معتمد';
+      case 'pending':
+        return 'معلّق';
+      case 'rolled_back':
+        return 'ملغي';
+      default:
+        return trimmed;
+    }
+  }
+
   void _showLineDetails(_CustomerLine line) {
     final d = line.date;
     final date =
@@ -1086,6 +1102,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final sideLabel = line.side == _LineSide.receivable
         ? 'عليه (تحصيل)'
         : 'له (سداد)';
+    final statusLabel = _txnStatusLabel(line.txnStatus);
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1099,8 +1116,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
               Text('النوع: $sideLabel'),
               Text('المبلغ: ${line.amount.toStringAsFixed(2)}'),
               Text('المرجع: ${line.ref}'),
-              if (line.txnStatus != null && line.txnStatus!.trim().isNotEmpty)
-                Text('الحالة: ${line.txnStatus}'),
+              if (statusLabel != null) Text('الحالة: $statusLabel'),
               if (line.details != null && line.details!.trim().isNotEmpty)
                 Text('التفاصيل: ${line.details}'),
             ],
@@ -1360,6 +1376,7 @@ enum _CustomerLineFilter { all, claims, settlements, pending, posted }
 
 class _CustomerSheetState extends State<_CustomerSheet> {
   _CustomerLineFilter _filter = _CustomerLineFilter.all;
+  bool _showActions = false;
 
   _CustomerBucket get customer => widget.customer;
   VoidCallback get onTransferPending => widget.onTransferPending;
@@ -1701,30 +1718,51 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             ],
           ),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          Row(
             children: [
-              ElevatedButton.icon(
-                onPressed: onTransferPending,
-                icon: const Icon(Icons.swap_horiz),
-                label: const Text('تحويل معلّق'),
+              Text(
+                'إجراءات سريعة',
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
               ),
-              ElevatedButton.icon(
-                onPressed: onReceivePending,
-                icon: const Icon(Icons.call_received),
-                label: const Text('استلام معلّق'),
+              const Spacer(),
+              IconButton(
+                onPressed: () => setState(() => _showActions = !_showActions),
+                icon: Icon(
+                  _showActions ? Icons.expand_less : Icons.expand_more,
+                ),
+                tooltip:
+                    _showActions ? 'إخفاء الإجراءات' : 'إظهار الإجراءات',
               ),
-              ElevatedButton.icon(
-                onPressed: onFawryCredit,
-                icon: const Icon(Icons.flash_on),
-                label: const Text('فوري آجل'),
-              ),
-              ElevatedButton.icon(
-                onPressed: onReport,
-                icon: const Icon(Icons.assessment_outlined),
-                label: const Text('تقرير العميل'),
-              ),
+            ],
+          ),
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: onTransferPending,
+                  icon: const Icon(Icons.swap_horiz),
+                  label: const Text('تحويل معلّق'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: onReceivePending,
+                  icon: const Icon(Icons.call_received),
+                  label: const Text('استلام معلّق'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: onFawryCredit,
+                  icon: const Icon(Icons.flash_on),
+                  label: const Text('فوري آجل'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: onReport,
+                  icon: const Icon(Icons.assessment_outlined),
+                  label: const Text('تقرير العميل'),
+                ),
                 ElevatedButton.icon(
                   onPressed: _quickSettleLatestClaim,
                   icon: const Icon(Icons.done_all),
@@ -1735,7 +1773,12 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                   icon: const Icon(Icons.attach_file),
                   label: const Text('مرفقات العميل'),
                 ),
-            ],
+              ],
+            ),
+            crossFadeState: _showActions
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 180),
           ),
           const SizedBox(height: 12),
           Wrap(

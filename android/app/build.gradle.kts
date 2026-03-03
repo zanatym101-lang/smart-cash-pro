@@ -13,10 +13,12 @@ val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
-val storeFileProp = keystoreProperties.getProperty("storeFile") ?: ""
-val storePasswordProp = keystoreProperties.getProperty("storePassword") ?: ""
-val keyAliasProp = keystoreProperties.getProperty("keyAlias") ?: ""
-val keyPasswordProp = keystoreProperties.getProperty("keyPassword") ?: ""
+val storeFileProp = keystoreProperties.getProperty("storeFile").orEmpty().trim()
+val storePasswordProp =
+    keystoreProperties.getProperty("storePassword").orEmpty().trim()
+val keyAliasProp = keystoreProperties.getProperty("keyAlias").orEmpty().trim()
+val keyPasswordProp =
+    keystoreProperties.getProperty("keyPassword").orEmpty().trim()
 val storeFileRef =
     if (storeFileProp.isNotBlank()) rootProject.file(storeFileProp) else null
 val storeFileFallback =

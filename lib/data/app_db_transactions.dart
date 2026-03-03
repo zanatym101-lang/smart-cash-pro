@@ -848,6 +848,81 @@ extension AppDbTransactions on AppDb {
     return txn.id;
   }
 
+  Future<void> updateExpense({
+    required int txnId,
+    required double amount,
+    required String category,
+    String? note,
+    String? party,
+  }) async {
+    await _ensureLoaded();
+    await _ensureOperationAllowed();
+    _requireAdmin();
+    if (amount <= 0) {
+      throw Exception('Amount must be greater than zero.');
+    }
+    final idx = _txns.indexWhere((t) => t.id == txnId);
+    if (idx < 0) {
+      throw Exception('Expense not found.');
+    }
+    final existing = _txns[idx];
+    if (existing.kind != 'expense') {
+      throw Exception('Only expense transactions can be edited.');
+    }
+
+    final updated = existing.copyWith(
+      amount: amount,
+      mode: category,
+      note: note?.trim().isEmpty ?? true ? null : note!.trim(),
+      party: party?.trim().isEmpty ?? true ? null : party!.trim(),
+    );
+
+    _txns[idx] = updated;
+    _rebuildEngineFromTxns();
+    await _save();
+    await enqueueOutbox(
+      entity: 'txn',
+      entityId: updated.id.toString(),
+      action: 'update',
+      payload: updated.toJson(),
+    );
+    await appendAudit(
+      type: 'expense_update',
+      txnId: updated.id,
+      amount: amount,
+      note: note ?? category,
+    );
+  }
+
+  Future<void> deleteExpense(int txnId) async {
+    await _ensureLoaded();
+    await _ensureOperationAllowed();
+    _requireAdmin();
+    final idx = _txns.indexWhere((t) => t.id == txnId);
+    if (idx < 0) {
+      throw Exception('Expense not found.');
+    }
+    final existing = _txns[idx];
+    if (existing.kind != 'expense') {
+      throw Exception('Only expense transactions can be deleted.');
+    }
+    _txns.removeAt(idx);
+    _rebuildEngineFromTxns();
+    await _save();
+    await enqueueOutbox(
+      entity: 'txn',
+      entityId: existing.id.toString(),
+      action: 'delete',
+      payload: existing.toJson(),
+    );
+    await appendAudit(
+      type: 'expense_delete',
+      txnId: existing.id,
+      amount: existing.amount,
+      note: existing.note ?? existing.mode,
+    );
+  }
+
   Future<void> confirmPending(int txnId) async {
     await _ensureLoaded();
     _requireAdmin();
