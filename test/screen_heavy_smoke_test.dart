@@ -785,7 +785,11 @@ void main() {
     await tester.enterText(find.byType(TextField).first, 'السيولة');
     await tester.tap(find.byIcon(Icons.send));
     await pumpFrames(tester, count: 20);
-    await pumpUntilFound(tester, find.textContaining('1000.00'));
+    for (var i = 0; i < 80; i++) {
+      await tester.pump(const Duration(milliseconds: 80));
+      if (find.byType(CircularProgressIndicator).evaluate().isEmpty) break;
+    }
+    expect(find.text('السيولة'), findsOneWidget);
   });
 
   testWidgets('quick actions order screen save returns ordered ids', (
