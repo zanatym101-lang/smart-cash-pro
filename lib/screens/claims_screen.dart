@@ -18,11 +18,19 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
   String? _error;
   List<Claim> _claims = [];
   final Set<int> _busyClaimIds = {};
+  final _searchCtrl = TextEditingController();
+  String _query = '';
 
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -49,6 +57,20 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
   }
 
   String _fmtMoney(double v) => v.toStringAsFixed(2);
+
+  bool _matchesQuery(Claim c) {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return true;
+    final hay = [
+      c.party,
+      c.note ?? '',
+      c.amount.toStringAsFixed(2),
+      _fmtDate(c.entryDate),
+      c.status,
+      c.type,
+    ].join(' ').toLowerCase();
+    return hay.contains(q);
+  }
 
   Future<void> _addClaimDialog(String type) async {
     final partyCtrl = TextEditingController();
@@ -339,6 +361,19 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
               openPayableTotal: openPayableTotal,
               net: net,
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              child: TextField(
+                controller: _searchCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'بحث داخل المستحقات',
+                  prefixIcon: Icon(Icons.search),
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onChanged: (v) => setState(() => _query = v),
+              ),
+            ),
             Expanded(
               child: TabBarView(
                 children: [
@@ -441,9 +476,11 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
 
     final open = _claims
         .where((c) => c.type == type && c.status == 'open')
+        .where(_matchesQuery)
         .toList();
     final closed = _claims
         .where((c) => c.type == type && c.status == 'closed')
+        .where(_matchesQuery)
         .toList();
 
     final addLabel = type == 'receivable'

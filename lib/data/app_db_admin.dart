@@ -696,6 +696,62 @@ extension AppDbAdmin on AppDb {
     _setDayStartHourCache(hour);
   }
 
+  String _normalizeProviderKey(String provider) {
+    final p = provider.trim().toLowerCase();
+    return p.isEmpty ? 'unknown' : p;
+  }
+
+  Map<String, double> _readDoubleMap(dynamic raw) {
+    final out = <String, double>{};
+    if (raw is Map) {
+      for (final entry in raw.entries) {
+        final key = entry.key.toString();
+        final val = entry.value;
+        if (val is num) {
+          out[key] = val.toDouble();
+        } else if (val != null) {
+          final parsed = double.tryParse(val.toString());
+          if (parsed != null) out[key] = parsed;
+        }
+      }
+    }
+    return out;
+  }
+
+  Future<double> getDefaultNetworkFee(String provider) async {
+    final m = await _readSettingsMap();
+    final map = _readDoubleMap(m['defaultNetworkFeeByProvider']);
+    final key = _normalizeProviderKey(provider);
+    if (map.containsKey(key)) return map[key]!;
+    if (map.containsKey('default')) return map['default']!;
+    return 0;
+  }
+
+  Future<void> setDefaultNetworkFee(String provider, double value) async {
+    final m = await _readSettingsMap();
+    final map = _readDoubleMap(m['defaultNetworkFeeByProvider']);
+    map[_normalizeProviderKey(provider)] = value;
+    m['defaultNetworkFeeByProvider'] = map;
+    await _writeSettingsMap(m);
+  }
+
+  Future<double> getDefaultReceiveFee(String provider) async {
+    final m = await _readSettingsMap();
+    final map = _readDoubleMap(m['defaultReceiveFeeByProvider']);
+    final key = _normalizeProviderKey(provider);
+    if (map.containsKey(key)) return map[key]!;
+    if (map.containsKey('default')) return map['default']!;
+    return 0;
+  }
+
+  Future<void> setDefaultReceiveFee(String provider, double value) async {
+    final m = await _readSettingsMap();
+    final map = _readDoubleMap(m['defaultReceiveFeeByProvider']);
+    map[_normalizeProviderKey(provider)] = value;
+    m['defaultReceiveFeeByProvider'] = map;
+    await _writeSettingsMap(m);
+  }
+
   Future<String> exportBackup() async {
     await _ensureLoaded();
     _requireAdmin();

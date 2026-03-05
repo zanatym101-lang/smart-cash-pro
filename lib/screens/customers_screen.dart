@@ -442,10 +442,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
         final aPinned = pinned.contains(_customerKeyFor(a));
         final bPinned = pinned.contains(_customerKeyFor(b));
         if (aPinned != bPinned) return aPinned ? -1 : 1;
-        final aDate =
-            a.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bDate =
-            b.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final aDate = a.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bDate = b.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
         return bDate.compareTo(aDate);
       });
 
@@ -1021,6 +1019,26 @@ class _CustomersScreenState extends State<CustomersScreen> {
       useSafeArea: true,
       builder: (ctx) => _CustomerSheet(
         customer: c,
+        onTransfer: () async {
+          Navigator.of(ctx).pop();
+          await Navigator.of(context).push<bool>(
+            MaterialPageRoute(
+              builder: (_) =>
+                  TransferScreen(initialParty: c.name, initialPhone: c.phone),
+            ),
+          );
+          _load();
+        },
+        onReceive: () async {
+          Navigator.of(ctx).pop();
+          await Navigator.of(context).push<bool>(
+            MaterialPageRoute(
+              builder: (_) =>
+                  ReceiveScreen(initialParty: c.name, initialPhone: c.phone),
+            ),
+          );
+          _load();
+        },
         onTransferPending: () async {
           Navigator.of(ctx).pop();
           await Navigator.of(context).push<bool>(
@@ -1060,6 +1078,19 @@ class _CustomersScreenState extends State<CustomersScreen> {
           );
           _load();
         },
+        onFawryCash: () async {
+          Navigator.of(ctx).pop();
+          await Navigator.of(context).push<bool>(
+            MaterialPageRoute(
+              builder: (_) => FawryScreen(
+                initialParty: c.name,
+                initialPhone: c.phone,
+                startCredit: false,
+              ),
+            ),
+          );
+          _load();
+        },
         onReport: () async {
           Navigator.of(ctx).pop();
           await Navigator.of(context).push<void>(
@@ -1075,8 +1106,25 @@ class _CustomersScreenState extends State<CustomersScreen> {
         onLineAction: _handleLineAction,
         onShowDetails: _showLineDetails,
         busyIds: _busyIds,
+        onRefresh: _load,
       ),
     );
+  }
+
+  String? _txnStatusLabel(String? status) {
+    if (status == null) return null;
+    final trimmed = status.trim();
+    if (trimmed.isEmpty) return null;
+    switch (trimmed) {
+      case 'posted':
+        return 'معتمد';
+      case 'pending':
+        return 'معلّق';
+      case 'rolled_back':
+        return 'ملغي';
+      default:
+        return trimmed;
+    }
   }
 
   void _showLineDetails(_CustomerLine line) {
@@ -1086,6 +1134,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final sideLabel = line.side == _LineSide.receivable
         ? 'عليه (تحصيل)'
         : 'له (سداد)';
+    final statusLabel = _txnStatusLabel(line.txnStatus);
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1099,8 +1148,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
               Text('النوع: $sideLabel'),
               Text('المبلغ: ${line.amount.toStringAsFixed(2)}'),
               Text('المرجع: ${line.ref}'),
-              if (line.txnStatus != null && line.txnStatus!.trim().isNotEmpty)
-                Text('الحالة: ${line.txnStatus}'),
+              if (statusLabel != null) Text('الحالة: $statusLabel'),
               if (line.details != null && line.details!.trim().isNotEmpty)
                 Text('التفاصيل: ${line.details}'),
             ],
@@ -1118,8 +1166,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
   @override
   Widget build(BuildContext context) {
-      final items = _filtered;
-      final archivedCount = _customers.where((c) => c.isArchived).length;
+    final items = _filtered;
+    final archivedCount = _customers.where((c) => c.isArchived).length;
     final totalReceivable = items.fold<double>(
       0,
       (s, c) => s + c.receivableTotal,
@@ -1128,19 +1176,19 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final net = totalReceivable - totalPayable;
 
     return Scaffold(
-        appBar: AppBar(
-          title: const AppTitle(subtitle: 'العملاء'),
-          actions: [
-            IconButton(
-              tooltip: 'حد التنبيه',
-              onPressed: _editAlertThreshold,
-              icon: const Icon(Icons.tune),
-            ),
-            IconButton(
-              tooltip: 'تحديث',
-              onPressed: _loading ? null : _load,
-              icon: const Icon(Icons.refresh),
-            ),
+      appBar: AppBar(
+        title: const AppTitle(subtitle: 'العملاء'),
+        actions: [
+          IconButton(
+            tooltip: 'حد التنبيه',
+            onPressed: _editAlertThreshold,
+            icon: const Icon(Icons.tune),
+          ),
+          IconButton(
+            tooltip: 'تحديث',
+            onPressed: _loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
         ],
       ),
       body: RefreshIndicator(
@@ -1155,25 +1203,25 @@ class _CustomersScreenState extends State<CustomersScreen> {
               customers: items.length,
             ),
             const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _listFilterChip('الكل', _CustomerListFilter.all),
-                  _listFilterChip('لنا', _CustomerListFilter.receivable),
-                  _listFilterChip('علينا', _CustomerListFilter.payable),
-                  _listFilterChip('المعلّق', _CustomerListFilter.pending),
-                  _listFilterChip(
-                    'الأرشيف',
-                    _CustomerListFilter.archived,
-                    count: archivedCount,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                onChanged: (v) => setState(() => _query = v),
-                decoration: const InputDecoration(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _listFilterChip('الكل', _CustomerListFilter.all),
+                _listFilterChip('لنا', _CustomerListFilter.receivable),
+                _listFilterChip('علينا', _CustomerListFilter.payable),
+                _listFilterChip('المعلّق', _CustomerListFilter.pending),
+                _listFilterChip(
+                  'الأرشيف',
+                  _CustomerListFilter.archived,
+                  count: archivedCount,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              onChanged: (v) => setState(() => _query = v),
+              decoration: const InputDecoration(
                 labelText: 'بحث باسم العميل أو رقم الهاتف',
                 prefixIcon: Icon(Icons.search),
               ),
@@ -1199,14 +1247,14 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 child: Center(child: Text('لا توجد بيانات عملاء حاليًا.')),
               )
             else
-                ...items.map(
-                  (c) => _customerCard(
-                    c,
-                    showArchivedLabel:
-                        _listFilter == _CustomerListFilter.archived &&
-                        c.isArchived,
-                  ),
+              ...items.map(
+                (c) => _customerCard(
+                  c,
+                  showArchivedLabel:
+                      _listFilter == _CustomerListFilter.archived &&
+                      c.isArchived,
                 ),
+              ),
           ],
         ),
       ),
@@ -1332,24 +1380,32 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
 class _CustomerSheet extends StatefulWidget {
   final _CustomerBucket customer;
+  final VoidCallback onTransfer;
+  final VoidCallback onReceive;
   final VoidCallback onTransferPending;
   final VoidCallback onReceivePending;
+  final VoidCallback onFawryCash;
   final VoidCallback onFawryCredit;
   final VoidCallback onReport;
   final Future<void> Function(_CustomerLine line, _LineAction action)
   onLineAction;
   final void Function(_CustomerLine line) onShowDetails;
   final Set<int> busyIds;
+  final Future<void> Function() onRefresh;
 
   const _CustomerSheet({
     required this.customer,
+    required this.onTransfer,
+    required this.onReceive,
     required this.onTransferPending,
     required this.onReceivePending,
+    required this.onFawryCash,
     required this.onFawryCredit,
     required this.onReport,
     required this.onLineAction,
     required this.onShowDetails,
     required this.busyIds,
+    required this.onRefresh,
   });
 
   @override
@@ -1360,16 +1416,22 @@ enum _CustomerLineFilter { all, claims, settlements, pending, posted }
 
 class _CustomerSheetState extends State<_CustomerSheet> {
   _CustomerLineFilter _filter = _CustomerLineFilter.all;
+  bool _showActions = false;
+  bool _batchBusy = false;
 
   _CustomerBucket get customer => widget.customer;
+  VoidCallback get onTransfer => widget.onTransfer;
+  VoidCallback get onReceive => widget.onReceive;
   VoidCallback get onTransferPending => widget.onTransferPending;
   VoidCallback get onReceivePending => widget.onReceivePending;
+  VoidCallback get onFawryCash => widget.onFawryCash;
   VoidCallback get onFawryCredit => widget.onFawryCredit;
   VoidCallback get onReport => widget.onReport;
   Future<void> Function(_CustomerLine line, _LineAction action)
   get onLineAction => widget.onLineAction;
   void Function(_CustomerLine line) get onShowDetails => widget.onShowDetails;
   Set<int> get busyIds => widget.busyIds;
+  Future<void> Function() get onRefresh => widget.onRefresh;
 
   String? _extractServiceLine(String? details) {
     if (details == null) return null;
@@ -1414,32 +1476,6 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     return 'n:${customer.name.trim().toLowerCase()}';
   }
 
-  Future<void> _quickSettleLatestClaim() async {
-    final openClaims =
-        customer.lines
-            .where((l) => l.lineType == _CustomerLineType.claimOpen)
-            .toList()
-          ..sort((a, b) {
-            final c = b.date.compareTo(a.date);
-            if (c != 0) return c;
-            final aId = a.claimId ?? 0;
-            final bId = b.claimId ?? 0;
-            return bId.compareTo(aId);
-          });
-    if (openClaims.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة لهذا العميل')),
-      );
-      return;
-    }
-    final latest = openClaims.first;
-    final action = latest.claimType == 'receivable'
-        ? _LineAction.collectPartial
-        : _LineAction.payPartial;
-    await onLineAction(latest, action);
-  }
-
   Future<void> _openAttachments() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -1450,6 +1486,412 @@ class _CustomerSheetState extends State<_CustomerSheet> {
         customerKey: _customerKey(),
       ),
     );
+  }
+
+  List<_CustomerLine> _openClaimsOfType(String type) {
+    final claims = customer.lines
+        .where(
+          (l) =>
+              l.lineType == _CustomerLineType.claimOpen && l.claimType == type,
+        )
+        .toList();
+    claims.sort((a, b) {
+      final c = a.date.compareTo(b.date);
+      if (c != 0) return c;
+      final aId = a.claimId ?? 0;
+      final bId = b.claimId ?? 0;
+      return aId.compareTo(bId);
+    });
+    return claims;
+  }
+
+  Future<Map<int, double>> _openClaimRemainingById() async {
+    final claims = await AppDb.instance.listClaims(status: 'open');
+    return {for (final c in claims) c.id: c.amount};
+  }
+
+  Future<String?> _pickSettlementType() async {
+    final hasReceivable = _openClaimsOfType('receivable').isNotEmpty;
+    final hasPayable = _openClaimsOfType('payable').isNotEmpty;
+    if (!hasReceivable && !hasPayable) return null;
+    if (hasReceivable && !hasPayable) return 'receivable';
+    if (!hasReceivable && hasPayable) return 'payable';
+
+    return showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.call_received),
+              title: const Text('تسوية مستحقات لنا (تحصيل)'),
+              onTap: () => Navigator.of(ctx).pop('receivable'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.call_made),
+              title: const Text('تسوية مستحقات علينا (سداد)'),
+              onTap: () => Navigator.of(ctx).pop('payable'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<double?> _promptTotalAmount({
+    required String title,
+    required String label,
+    required double maxAmount,
+  }) async {
+    final ctrl = TextEditingController();
+    String? error;
+    try {
+      return showDialog<double>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setState) => AlertDialog(
+            title: Text(title),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('الإجمالي المتاح: ${maxAmount.toStringAsFixed(2)}'),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: ctrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: label,
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    errorText: error,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final value = double.tryParse(ctrl.text.trim());
+                  if (value == null || value <= 0) {
+                    setState(() => error = 'أدخل مبلغًا صحيحًا');
+                    return;
+                  }
+                  if (value > maxAmount) {
+                    setState(() => error = 'المبلغ أكبر من الإجمالي المتاح');
+                    return;
+                  }
+                  Navigator.of(ctx).pop(value);
+                },
+                child: const Text('تنفيذ'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      ctrl.dispose();
+    }
+  }
+
+  Future<void> _runBatch(
+    String successMessage,
+    Future<void> Function() action,
+  ) async {
+    if (_batchBusy) return;
+    setState(() => _batchBusy = true);
+    try {
+      await action();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(successMessage)));
+      await onRefresh();
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
+    } finally {
+      if (mounted) setState(() => _batchBusy = false);
+    }
+  }
+
+  Future<void> _settleAllClaims() async {
+    final type = await _pickSettlementType();
+    if (type == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
+      );
+      return;
+    }
+    final lines = _openClaimsOfType(type);
+    if (lines.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    final label = type == 'receivable' ? 'تحصيل' : 'سداد';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('$label كل المستحقات'),
+        content: Text('سيتم تنفيذ $label لكل المستحقات المفتوحة لهذا العميل.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('تنفيذ'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await _runBatch('تمت تسوية كل المستحقات بنجاح ✅', () async {
+      final remainingById = await _openClaimRemainingById();
+      for (final line in lines) {
+        final claimId = line.claimId;
+        if (claimId == null) continue;
+        final remaining = remainingById[claimId] ?? 0;
+        if (remaining <= 0) continue;
+        await AppDb.instance.settleClaim(claimId: claimId, amount: remaining);
+      }
+    });
+  }
+
+  Future<void> _settlePartialFromTotal() async {
+    final type = await _pickSettlementType();
+    if (type == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
+      );
+      return;
+    }
+    final lines = _openClaimsOfType(type);
+    if (lines.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
+      );
+      return;
+    }
+    final remainingById = await _openClaimRemainingById();
+    final total = lines.fold<double>(0, (sum, line) {
+      final claimId = line.claimId;
+      if (claimId == null) return sum;
+      return sum + (remainingById[claimId] ?? 0);
+    });
+    if (total <= 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لا توجد مبالغ متبقية للتسوية')),
+      );
+      return;
+    }
+    final actionLabel = type == 'receivable' ? 'تحصيل' : 'سداد';
+    final amount = await _promptTotalAmount(
+      title: '$actionLabel جزئي من الإجمالي',
+      label: 'مبلغ $actionLabel',
+      maxAmount: total,
+    );
+    if (amount == null) return;
+
+    await _runBatch('تم تنفيذ التسوية الجزئية بنجاح ✅', () async {
+      var remainingAmount = amount;
+      for (final line in lines) {
+        if (remainingAmount <= 0) break;
+        final claimId = line.claimId;
+        if (claimId == null) continue;
+        final claimRemaining = remainingById[claimId] ?? 0;
+        if (claimRemaining <= 0) continue;
+        final take = remainingAmount < claimRemaining
+            ? remainingAmount
+            : claimRemaining;
+        if (take <= 0) continue;
+        await AppDb.instance.settleClaim(claimId: claimId, amount: take);
+        remainingAmount -= take;
+      }
+    });
+  }
+
+  Future<void> _addClaimForCustomer(String type) async {
+    final amountCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
+    String? error;
+    try {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setState) => AlertDialog(
+            title: Text(
+              type == 'receivable' ? 'إضافة مستحق لنا' : 'إضافة مستحق علينا',
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('العميل: ${customer.name}'),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: amountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'المبلغ',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    errorText: error,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: noteCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظة (اختياري)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  final value = double.tryParse(amountCtrl.text.trim());
+                  if (value == null || value <= 0) {
+                    setState(() => error = 'أدخل مبلغًا صحيحًا');
+                    return;
+                  }
+                  Navigator.of(ctx).pop(true);
+                },
+                child: const Text('حفظ'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (ok != true) return;
+      final amount = double.parse(amountCtrl.text.trim());
+      await _runBatch('تمت إضافة المستحق بنجاح ✅', () async {
+        await AppDb.instance.addClaim(
+          type: type,
+          party: customer.name,
+          amount: amount,
+          note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
+          phone: customer.phone,
+        );
+      });
+    } finally {
+      amountCtrl.dispose();
+      noteCtrl.dispose();
+    }
+  }
+
+  Future<void> _openAddOperationMenu() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: const Text('تحويل'),
+              onTap: () => Navigator.of(ctx).pop('transfer'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.swap_horiz),
+              title: const Text('تحويل معلّق'),
+              onTap: () => Navigator.of(ctx).pop('transfer_pending'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.call_received),
+              title: const Text('استلام'),
+              onTap: () => Navigator.of(ctx).pop('receive'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.call_received),
+              title: const Text('استلام معلّق'),
+              onTap: () => Navigator.of(ctx).pop('receive_pending'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.flash_on),
+              title: const Text('فوري نقدي'),
+              onTap: () => Navigator.of(ctx).pop('fawry_cash'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.flash_on),
+              title: const Text('فوري آجل'),
+              onTap: () => Navigator.of(ctx).pop('fawry_credit'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.account_balance_wallet_outlined),
+              title: const Text('مستحق لنا'),
+              onTap: () => Navigator.of(ctx).pop('claim_receivable'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.account_balance_wallet_outlined),
+              title: const Text('مستحق علينا'),
+              onTap: () => Navigator.of(ctx).pop('claim_payable'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case 'transfer':
+        onTransfer();
+        return;
+      case 'receive':
+        onReceive();
+        return;
+      case 'transfer_pending':
+        onTransferPending();
+        return;
+      case 'receive_pending':
+        onReceivePending();
+        return;
+      case 'fawry_cash':
+        onFawryCash();
+        return;
+      case 'fawry_credit':
+        onFawryCredit();
+        return;
+      case 'claim_receivable':
+        await _addClaimForCustomer('receivable');
+        return;
+      case 'claim_payable':
+        await _addClaimForCustomer('payable');
+        return;
+      default:
+        return;
+    }
   }
 
   String? _buildSettlementDetails(_CustomerLine line) {
@@ -1526,6 +1968,22 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       map[l] = running;
     }
     return map;
+  }
+
+  bool _isSettlementLine(_CustomerLine line) {
+    return line.txnKind == 'claim_collect' || line.txnKind == 'claim_pay';
+  }
+
+  _LineSide _remainingSideForSettlement(_CustomerLine line) {
+    if (line.txnKind == 'claim_collect') {
+      // Remaining after collection = still due on customer (عليه).
+      return _LineSide.receivable;
+    }
+    if (line.txnKind == 'claim_pay') {
+      // Remaining after payment = still due to customer (له).
+      return _LineSide.payable;
+    }
+    return line.side;
   }
 
   List<_CustomerLine> _applyFilter(List<_CustomerLine> lines) {
@@ -1701,41 +2159,61 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             ],
           ),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
+          Row(
             children: [
-              ElevatedButton.icon(
-                onPressed: onTransferPending,
-                icon: const Icon(Icons.swap_horiz),
-                label: const Text('تحويل معلّق'),
+              Text(
+                'إجراءات سريعة',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
               ),
-              ElevatedButton.icon(
-                onPressed: onReceivePending,
-                icon: const Icon(Icons.call_received),
-                label: const Text('استلام معلّق'),
+              const Spacer(),
+              IconButton(
+                onPressed: () => setState(() => _showActions = !_showActions),
+                icon: Icon(
+                  _showActions ? Icons.expand_less : Icons.expand_more,
+                ),
+                tooltip: _showActions ? 'إخفاء الإجراءات' : 'إظهار الإجراءات',
               ),
-              ElevatedButton.icon(
-                onPressed: onFawryCredit,
-                icon: const Icon(Icons.flash_on),
-                label: const Text('فوري آجل'),
-              ),
-              ElevatedButton.icon(
-                onPressed: onReport,
-                icon: const Icon(Icons.assessment_outlined),
-                label: const Text('تقرير العميل'),
-              ),
+            ],
+          ),
+          AnimatedCrossFade(
+            firstChild: const SizedBox.shrink(),
+            secondChild: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
                 ElevatedButton.icon(
-                  onPressed: _quickSettleLatestClaim,
+                  onPressed: _batchBusy ? null : _openAddOperationMenu,
+                  icon: const Icon(Icons.add_circle_outline),
+                  label: const Text('إضافة عملية'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: _batchBusy ? null : _settleAllClaims,
                   icon: const Icon(Icons.done_all),
-                  label: const Text('تسوية آخر مستحق'),
+                  label: const Text('تسوية كل المستحقات'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: _batchBusy ? null : _settlePartialFromTotal,
+                  icon: const Icon(Icons.tune),
+                  label: const Text('تسوية جزئية من الإجمالي'),
+                ),
+                ElevatedButton.icon(
+                  onPressed: onReport,
+                  icon: const Icon(Icons.assessment_outlined),
+                  label: const Text('تقرير العميل'),
                 ),
                 ElevatedButton.icon(
                   onPressed: _openAttachments,
                   icon: const Icon(Icons.attach_file),
                   label: const Text('مرفقات العميل'),
                 ),
-            ],
+              ],
+            ),
+            crossFadeState: _showActions
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
+            duration: const Duration(milliseconds: 180),
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -1768,10 +2246,21 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                             ? const Color(0xFF047857)
                             : const Color(0xFFB91C1C);
                         final amountBg = amountColor.withValues(alpha: 0.12);
-                        final balance = balances[line] ?? customer.net;
-                        final balanceColor = balance >= 0
-                            ? const Color(0xFF047857)
-                            : const Color(0xFFB91C1C);
+                        final runningBalance = balances[line] ?? customer.net;
+                        final useRemainingAfter =
+                            line.remainingAfter != null &&
+                            _isSettlementLine(line);
+                        final balance = useRemainingAfter
+                            ? line.remainingAfter!.abs()
+                            : runningBalance.abs();
+                        final balanceSide = useRemainingAfter
+                            ? _remainingSideForSettlement(line)
+                            : (runningBalance >= 0
+                                  ? _LineSide.receivable
+                                  : _LineSide.payable);
+                        final balanceColor = balanceSide == _LineSide.receivable
+                            ? const Color(0xFFB91C1C)
+                            : const Color(0xFF047857);
                         final balanceBg = balanceColor.withValues(alpha: 0.12);
                         final balanceLabel = balance.toStringAsFixed(2);
 

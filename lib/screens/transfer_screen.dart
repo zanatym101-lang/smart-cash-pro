@@ -48,6 +48,7 @@ class _TransferScreenState extends State<TransferScreen> {
 
   String _transferType = 'type1';
   bool _viaPhone = false;
+  bool _networkFeeTouched = false;
 
   @override
   void initState() {
@@ -85,6 +86,7 @@ class _TransferScreenState extends State<TransferScreen> {
         _walletId = wallets.isNotEmpty ? wallets.first.id : null;
       });
       await _refreshSelectedWalletBalance();
+      _applyDefaultNetworkFee();
       await _loadRecentNumbers();
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -121,6 +123,7 @@ class _TransferScreenState extends State<TransferScreen> {
   void _onWalletChanged(int? walletId) {
     setState(() => _walletId = walletId);
     _refreshSelectedWalletBalance();
+    _applyDefaultNetworkFee();
   }
 
   Future<void> _loadRecentNumbers() async {
@@ -136,6 +139,41 @@ class _TransferScreenState extends State<TransferScreen> {
       if (w.id == id) return w;
     }
     return null;
+  }
+
+  double _calcNetworkFee({
+    required double amount,
+    required String fromProvider,
+    required String toProvider,
+  }) {
+    if (amount <= 0) return 0;
+    if (fromProvider == 'unknown' || toProvider == 'unknown') return 0;
+    if (fromProvider == toProvider) return 1;
+    var fee = amount * 0.005;
+    if (fee < 1) fee = 1;
+    if (fee > 15) fee = 15;
+    return fee;
+  }
+
+  void _applyDefaultNetworkFee() {
+    if (_networkFeeTouched) return;
+    final amt = _toDouble(_amountCtrl.text);
+    final wallet = _selectedWallet();
+    if (wallet == null) return;
+    final fromPhone = wallet.phone.trim();
+    final toPhone = normalizePhone(_customerPhoneCtrl.text);
+    if (amt <= 0 || fromPhone.isEmpty || toPhone.isEmpty) {
+      _networkFeeCtrl.text = '0.00';
+      return;
+    }
+    final fromProvider = providerFromPhone(fromPhone);
+    final toProvider = providerFromPhone(toPhone);
+    final fee = _calcNetworkFee(
+      amount: amt,
+      fromProvider: fromProvider,
+      toProvider: toProvider,
+    );
+    _networkFeeCtrl.text = fee.toStringAsFixed(2);
   }
 
   double _toDouble(String s) => double.tryParse(s.trim()) ?? 0;
@@ -159,6 +197,7 @@ class _TransferScreenState extends State<TransferScreen> {
       _selectedContactName = picked.name;
       _partyNameCtrl.text = picked.name;
     });
+    _applyDefaultNetworkFee();
   }
 
   Future<String?> _editTransferCode(String defaultCode, String provider) async {
@@ -241,11 +280,11 @@ class _TransferScreenState extends State<TransferScreen> {
               children: [
                 Text('المحفظة: ${wallet.name}'),
                 Text(
-                  'نوع التحويل: ${_transferType == 'type1' ? 'Type 1' : 'Type 2'}',
+                  'نوع التحويل: ${_transferType == 'type1' ? 'النوع 1' : 'النوع 2'}',
                 ),
                 Text('المبلغ المدخل: ${_fmtMoney(amount)}'),
-                Text('CF (ربحك): ${_fmtMoney(clientFee)}'),
-                Text('NF (رسوم شبكة): ${_fmtMoney(networkFee)}'),
+                Text('عمولة العميل: ${_fmtMoney(clientFee)}'),
+                Text('رسوم الشبكة: ${_fmtMoney(networkFee)}'),
                 Text('المبلغ المحول للعميل: ${_fmtMoney(sentAmount)}'),
                 Text('الخصم من المحفظة: ${_fmtMoney(walletDebit)}'),
                 Text('الداخل للدرج: ${_fmtMoney(drawerIn)}'),
@@ -339,7 +378,7 @@ class _TransferScreenState extends State<TransferScreen> {
     if (_transferType == 'type2' && amt <= (cf + nf)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('في Type 2 يجب أن يكون المبلغ أكبر من CF + NF'),
+          content: Text('في النوع 2 يجب أن يكون المبلغ أكبر من مجموع العمولات'),
         ),
       );
       return;
@@ -453,7 +492,6 @@ class _TransferScreenState extends State<TransferScreen> {
         note: _composeNote(note, customerPhone),
         party: partyName.isEmpty ? null : partyName,
       );
-
       if (_viaPhone) {
         await NotificationService.show(
           title: 'تحويل عبر الهاتف',
@@ -496,6 +534,7 @@ class _TransferScreenState extends State<TransferScreen> {
     _amountCtrl.clear();
     _clientFeeCtrl.clear();
     _networkFeeCtrl.clear();
+    _networkFeeTouched = false;
     _noteCtrl.clear();
     _partyNameCtrl.clear();
     _customerPhoneCtrl.clear();
@@ -589,6 +628,7 @@ class _TransferScreenState extends State<TransferScreen> {
                         controller: _customerPhoneCtrl,
                         keyboardType: TextInputType.phone,
                         enabled: !_saving,
+                        onChanged: (_) => _applyDefaultNetworkFee(),
                         decoration: InputDecoration(
                           labelText: 'رقم الطرف (اختياري)',
                           suffixIcon: IconButton(
@@ -617,6 +657,7 @@ class _TransferScreenState extends State<TransferScreen> {
                                   _selectedContactName = r.name;
                                   _partyNameCtrl.text = r.name ?? '';
                                 });
+                                _applyDefaultNetworkFee();
                               },
                             );
                           }).toList(),
@@ -639,8 +680,9 @@ class _TransferScreenState extends State<TransferScreen> {
                         controller: _amountCtrl,
                         keyboardType: TextInputType.number,
                         enabled: !_saving,
+                        onChanged: (_) => _applyDefaultNetworkFee(),
                         decoration: const InputDecoration(
-                          labelText: 'المبلغ (EGP)',
+                          labelText: 'المبلغ (جنيه)',
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -649,7 +691,7 @@ class _TransferScreenState extends State<TransferScreen> {
                         keyboardType: TextInputType.number,
                         enabled: !_saving,
                         decoration: const InputDecoration(
-                          labelText: 'CF (العمولة/الربح) (EGP)',
+                          labelText: 'عمولة العميل (جنيه)',
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -658,8 +700,9 @@ class _TransferScreenState extends State<TransferScreen> {
                         keyboardType: TextInputType.number,
                         enabled: !_saving,
                         decoration: const InputDecoration(
-                          labelText: 'NF (رسوم الشبكة) (EGP)',
+                          labelText: 'رسوم الشبكة (جنيه)',
                         ),
+                        onChanged: (_) => _networkFeeTouched = true,
                       ),
                     ],
                   ),
@@ -677,11 +720,11 @@ class _TransferScreenState extends State<TransferScreen> {
                       children: const [
                         RadioListTile<String>(
                           value: 'type1',
-                          title: Text('Type 1: العميل يدفع العمولة كاش'),
+                          title: Text('النوع 1: العميل يدفع العمولة كاش'),
                         ),
                         RadioListTile<String>(
                           value: 'type2',
-                          title: Text('Type 2: العمولة تُخصم من المبلغ'),
+                          title: Text('النوع 2: العمولة تُخصم من المبلغ'),
                         ),
                       ],
                     ),
