@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class CloudAssistantService {
-  static const String _endpoint =
-      'https://smart-cash-pro-six.vercel.app/api/assistant';
+  static const String _endpoint = String.fromEnvironment(
+    'CLOUD_ASSISTANT_ENDPOINT',
+    defaultValue: 'https://smart-cash-pro-six.vercel.app/api/assistant',
+  );
 
   static Future<String> ask(Map<String, dynamic> payload) async {
     final res = await http.post(
@@ -14,7 +16,17 @@ class CloudAssistantService {
     );
 
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw Exception('فشل الاتصال بالسحابة (${res.statusCode})');
+      String details = '';
+      try {
+        final data = jsonDecode(res.body);
+        if (data is Map) {
+          details = (data['details'] ?? data['error'] ?? '').toString();
+        }
+      } catch (_) {
+        details = '';
+      }
+      final suffix = details.trim().isEmpty ? '' : ': $details';
+      throw Exception('فشل الاتصال بالسحابة (${res.statusCode})$suffix');
     }
 
     final data = jsonDecode(res.body);
