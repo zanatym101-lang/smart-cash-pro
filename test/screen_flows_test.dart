@@ -268,15 +268,15 @@ void main() {
       final partyField = findFieldByLabel('اسم الطرف (اختياري)');
       await tester.enterText(partyField, 'Customer B');
 
-      final amountField = findFieldByLabel('المبلغ (EGP)');
+      final amountField = findFieldByLabel('المبلغ (جنيه)');
       await tester.ensureVisible(amountField);
       await tester.enterText(amountField, '101');
 
-      final clientFeeField = findFieldByLabel('CF (العمولة/الربح) (EGP)');
+      final clientFeeField = findFieldByLabel('عمولة العميل (جنيه)');
       await tester.ensureVisible(clientFeeField);
       await tester.enterText(clientFeeField, '4');
 
-      final networkFeeField = findFieldByLabel('NF (رسوم الشبكة) (EGP)');
+      final networkFeeField = findFieldByLabel('رسوم الشبكة (جنيه)');
       await tester.ensureVisible(networkFeeField);
       await tester.enterText(networkFeeField, '1');
       await tester.runAsync(() async {
@@ -430,15 +430,15 @@ void main() {
     final partyField = findFieldByLabel('اسم الطرف (اختياري)');
     await tester.enterText(partyField, 'Admin Customer');
 
-    final amountField = findFieldByLabel('المبلغ (EGP)');
+    final amountField = findFieldByLabel('المبلغ (جنيه)');
     await tester.ensureVisible(amountField);
     await tester.enterText(amountField, '101');
 
-    final clientFeeField = findFieldByLabel('CF (العمولة/الربح) (EGP)');
+    final clientFeeField = findFieldByLabel('عمولة العميل (جنيه)');
     await tester.ensureVisible(clientFeeField);
     await tester.enterText(clientFeeField, '4');
 
-    final networkFeeField = findFieldByLabel('NF (رسوم الشبكة) (EGP)');
+    final networkFeeField = findFieldByLabel('رسوم الشبكة (جنيه)');
     await tester.ensureVisible(networkFeeField);
     await tester.enterText(networkFeeField, '1');
 
