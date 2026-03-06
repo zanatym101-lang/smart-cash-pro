@@ -24,6 +24,26 @@ class CustomerTxnExportRow {
   });
 }
 
+class CustomerStatementExportRow {
+  final DateTime date;
+  final String title;
+  final String? details;
+  final String status;
+  final double amountSigned;
+  final double runningNet;
+  final String runningSideLabel;
+
+  const CustomerStatementExportRow({
+    required this.date,
+    required this.title,
+    this.details,
+    required this.status,
+    required this.amountSigned,
+    required this.runningNet,
+    required this.runningSideLabel,
+  });
+}
+
 class CustomerReportExportData {
   final String customerName;
   final String customerPhone;
@@ -40,6 +60,9 @@ class CustomerReportExportData {
   final int receiveCount;
   final int fawryCount;
   final List<CustomerTxnExportRow> latestTxns;
+  final double openingNet;
+  final double closingNet;
+  final List<CustomerStatementExportRow> statementRows;
 
   const CustomerReportExportData({
     required this.customerName,
@@ -56,7 +79,10 @@ class CustomerReportExportData {
     required this.transferCount,
     required this.receiveCount,
     required this.fawryCount,
-    required this.latestTxns,
+    this.latestTxns = const [],
+    this.openingNet = 0,
+    this.closingNet = 0,
+    this.statementRows = const [],
   });
 }
 
@@ -525,44 +551,89 @@ class ReportExporter {
   }) async {
     final doc = await _newPdfDocument();
     final period =
-        'From ${_fmtDate(data.range.start)} to ${_fmtDate(data.range.end)}';
+        'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
+    final netLabel = data.net >= 0 ? 'صافي لنا' : 'صافي علينا';
 
     doc.addPage(
       pw.MultiPage(
         build: (_) => [
-          pw.Text('Customer Report', style: pw.TextStyle(fontSize: 18)),
-          pw.SizedBox(height: 8),
-          pw.Text('Name: ${data.customerName}'),
-          pw.Text(
-            'Phone: ${data.customerPhone.trim().isEmpty ? '-' : data.customerPhone}',
-          ),
-          pw.Text('Period: $period'),
-          pw.SizedBox(height: 12),
-          pw.Text('Current Position'),
-          pw.Text('Receivable: ${data.receivable.toStringAsFixed(2)}'),
-          pw.Text('Payable: ${data.payable.toStringAsFixed(2)}'),
-          pw.Text('Net: ${data.net.toStringAsFixed(2)}'),
-          pw.SizedBox(height: 12),
-          pw.Text('Period Movement'),
-          pw.Text('Posted count: ${data.postedCount}'),
-          pw.Text('Pending count: ${data.pendingCount}'),
-          pw.Text('Posted volume: ${data.postedVolume.toStringAsFixed(2)}'),
-          pw.Text('Pending volume: ${data.pendingVolume.toStringAsFixed(2)}'),
-          pw.Text('Posted profit: ${data.postedProfit.toStringAsFixed(2)}'),
-          pw.SizedBox(height: 12),
-          pw.Text('Operation Types'),
-          pw.Text('Transfer: ${data.transferCount}'),
-          pw.Text('Receive: ${data.receiveCount}'),
-          pw.Text('Fawry: ${data.fawryCount}'),
-          pw.SizedBox(height: 12),
-          pw.Text('Latest Operations'),
-          if (data.latestTxns.isEmpty)
-            pw.Text('No operations in selected period'),
-          ...data.latestTxns.map(
-            (t) => pw.Text(
-              '${_fmtDateTime(t.date)} | ${t.kind} | ${t.status} | ${t.amount.toStringAsFixed(2)}',
+          _rtlBlock([
+            pw.Text(
+              'كشف حساب عميل',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
             ),
-          ),
+            pw.SizedBox(height: 8),
+            pw.Text('العميل: ${data.customerName}'),
+            pw.Text(
+              'الهاتف: ${data.customerPhone.trim().isEmpty ? '-' : data.customerPhone}',
+            ),
+            pw.Text('الفترة: $period'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'الموقف الحالي',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            pw.Text('لنا: ${data.receivable.toStringAsFixed(2)}'),
+            pw.Text('علينا: ${data.payable.toStringAsFixed(2)}'),
+            pw.Text('$netLabel: ${data.net.abs().toStringAsFixed(2)}'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'ملخص الفترة',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            pw.Text(
+              'الرصيد الافتتاحي: ${data.openingNet.abs().toStringAsFixed(2)} ${data.openingNet >= 0 ? '(لنا)' : '(علينا)'}',
+            ),
+            pw.Text(
+              'الرصيد الختامي: ${data.closingNet.abs().toStringAsFixed(2)} ${data.closingNet >= 0 ? '(لنا)' : '(علينا)'}',
+            ),
+            pw.Text(
+              'منفذ: ${data.postedCount} • حجم ${data.postedVolume.toStringAsFixed(2)}',
+            ),
+            pw.Text(
+              'معلق: ${data.pendingCount} • حجم ${data.pendingVolume.toStringAsFixed(2)}',
+            ),
+            pw.Text('ربح منفذ: ${data.postedProfit.toStringAsFixed(2)}'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'أنواع العمليات',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            pw.Text('تحويل: ${data.transferCount}'),
+            pw.Text('استلام: ${data.receiveCount}'),
+            pw.Text('فوري: ${data.fawryCount}'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'كشف الحركات (الرصيد بعد كل حركة)',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            if (data.statementRows.isEmpty)
+              pw.Text('لا توجد حركات في الفترة المختارة'),
+            if (data.statementRows.isNotEmpty)
+              pw.TableHelper.fromTextArray(
+                headerStyle: pw.TextStyle(font: _pdfBoldFont, fontSize: 10),
+                cellStyle: pw.TextStyle(font: _pdfBaseFont, fontSize: 9),
+                cellAlignment: pw.Alignment.centerRight,
+                headers: const [
+                  'التاريخ',
+                  'الحركة',
+                  'المبلغ',
+                  'الرصيد بعد الحركة',
+                  'الحالة',
+                ],
+                data: data.statementRows
+                    .map(
+                      (r) => [
+                        _fmtDateTime(r.date),
+                        r.title,
+                        r.amountSigned.toStringAsFixed(2),
+                        '${r.runningNet.abs().toStringAsFixed(2)} ${r.runningSideLabel}',
+                        r.status,
+                      ],
+                    )
+                    .toList(),
+              ),
+          ]),
         ],
       ),
     );
@@ -584,38 +655,70 @@ class ReportExporter {
         v is int ? IntCellValue(v) : DoubleCellValue(v.toDouble());
 
     final period =
-        'From ${_fmtDate(data.range.start)} to ${_fmtDate(data.range.end)}';
+        'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
+    final openingLabel = data.openingNet >= 0 ? 'لنا' : 'علينا';
+    final closingLabel = data.closingNet >= 0 ? 'لنا' : 'علينا';
+    final netLabel = data.net >= 0 ? 'لنا' : 'علينا';
 
-    final summary = excel['Summary'];
-    summary.appendRow([t('Customer Name'), t(data.customerName)]);
+    final summary = excel['الملخص'];
+    summary.appendRow([t('اسم العميل'), t(data.customerName)]);
     summary.appendRow([
-      t('Phone'),
+      t('الهاتف'),
       t(data.customerPhone.trim().isEmpty ? '-' : data.customerPhone),
     ]);
-    summary.appendRow([t('Period'), t(period)]);
+    summary.appendRow([t('الفترة'), t(period)]);
     summary.appendRow([]);
-    summary.appendRow([t('Receivable'), n(data.receivable)]);
-    summary.appendRow([t('Payable'), n(data.payable)]);
-    summary.appendRow([t('Net'), n(data.net)]);
+    summary.appendRow([t('لنا'), n(data.receivable)]);
+    summary.appendRow([t('علينا'), n(data.payable)]);
+    summary.appendRow([t('الصافي ($netLabel)'), n(data.net.abs())]);
     summary.appendRow([]);
-    summary.appendRow([t('Posted Count'), n(data.postedCount)]);
-    summary.appendRow([t('Pending Count'), n(data.pendingCount)]);
-    summary.appendRow([t('Posted Volume'), n(data.postedVolume)]);
-    summary.appendRow([t('Pending Volume'), n(data.pendingVolume)]);
-    summary.appendRow([t('Posted Profit'), n(data.postedProfit)]);
+    summary.appendRow([
+      t('الرصيد الافتتاحي ($openingLabel)'),
+      n(data.openingNet.abs()),
+    ]);
+    summary.appendRow([
+      t('الرصيد الختامي ($closingLabel)'),
+      n(data.closingNet.abs()),
+    ]);
     summary.appendRow([]);
-    summary.appendRow([t('Transfer Count'), n(data.transferCount)]);
-    summary.appendRow([t('Receive Count'), n(data.receiveCount)]);
-    summary.appendRow([t('Fawry Count'), n(data.fawryCount)]);
+    summary.appendRow([t('عدد المنفذ'), n(data.postedCount)]);
+    summary.appendRow([t('عدد المعلق'), n(data.pendingCount)]);
+    summary.appendRow([t('حجم المنفذ'), n(data.postedVolume)]);
+    summary.appendRow([t('حجم المعلق'), n(data.pendingVolume)]);
+    summary.appendRow([t('ربح منفذ'), n(data.postedProfit)]);
+    summary.appendRow([]);
+    summary.appendRow([t('عدد التحويل'), n(data.transferCount)]);
+    summary.appendRow([t('عدد الاستلام'), n(data.receiveCount)]);
+    summary.appendRow([t('عدد فوري'), n(data.fawryCount)]);
 
-    final operations = excel['Operations'];
-    operations.appendRow([t('Date'), t('Kind'), t('Status'), t('Amount')]);
+    final operations = excel['العمليات'];
+    operations.appendRow([t('التاريخ'), t('النوع'), t('الحالة'), t('المبلغ')]);
     for (final row in data.latestTxns) {
       operations.appendRow([
         t(_fmtDateTime(row.date)),
         t(row.kind),
         t(row.status),
         n(row.amount),
+      ]);
+    }
+
+    final statement = excel['كشف_الحساب'];
+    statement.appendRow([
+      t('التاريخ'),
+      t('الحركة'),
+      t('التفاصيل'),
+      t('الحالة'),
+      t('المبلغ'),
+      t('الرصيد بعد الحركة'),
+    ]);
+    for (final row in data.statementRows) {
+      statement.appendRow([
+        t(_fmtDateTime(row.date)),
+        t(row.title),
+        t((row.details ?? '').trim().isEmpty ? '-' : row.details!.trim()),
+        t(row.status),
+        n(row.amountSigned),
+        t('${row.runningNet.abs().toStringAsFixed(2)} ${row.runningSideLabel}'),
       ]);
     }
 

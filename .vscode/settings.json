@@ -1,5 +1,7 @@
 {
-    "java.configuration.updateBuildConfiguration": "automatic",
+    "java.configuration.updateBuildConfiguration": "disabled",
+    "java.import.gradle.enabled": false,
+    "java.import.maven.enabled": false,
     "files.encoding": "utf8",
     "files.autoGuessEncoding": false,
     "files.eol": "\n"

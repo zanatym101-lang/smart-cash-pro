@@ -81,6 +81,13 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     return m?.group(0);
   }
 
+  int? _extractClaimIdFromNote(String? note) {
+    if (note == null || note.trim().isEmpty) return null;
+    final m = RegExp(r'claim_id:(\d+)').firstMatch(note);
+    if (m == null) return null;
+    return int.tryParse(m.group(1) ?? '');
+  }
+
   DateTime _businessShift(DateTime d) {
     if (_dayStartHour <= 0) return d;
     return d.subtract(Duration(hours: _dayStartHour));
@@ -197,6 +204,127 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     }
   }
 
+  String _statusLabel(String status) {
+    switch (status) {
+      case 'posted':
+        return 'منفذ';
+      case 'pending':
+        return 'معلق';
+      case 'rolled_back':
+        return 'ملغي';
+      default:
+        return status;
+    }
+  }
+
+  String _claimOpenLabel(String type) {
+    if (type == 'receivable') return 'فتح مستحق (لنا)';
+    return 'فتح مستحق (علينا)';
+  }
+
+  String _statementLabelForTxn(Txn t) {
+    if (t.kind == 'transfer' && t.status == 'pending') return 'تحويل معلق';
+    if (t.kind == 'receive' && t.status == 'pending') return 'استلام معلق';
+    if (t.kind == 'fawry_credit' && t.status == 'pending') {
+      return 'فوري آجل معلق';
+    }
+    if (t.kind == 'claim_collect') return 'تحصيل مستحق';
+    if (t.kind == 'claim_pay') return 'سداد مستحق';
+    return _kindLabel(t);
+  }
+
+  String _statementDetailsForTxn(Txn t) {
+    final parts = <String>[];
+    final service = (t.serviceName ?? '').trim();
+    if (service.isNotEmpty) {
+      parts.add('الخدمة: $service');
+    }
+    final note = (t.note ?? '').trim();
+    if (note.isNotEmpty) {
+      parts.add(note);
+    }
+    parts.add('Txn#${t.id}');
+    return parts.join(' | ');
+  }
+
+  int? _extractClaimIdFromRef(String? ref) {
+    if (ref == null || ref.trim().isEmpty) return null;
+    final m = RegExp(r'claim#?(\d+)', caseSensitive: false).firstMatch(ref);
+    if (m == null) return null;
+    return int.tryParse(m.group(1) ?? '');
+  }
+
+  String _claimStatusLabel(String status) {
+    switch (status) {
+      case 'open':
+        return 'مفتوح';
+      case 'closed':
+        return 'مغلق';
+      default:
+        return status;
+    }
+  }
+
+  String _statementDetailsForClaim(Claim c) {
+    final parts = <String>[];
+    final note = (c.note ?? '').trim();
+    if (note.isNotEmpty) parts.add(note);
+    parts.add('Claim#${c.id}');
+    return parts.join(' | ');
+  }
+
+  bool _isReceivableByText(String? text) {
+    final s = (text ?? '').toLowerCase();
+    if (s.contains('receivable') || s.contains('لنا')) return true;
+    if (s.contains('payable') || s.contains('علينا')) return false;
+    return true;
+  }
+
+  _StatementEvent? _statementEventFromTxn(Txn t, Map<int, Claim> claimsById) {
+    double delta = 0;
+    String title = _statementLabelForTxn(t);
+
+    final claimId =
+        _extractClaimIdFromNote(t.note) ??
+        _extractClaimIdFromNote(t.reference) ??
+        _extractClaimIdFromRef(t.reference) ??
+        _extractClaimIdFromRef(t.note);
+    final linkedClaim = claimId == null ? null : claimsById[claimId];
+
+    if (t.kind == 'claim_collect' || t.kind == 'claim_pay') {
+      final bool isReceivable = linkedClaim != null
+          ? linkedClaim.type == 'receivable'
+          : _isReceivableByText(t.note);
+      title = isReceivable ? 'تحصيل مستحق' : 'سداد مستحق';
+      delta = isReceivable ? -t.amount.abs() : t.amount.abs();
+    } else if (t.kind == 'transfer' && t.status == 'pending') {
+      delta = _transferDue(t).abs();
+      title = 'تحويل معلق';
+    } else if (t.kind == 'receive' && t.status == 'pending') {
+      delta = -_receiveDue(t).abs();
+      title = 'استلام معلق';
+    } else if (t.kind == 'fawry_credit' && t.status == 'pending') {
+      if (linkedClaim != null) return null;
+      delta = (t.amount + t.clientFee).abs();
+      title = 'فوري آجل معلق';
+    } else if (t.kind.startsWith('claim_open_')) {
+      if (linkedClaim != null) return null;
+      final isReceivable = _isReceivableByText(t.kind);
+      title = isReceivable ? 'مستحق مفتوح (لنا)' : 'مستحق مفتوح (علينا)';
+      delta = isReceivable ? t.amount.abs() : -t.amount.abs();
+    }
+
+    if (delta == 0) return null;
+    return _StatementEvent(
+      date: t.entryDate,
+      sourceOrder: t.id,
+      title: title,
+      details: _statementDetailsForTxn(t),
+      statusLabel: _statusLabel(t.status),
+      amountSigned: delta,
+    );
+  }
+
   Future<void> _pickCustomRange() async {
     final now = DateTime.now();
     final res = await showDateRangePicker(
@@ -224,14 +352,14 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
 
   _CustomerStats _buildStats() {
     final range = _activeRange();
-    final txns =
-        _allTxns
-            .where((t) => _matchesTxn(t) && range.contains(t.entryDate))
-            .toList()
+    final customerTxns = _allTxns.where(_matchesTxn).toList()
+      ..sort((a, b) => a.entryDate.compareTo(b.entryDate));
+    final txnsInRange =
+        customerTxns.where((t) => range.contains(t.entryDate)).toList()
           ..sort((a, b) => b.entryDate.compareTo(a.entryDate));
-    final openClaims = _allClaims
-        .where((c) => c.status == 'open' && _matchesClaim(c))
-        .toList();
+    final customerClaims = _allClaims.where(_matchesClaim).toList();
+    final claimsById = {for (final c in customerClaims) c.id: c};
+    final openClaims = customerClaims.where((c) => c.status == 'open').toList();
 
     int postedCount = 0;
     int pendingCount = 0;
@@ -245,7 +373,7 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     double pendingReceivable = 0;
     double pendingPayable = 0;
 
-    for (final t in txns) {
+    for (final t in txnsInRange) {
       if (t.kind == 'transfer') transferCount++;
       if (t.kind == 'receive') receiveCount++;
       if (t.kind == 'fawry_cash' || t.kind == 'fawry_credit') fawryCount++;
@@ -272,6 +400,54 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
       }
     }
 
+    final statementEvents = <_StatementEvent>[
+      ...customerClaims.map(
+        (c) => _StatementEvent(
+          date: c.entryDate,
+          sourceOrder: c.id,
+          title: _claimOpenLabel(c.type),
+          details: _statementDetailsForClaim(c),
+          statusLabel: _claimStatusLabel(c.status),
+          amountSigned: c.type == 'receivable'
+              ? c.amount.abs()
+              : -c.amount.abs(),
+        ),
+      ),
+    ];
+    for (final t in customerTxns) {
+      final event = _statementEventFromTxn(t, claimsById);
+      if (event != null) statementEvents.add(event);
+    }
+    statementEvents.sort((a, b) {
+      final byDate = a.date.compareTo(b.date);
+      if (byDate != 0) return byDate;
+      return a.sourceOrder.compareTo(b.sourceOrder);
+    });
+
+    double running = 0;
+    double openingNet = 0;
+    final statementAsc = <_CustomerStatementRow>[];
+    for (final e in statementEvents) {
+      if (e.date.isAfter(range.end)) break;
+      running += e.amountSigned;
+      if (e.date.isBefore(range.start)) {
+        openingNet = running;
+        continue;
+      }
+      statementAsc.add(
+        _CustomerStatementRow(
+          date: e.date,
+          title: e.title,
+          details: e.details,
+          statusLabel: e.statusLabel,
+          amountSigned: e.amountSigned,
+          runningNet: running,
+        ),
+      );
+    }
+    final closingNet = running;
+    final statementRows = statementAsc.reversed.toList(growable: false);
+
     final openReceivable = openClaims
         .where((c) => c.type == 'receivable')
         .fold<double>(0, (s, c) => s + c.amount);
@@ -293,7 +469,10 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
       transferCount: transferCount,
       receiveCount: receiveCount,
       fawryCount: fawryCount,
-      latestTxns: txns.take(25).toList(),
+      latestTxns: txnsInRange.take(25).toList(),
+      openingNet: openingNet,
+      closingNet: closingNet,
+      statementRows: statementRows,
     );
   }
 
@@ -313,13 +492,28 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
       transferCount: stats.transferCount,
       receiveCount: stats.receiveCount,
       fawryCount: stats.fawryCount,
+      openingNet: stats.openingNet,
+      closingNet: stats.closingNet,
       latestTxns: stats.latestTxns
           .map(
             (t) => CustomerTxnExportRow(
               date: t.entryDate,
               kind: _kindLabel(t),
-              status: t.status,
+              status: _statusLabel(t.status),
               amount: _txnVolume(t),
+            ),
+          )
+          .toList(),
+      statementRows: stats.statementRows
+          .map(
+            (r) => CustomerStatementExportRow(
+              date: r.date,
+              title: r.title,
+              details: r.details,
+              status: r.statusLabel,
+              amountSigned: r.amountSigned,
+              runningNet: r.runningNet,
+              runningSideLabel: r.runningNet >= 0 ? 'لنا' : 'علينا',
             ),
           )
           .toList(),
@@ -451,6 +645,8 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
                     'لنا: ${(stats.currentReceivable).toStringAsFixed(2)}',
                     'علينا: ${(stats.currentPayable).toStringAsFixed(2)}',
                     'الصافي: ${stats.netCurrent.abs().toStringAsFixed(2)} ${stats.netCurrent >= 0 ? '(لنا)' : '(علينا)'}',
+                    'رصيد افتتاحي: ${stats.openingNet.abs().toStringAsFixed(2)} ${stats.openingNet >= 0 ? '(لنا)' : '(علينا)'}',
+                    'رصيد ختامي: ${stats.closingNet.abs().toStringAsFixed(2)} ${stats.closingNet >= 0 ? '(لنا)' : '(علينا)'}',
                   ],
                 ),
                 _kpiCard(
@@ -471,31 +667,92 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  'آخر العمليات',
+                  'كشف حساب الفترة',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
-                if (stats.latestTxns.isEmpty)
+                if (stats.statementRows.isEmpty)
                   const Card(
                     child: ListTile(
-                      title: Text('لا توجد عمليات في الفترة المختارة'),
+                      title: Text(
+                        'لا توجد حركات تؤثر على الرصيد في الفترة المختارة',
+                      ),
                     ),
                   )
                 else
-                  ...stats.latestTxns.map((t) {
-                    final d = t.entryDate;
-                    final date =
-                        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-                    return Card(
-                      child: ListTile(
-                        title: Text(_kindLabel(t)),
-                        subtitle: Text('$date • ${t.status}'),
-                        trailing: Text(_txnVolume(t).toStringAsFixed(2)),
-                      ),
-                    );
-                  }),
+                  ...stats.statementRows.map(_statementCard),
               ],
             ),
+    );
+  }
+
+  Widget _statementCard(_CustomerStatementRow row) {
+    final d = row.date;
+    final date =
+        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    final signed = row.amountSigned;
+    final amountText =
+        '${signed >= 0 ? '+' : '-'}${signed.abs().toStringAsFixed(2)}';
+    final amountColor = signed >= 0 ? Colors.teal : Colors.redAccent;
+    final running = row.runningNet;
+    final side = running >= 0 ? 'لنا' : 'علينا';
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    row.title,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: amountColor.withAlpha(30),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    amountText,
+                    style: TextStyle(
+                      color: amountColor,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(date, style: Theme.of(context).textTheme.bodySmall),
+            if (row.details?.trim().isNotEmpty == true) ...[
+              const SizedBox(height: 4),
+              Text(row.details!),
+            ],
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                Chip(label: Text(row.statusLabel)),
+                Chip(
+                  label: Text(
+                    'المتبقي: ${running.abs().toStringAsFixed(2)} ($side)',
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -604,6 +861,9 @@ class _CustomerStats {
   final int receiveCount;
   final int fawryCount;
   final List<Txn> latestTxns;
+  final double openingNet;
+  final double closingNet;
+  final List<_CustomerStatementRow> statementRows;
 
   const _CustomerStats({
     required this.range,
@@ -620,9 +880,48 @@ class _CustomerStats {
     required this.receiveCount,
     required this.fawryCount,
     required this.latestTxns,
+    required this.openingNet,
+    required this.closingNet,
+    required this.statementRows,
   });
 
   double get currentReceivable => openReceivable + pendingReceivable;
   double get currentPayable => openPayable + pendingPayable;
   double get netCurrent => currentReceivable - currentPayable;
+}
+
+class _StatementEvent {
+  final DateTime date;
+  final int sourceOrder;
+  final String title;
+  final String? details;
+  final String statusLabel;
+  final double amountSigned;
+
+  const _StatementEvent({
+    required this.date,
+    required this.sourceOrder,
+    required this.title,
+    this.details,
+    required this.statusLabel,
+    required this.amountSigned,
+  });
+}
+
+class _CustomerStatementRow {
+  final DateTime date;
+  final String title;
+  final String? details;
+  final String statusLabel;
+  final double amountSigned;
+  final double runningNet;
+
+  const _CustomerStatementRow({
+    required this.date,
+    required this.title,
+    this.details,
+    required this.statusLabel,
+    required this.amountSigned,
+    required this.runningNet,
+  });
 }

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../data/app_db.dart';
 import '../models/app_settings.dart';
 import '../models/claim.dart';
+import '../models/license_info.dart';
 import '../models/transaction.dart';
 import '../models/wallet.dart';
 import '../services/cloud_assistant_service.dart';
@@ -60,6 +61,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         AppDb.instance.listWallets(),
         AppDb.instance.getAppSettings(),
         AppDb.instance.getWalletLimitUsage(),
+        AppDb.instance.getLicenseInfo(),
       ]);
 
       final snap = results[0] as TreasurySnapshot;
@@ -68,6 +70,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       final wallets = results[3] as List<Wallet>;
       final settings = results[4] as AppSettings;
       final usageByWallet = results[5] as Map<int, WalletLimitUsage>;
+      final license = results[6] as LicenseInfo;
 
       final walletSnapshots = await _loadWalletSnapshots(
         wallets: wallets,
@@ -81,6 +84,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         claims: claims,
         settings: settings,
         wallets: walletSnapshots,
+        deviceCode: license.deviceCode,
       );
 
       final localAnswer = _buildLocalAnswer(
@@ -159,6 +163,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     required List<Claim> claims,
     required AppSettings settings,
     required List<_WalletSnapshot> wallets,
+    required String deviceCode,
   }) {
     final sortedTxns = List<Txn>.from(txns)
       ..sort((a, b) => b.entryDate.compareTo(a.entryDate));
@@ -230,6 +235,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         'businessName': settings.businessName,
         'currency': settings.currency,
         'dayStartHour': settings.dayStartHour,
+        'deviceCode': deviceCode,
       },
       'programGuide': _programGuideData(),
       'snapshot': {
