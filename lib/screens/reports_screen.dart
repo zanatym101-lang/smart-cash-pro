@@ -483,7 +483,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final license = _license;
 
     return DefaultTabController(
-      length: 8,
+      length: 9,
       child: Scaffold(
         appBar: AppBar(
           title: const AppTitle(subtitle: 'التقارير'),
@@ -531,6 +531,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               Tab(text: 'الخزنة'),
               Tab(text: 'مطابقة الأرصدة'),
               Tab(text: 'إغلاق اليوم'),
+              Tab(text: 'الملخص التنفيذي'),
             ],
           ),
         ),
@@ -552,6 +553,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                         _treasuryTab(treasury),
                         _reconciliationTab(report),
                         _dailyCloseTab(),
+                        _executiveTab(report, treasury),
                       ],
                     ),
                   ),
@@ -640,11 +642,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
         _kpiCard('إجمالي الربح', report.profit.total, icon: Icons.trending_up),
-        _kpiCard(
-          'صافي الربح بعد المصروفات',
-          netProfit,
-          icon: Icons.savings,
-        ),
+        _kpiCard('صافي الربح بعد المصروفات', netProfit, icon: Icons.savings),
         _kpiCard('إجمالي المصروفات', expenses, icon: Icons.payments_outlined),
         _kpiCard(
           'ربح التحويل',
@@ -990,6 +988,73 @@ class _ReportsScreenState extends State<ReportsScreen> {
                 ),
               ),
             ),
+      ],
+    );
+  }
+
+  Widget _executiveTab(ReportData? report, TreasurySnapshot? treasury) {
+    if (report == null || treasury == null) return const SizedBox.shrink();
+    final expenses = report.cashflow.outflowByType['مصروفات'] ?? 0;
+    final netProfitAfterExpenses = report.profit.total - expenses;
+    final alerts = <String>[
+      if (!report.reconciliation.ok) 'تنبيه: يوجد فرق في مطابقة الأرصدة.',
+      if (report.ops.pendingCount > 0)
+        'تنبيه: يوجد ${report.ops.pendingCount} عملية معلقة.',
+      if (treasury.availableLiquidityNow < 0) 'تنبيه: السيولة المتاحة سالبة.',
+      if (netProfitAfterExpenses < 0) 'تنبيه: صافي الربح بعد المصروفات سالب.',
+    ];
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        _kpiCard(
+          'السيولة المتاحة',
+          treasury.availableLiquidityNow,
+          icon: Icons.account_balance_wallet_outlined,
+        ),
+        _kpiCard(
+          'رأس المال الحقيقي (معتمد)',
+          treasury.realCapitalApproved,
+          icon: Icons.pie_chart_outline,
+        ),
+        _kpiCard(
+          'الخزنة الفعلية (معتمد)',
+          treasury.actualTreasuryApproved,
+          icon: Icons.account_balance,
+        ),
+        _kpiCard(
+          'صافي الربح بعد المصروفات',
+          netProfitAfterExpenses,
+          icon: Icons.trending_up,
+        ),
+        const SizedBox(height: 10),
+        _sectionTitle('ملخص سريع'),
+        _lineRow('إجمالي الربح', report.profit.total),
+        _lineRow('إجمالي المصروفات', expenses),
+        _lineRow('صافي حركة الدرج', report.cashflow.net),
+        _lineRow('مستحقات لنا (مفتوح)', report.claims.receivableOpen),
+        _lineRow('مستحقات علينا (مفتوح)', report.claims.payableOpen),
+        _lineRow('صافي المستحقات', report.claims.net),
+        _lineRow('أثر المعلق (صافي)', treasury.pendingNet),
+        const SizedBox(height: 10),
+        _sectionTitle('تنبيهات سريعة'),
+        if (alerts.isEmpty)
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.verified, color: Colors.green),
+              title: Text('وضع سليم'),
+              subtitle: Text('لا توجد مؤشرات خطر حالياً.'),
+            ),
+          )
+        else
+          ...alerts.map(
+            (msg) => Card(
+              child: ListTile(
+                leading: const Icon(Icons.warning_amber_rounded),
+                title: Text(msg),
+              ),
+            ),
+          ),
       ],
     );
   }
