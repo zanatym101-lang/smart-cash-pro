@@ -73,3 +73,6 @@ functions/.firebase/
 /build/
 /dist/
 /coverage/
+
+# local notes / activation docs
+/تفعيل البرنامج/

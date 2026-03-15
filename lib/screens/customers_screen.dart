@@ -87,7 +87,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   String _customerKeyFor(_CustomerBucket c) {
-    return _bucketKey(name: c.name, phone: c.phone);
+    return c.key;
   }
 
   bool _isPinned(_CustomerBucket c) {
@@ -229,6 +229,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         return map.putIfAbsent(
           key,
           () => _CustomerBucket(
+            key: key,
             name: normalizedName,
             phone: normalizedPhone.isEmpty ? null : normalizedPhone,
           ),
@@ -433,7 +434,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       final customers = map.values.where((c) => c.lines.isNotEmpty).toList();
       for (final c in customers) {
-        c.lines.sort((a, b) => b.date.compareTo(a.date));
+        c.lines.sort((a, b) {
+          final cDate = b.date.compareTo(a.date);
+          if (cDate != 0) return cDate;
+          final aId = a.txnId ?? a.claimId ?? 0;
+          final bId = b.txnId ?? b.claimId ?? 0;
+          return bId.compareTo(aId);
+        });
         if (c.lines.isNotEmpty) {
           c.lastActivity = c.lines.first.date;
         }
@@ -1904,7 +1911,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     if (service != null) parts.add(service);
     if (line.remainingAfter != null) {
       parts.add(
-        'المتبقي بعد التحصيل: ${line.remainingAfter!.toStringAsFixed(2)}',
+        'المتبقي بعد التسوية: ${line.remainingAfter!.toStringAsFixed(2)}',
       );
     }
     if (parts.isEmpty) return null;
@@ -1952,38 +1959,35 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     }
   }
 
-  Map<_CustomerLine, double> _computeBalances(List<_CustomerLine> lines) {
-    final sorted = List<_CustomerLine>.from(lines)
-      ..sort((a, b) {
-        final c = a.date.compareTo(b.date);
-        if (c != 0) return c;
-        final aId = a.txnId ?? a.claimId ?? 0;
-        final bId = b.txnId ?? b.claimId ?? 0;
-        return aId.compareTo(bId);
-      });
-    double running = 0;
+  Map<_CustomerLine, double> _computeBalances({
+    required List<_CustomerLine> lines,
+    required double currentNet,
+  }) {
     final map = <_CustomerLine, double>{};
-    for (final l in sorted) {
-      running += l.side == _LineSide.receivable ? l.amount : -l.amount;
-      map[l] = running;
+    var runningAfter = currentNet;
+    for (final l in lines) {
+      map[l] = runningAfter;
+      final delta = l.side == _LineSide.receivable ? l.amount : -l.amount;
+      runningAfter -= delta;
     }
     return map;
   }
 
-  bool _isSettlementLine(_CustomerLine line) {
-    return line.txnKind == 'claim_collect' || line.txnKind == 'claim_pay';
+  double _displayBalanceAmountForLine(
+    _CustomerLine line,
+    Map<_CustomerLine, double> balances,
+    double currentNet,
+  ) {
+    return (balances[line] ?? currentNet).abs();
   }
 
-  _LineSide _remainingSideForSettlement(_CustomerLine line) {
-    if (line.txnKind == 'claim_collect') {
-      // Remaining after collection = still due on customer (عليه).
-      return _LineSide.receivable;
-    }
-    if (line.txnKind == 'claim_pay') {
-      // Remaining after payment = still due to customer (له).
-      return _LineSide.payable;
-    }
-    return line.side;
+  _LineSide _displayBalanceSideForLine(
+    _CustomerLine line,
+    Map<_CustomerLine, double> balances,
+    double currentNet,
+  ) {
+    final runningBalance = balances[line] ?? currentNet;
+    return runningBalance >= 0 ? _LineSide.receivable : _LineSide.payable;
   }
 
   List<_CustomerLine> _applyFilter(List<_CustomerLine> lines) {
@@ -2117,7 +2121,10 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     final netColor = customer.net >= 0
         ? const Color(0xFF047857)
         : const Color(0xFFB91C1C);
-    final balances = _computeBalances(customer.lines);
+    final balances = _computeBalances(
+      lines: customer.lines,
+      currentNet: customer.net,
+    );
     final visibleLines = _applyFilter(customer.lines);
 
     return Padding(
@@ -2246,18 +2253,16 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                             ? const Color(0xFF047857)
                             : const Color(0xFFB91C1C);
                         final amountBg = amountColor.withValues(alpha: 0.12);
-                        final runningBalance = balances[line] ?? customer.net;
-                        final useRemainingAfter =
-                            line.remainingAfter != null &&
-                            _isSettlementLine(line);
-                        final balance = useRemainingAfter
-                            ? line.remainingAfter!.abs()
-                            : runningBalance.abs();
-                        final balanceSide = useRemainingAfter
-                            ? _remainingSideForSettlement(line)
-                            : (runningBalance >= 0
-                                  ? _LineSide.receivable
-                                  : _LineSide.payable);
+                        final balance = _displayBalanceAmountForLine(
+                          line,
+                          balances,
+                          customer.net,
+                        );
+                        final balanceSide = _displayBalanceSideForLine(
+                          line,
+                          balances,
+                          customer.net,
+                        );
                         final balanceColor = balanceSide == _LineSide.receivable
                             ? const Color(0xFFB91C1C)
                             : const Color(0xFF047857);
@@ -2836,6 +2841,7 @@ class _CustomerLine {
 }
 
 class _CustomerBucket {
+  final String key;
   final String name;
   final String? phone;
 
@@ -2846,7 +2852,7 @@ class _CustomerBucket {
   final List<_CustomerLine> lines = [];
   DateTime? lastActivity;
 
-  _CustomerBucket({required this.name, this.phone});
+  _CustomerBucket({required this.key, required this.name, this.phone});
 
   double get receivableTotal => receivableClaims + receivablePending;
   double get payableTotal => payableClaims + payablePending;

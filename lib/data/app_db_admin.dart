@@ -19,6 +19,15 @@ extension AppDbAdmin on AppDb {
   // Admin PIN (local settings)
   // ===========================
   static const String _licenseSecret = 'SCP-2026-LICENSE';
+  static const String _licenseCloudAppVersion = String.fromEnvironment(
+    'APP_VERSION',
+    defaultValue: '1.0.0',
+  );
+  static const Duration _licenseStatusRefreshInterval = Duration(hours: 6);
+  static const Duration _licenseTokenRefreshWindow = Duration(hours: 12);
+  static const bool _allowLegacyLocalActivation =
+      bool.fromEnvironment('FLUTTER_TEST', defaultValue: false) ||
+      !bool.fromEnvironment('dart.vm.product');
 
   void _requireAdmin() {
     if (!AppSession.isAdmin) {
@@ -85,6 +94,30 @@ extension AppDbAdmin on AppDb {
     }
     if (!license.containsKey('activationCode')) {
       license['activationCode'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('cloudToken')) {
+      license['cloudToken'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('cloudTokenExpiresAt')) {
+      license['cloudTokenExpiresAt'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('cloudLicenseExpiresAt')) {
+      license['cloudLicenseExpiresAt'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('cloudDeviceId')) {
+      license['cloudDeviceId'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('cloudLastCheckAt')) {
+      license['cloudLastCheckAt'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('cloudLastError')) {
+      license['cloudLastError'] = '';
       changed = true;
     }
 
@@ -154,18 +187,6 @@ extension AppDbAdmin on AppDb {
     return _formatCode(h.substring(0, 16), 4);
   }
 
-  String _activationCodeForDeviceCode(String deviceCode) {
-    final base = _normalizeCode(deviceCode);
-    final h = _hashHex('$_licenseSecret|$base');
-    return _formatCode(h.substring(0, 12), 4);
-  }
-
-  bool _isActivationValid(String code, String deviceCode) {
-    final expected = _normalizeCode(_activationCodeForDeviceCode(deviceCode));
-    final given = _normalizeCode(code);
-    return given.isNotEmpty && given == expected;
-  }
-
   String generateActivationCodeForDeviceCode(String deviceCode) {
     final base = _normalizeCode(deviceCode);
     if (base.isEmpty) return '';
@@ -173,18 +194,189 @@ extension AppDbAdmin on AppDb {
     return _formatCode(h.substring(0, 12), 4);
   }
 
+  bool _isLegacyActivationValid(
+    Map<String, dynamic> license,
+    String deviceCode,
+  ) {
+    final stored = (license['activationCode'] ?? '').toString().trim();
+    if (stored.isEmpty) return false;
+    final expected = generateActivationCodeForDeviceCode(deviceCode);
+    return _normalizeCode(stored) == _normalizeCode(expected);
+  }
+
+  void _applyLegacyLocalActivation(
+    Map<String, dynamic> license,
+    String normalizedCode,
+  ) {
+    license['activationCode'] = normalizedCode;
+    license['activatedAt'] = DateTime.now().toUtc().toIso8601String();
+    license['cloudLastError'] = '';
+  }
+
+  DateTime? _parseUtcDate(dynamic raw) {
+    final text = (raw ?? '').toString().trim();
+    if (text.isEmpty) return null;
+    return DateTime.tryParse(text)?.toUtc();
+  }
+
+  bool _isCloudLicenseLocallyValid(
+    Map<String, dynamic> license,
+    String deviceCode,
+  ) {
+    final token = (license['cloudToken'] ?? '').toString().trim();
+    if (token.isEmpty) return false;
+
+    final storedDevice = (license['cloudDeviceId'] ?? '').toString().trim();
+    if (storedDevice.isNotEmpty && storedDevice != deviceCode) return false;
+
+    final now = DateTime.now().toUtc();
+    final tokenExpiresAt = _parseUtcDate(license['cloudTokenExpiresAt']);
+    if (tokenExpiresAt != null && !tokenExpiresAt.isAfter(now)) return false;
+
+    final licenseExpiresAt = _parseUtcDate(license['cloudLicenseExpiresAt']);
+    if (licenseExpiresAt != null && !licenseExpiresAt.isAfter(now)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  void _clearCloudLicense(Map<String, dynamic> license) {
+    license['cloudToken'] = '';
+    license['cloudTokenExpiresAt'] = '';
+    license['cloudLicenseExpiresAt'] = '';
+    license['cloudDeviceId'] = '';
+    license['cloudLastCheckAt'] = '';
+    license['cloudLastError'] = '';
+    license['activationCode'] = '';
+  }
+
+  void _applyCloudLicense({
+    required Map<String, dynamic> license,
+    required LicenseCloudActivationResult result,
+    required String deviceCode,
+    String? activationCode,
+  }) {
+    license['cloudToken'] = result.token;
+    license['cloudTokenExpiresAt'] =
+        result.tokenExpiresAt?.toIso8601String() ?? '';
+    license['cloudLicenseExpiresAt'] =
+        result.licenseExpiresAt?.toIso8601String() ?? '';
+    final resolvedDevice = (result.deviceId ?? '').trim();
+    license['cloudDeviceId'] = resolvedDevice.isEmpty
+        ? deviceCode
+        : resolvedDevice;
+    license['cloudLastCheckAt'] = DateTime.now().toUtc().toIso8601String();
+    license['cloudLastError'] = '';
+    if (activationCode != null && activationCode.trim().isNotEmpty) {
+      license['activationCode'] = activationCode.trim();
+    }
+  }
+
+  bool _isTransientCloudError(LicenseCloudException e) {
+    return e.transient || e.code == 'timeout' || e.code == 'network_error';
+  }
+
+  bool _canTryCloudRefresh(String? code) {
+    const blocked = <String>{
+      'license_not_found',
+      'license_not_active',
+      'license_expired',
+      'device_revoked',
+      'device_limit_exceeded',
+      'activation_not_found_or_revoked',
+    };
+    if (code == null || code.trim().isEmpty) return true;
+    return !blocked.contains(code.trim());
+  }
+
+  Future<bool> _syncCloudLicense(
+    Map<String, dynamic> license,
+    String deviceCode,
+  ) async {
+    final token = (license['cloudToken'] ?? '').toString().trim();
+    if (token.isEmpty) return false;
+
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    try {
+      final status = await LicenseCloudService.status(
+        token: token,
+        deviceId: deviceCode,
+      );
+      if (status.licenseExpiresAt != null) {
+        license['cloudLicenseExpiresAt'] = status.licenseExpiresAt!
+            .toIso8601String();
+      }
+      license['cloudLastCheckAt'] = nowIso;
+      license['cloudLastError'] = '';
+      return _isCloudLicenseLocallyValid(license, deviceCode);
+    } on LicenseCloudException catch (statusError) {
+      if (_canTryCloudRefresh(statusError.code)) {
+        try {
+          final refreshed = await LicenseCloudService.refresh(
+            token: token,
+            deviceId: deviceCode,
+            appVersion: _licenseCloudAppVersion,
+          );
+          _applyCloudLicense(
+            license: license,
+            result: refreshed,
+            deviceCode: deviceCode,
+          );
+          return true;
+        } on LicenseCloudException catch (refreshError) {
+          if (_isTransientCloudError(refreshError)) {
+            license['cloudLastCheckAt'] = nowIso;
+            license['cloudLastError'] = refreshError.message;
+            return _isCloudLicenseLocallyValid(license, deviceCode);
+          }
+          _clearCloudLicense(license);
+          license['cloudLastCheckAt'] = nowIso;
+          license['cloudLastError'] = refreshError.message;
+          return false;
+        }
+      }
+
+      if (_isTransientCloudError(statusError)) {
+        license['cloudLastCheckAt'] = nowIso;
+        license['cloudLastError'] = statusError.message;
+        return _isCloudLicenseLocallyValid(license, deviceCode);
+      }
+
+      _clearCloudLicense(license);
+      license['cloudLastCheckAt'] = nowIso;
+      license['cloudLastError'] = statusError.message;
+      return false;
+    }
+  }
+
   Future<LicenseInfo> getLicenseInfo() async {
     final m = await _readSettingsMap();
     final ensured = _ensureLicense(m);
     final license = ensured.license;
-    if (ensured.changed || !m.containsKey('license')) {
-      m['license'] = license;
-      await _writeSettingsMap(m);
-    }
-
     final deviceCode = await _deviceCode();
-    final activationCode = (license['activationCode'] ?? '').toString().trim();
-    final isActivated = _isActivationValid(activationCode, deviceCode);
+    final before = jsonEncode(license);
+    final isLegacyActivated =
+        _allowLegacyLocalActivation &&
+        _isLegacyActivationValid(license, deviceCode);
+    var isActivated =
+        isLegacyActivated || _isCloudLicenseLocallyValid(license, deviceCode);
+
+    final token = (license['cloudToken'] ?? '').toString().trim();
+    if (!isLegacyActivated && token.isNotEmpty) {
+      final now = DateTime.now().toUtc();
+      final lastCheck = _parseUtcDate(license['cloudLastCheckAt']);
+      final tokenExpiresAt = _parseUtcDate(license['cloudTokenExpiresAt']);
+      final needsSync =
+          !isActivated ||
+          lastCheck == null ||
+          now.difference(lastCheck) >= _licenseStatusRefreshInterval ||
+          (tokenExpiresAt != null &&
+              tokenExpiresAt.difference(now) <= _licenseTokenRefreshWindow);
+      if (needsSync) {
+        isActivated = await _syncCloudLicense(license, deviceCode);
+      }
+    }
 
     final installDate =
         DateTime.tryParse((license['installDate'] ?? '').toString()) ??
@@ -210,6 +402,13 @@ extension AppDbAdmin on AppDb {
     );
     final reportsLeft = (maxReports - reportsUsed).clamp(0, maxReports);
 
+    if (ensured.changed ||
+        !m.containsKey('license') ||
+        jsonEncode(license) != before) {
+      m['license'] = license;
+      await _writeSettingsMap(m);
+    }
+
     return LicenseInfo(
       isActivated: isActivated,
       deviceCode: deviceCode,
@@ -230,14 +429,38 @@ extension AppDbAdmin on AppDb {
     final m = await _readSettingsMap();
     final ensured = _ensureLicense(m);
     final license = ensured.license;
+    final normalizedCode = code.trim().toUpperCase();
+    if (normalizedCode.isEmpty) return false;
     final deviceCode = await _deviceCode();
-    if (!_isActivationValid(code, deviceCode)) {
-      return false;
+    final expectedLegacyCode = generateActivationCodeForDeviceCode(deviceCode);
+    if (_allowLegacyLocalActivation &&
+        _normalizeCode(normalizedCode) == _normalizeCode(expectedLegacyCode)) {
+      _applyLegacyLocalActivation(license, normalizedCode);
+      m['license'] = license;
+      await _writeSettingsMap(m);
+      return true;
     }
-    license['activationCode'] = code.trim();
-    m['license'] = license;
-    await _writeSettingsMap(m);
-    return true;
+    try {
+      final activation = await LicenseCloudService.activate(
+        code: normalizedCode,
+        deviceId: deviceCode,
+        appVersion: _licenseCloudAppVersion,
+      );
+      _applyCloudLicense(
+        license: license,
+        result: activation,
+        deviceCode: deviceCode,
+        activationCode: normalizedCode,
+      );
+      m['license'] = license;
+      await _writeSettingsMap(m);
+      return true;
+    } on LicenseCloudException catch (e) {
+      if (e.code == 'license_not_found') {
+        return false;
+      }
+      throw Exception(e.message);
+    }
   }
 
   Future<void> _ensureOperationAllowed() async {
@@ -622,6 +845,28 @@ extension AppDbAdmin on AppDb {
       changed = true;
     }
 
+    List<String> archivedCustomers = [];
+    final rawArchived = m['archivedCustomers'];
+    if (rawArchived is List) {
+      archivedCustomers = rawArchived.map((e) => e.toString()).toList();
+    }
+    if (!m.containsKey('archivedCustomers')) {
+      m['archivedCustomers'] = archivedCustomers;
+      changed = true;
+    }
+
+    Map<String, String> customerNameOverrides = {};
+    final rawOverrides = m['customerNameOverrides'];
+    if (rawOverrides is Map) {
+      customerNameOverrides = rawOverrides.map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      );
+    }
+    if (!m.containsKey('customerNameOverrides')) {
+      m['customerNameOverrides'] = customerNameOverrides;
+      changed = true;
+    }
+
     double customerAlertThreshold = 0;
     final rawThreshold = m['customerAlertThreshold'];
     if (rawThreshold is num) {
@@ -657,6 +902,8 @@ extension AppDbAdmin on AppDb {
       dayStartHour: dayStartHour,
       quickActionsOrder: quickActionsOrder,
       pinnedCustomers: pinnedCustomers,
+      archivedCustomers: archivedCustomers,
+      customerNameOverrides: customerNameOverrides,
       customerAlertThreshold: customerAlertThreshold,
     );
   }
@@ -688,6 +935,8 @@ extension AppDbAdmin on AppDb {
     m['dayStartHour'] = hour;
     m['quickActionsOrder'] = settings.quickActionsOrder;
     m['pinnedCustomers'] = settings.pinnedCustomers;
+    m['archivedCustomers'] = settings.archivedCustomers;
+    m['customerNameOverrides'] = settings.customerNameOverrides;
     m['customerAlertThreshold'] = settings.customerAlertThreshold;
     if (!m.containsKey('adminPin')) {
       m['adminPin'] = _pinRecord('1234');

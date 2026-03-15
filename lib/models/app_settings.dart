@@ -4,6 +4,8 @@ class AppSettings {
   final int dayStartHour; // 0-23
   final List<String> quickActionsOrder;
   final List<String> pinnedCustomers;
+  final List<String> archivedCustomers;
+  final Map<String, String> customerNameOverrides;
   final double customerAlertThreshold;
 
   const AppSettings({
@@ -12,6 +14,8 @@ class AppSettings {
     required this.dayStartHour,
     required this.quickActionsOrder,
     required this.pinnedCustomers,
+    required this.archivedCustomers,
+    required this.customerNameOverrides,
     required this.customerAlertThreshold,
   });
 
@@ -21,6 +25,8 @@ class AppSettings {
     int? dayStartHour,
     List<String>? quickActionsOrder,
     List<String>? pinnedCustomers,
+    List<String>? archivedCustomers,
+    Map<String, String>? customerNameOverrides,
     double? customerAlertThreshold,
   }) {
     return AppSettings(
@@ -29,17 +35,22 @@ class AppSettings {
       dayStartHour: dayStartHour ?? this.dayStartHour,
       quickActionsOrder: quickActionsOrder ?? this.quickActionsOrder,
       pinnedCustomers: pinnedCustomers ?? this.pinnedCustomers,
+      archivedCustomers: archivedCustomers ?? this.archivedCustomers,
+      customerNameOverrides:
+          customerNameOverrides ?? this.customerNameOverrides,
       customerAlertThreshold:
           customerAlertThreshold ?? this.customerAlertThreshold,
     );
   }
 
   Map<String, dynamic> toJson() => {
-        'businessName': businessName,
-        'currency': currency,
-        'dayStartHour': dayStartHour,
-        'quickActionsOrder': quickActionsOrder,
-        'pinnedCustomers': pinnedCustomers,
-        'customerAlertThreshold': customerAlertThreshold,
-      };
+    'businessName': businessName,
+    'currency': currency,
+    'dayStartHour': dayStartHour,
+    'quickActionsOrder': quickActionsOrder,
+    'pinnedCustomers': pinnedCustomers,
+    'archivedCustomers': archivedCustomers,
+    'customerNameOverrides': customerNameOverrides,
+    'customerAlertThreshold': customerAlertThreshold,
+  };
 }
