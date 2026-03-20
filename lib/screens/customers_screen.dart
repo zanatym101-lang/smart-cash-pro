@@ -395,12 +395,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
         final pendingRef = pendingRefFromNote;
         final claimIdForTxn = _extractClaimIdFromNote(t.note);
         final pendingSource = pendingRef != null ? txnById[pendingRef] : null;
-        final remainingAfter = pendingRef != null
-            ? settlementRemainingByTxnId[t.id]
-            : null;
-        final sourceKindLabel = pendingRef != null
-            ? settlementSourceLabelByTxnId[t.id]
-            : null;
+        final remainingAfter = settlementRemainingByTxnId[t.id];
+        final sourceKindLabel = settlementSourceLabelByTxnId[t.id];
 
         b.lines.add(
           _CustomerLine(
@@ -1907,15 +1903,19 @@ class _CustomerSheetState extends State<_CustomerSheet> {
 
   String? _buildSettlementDetails(_CustomerLine line) {
     final parts = <String>[];
+    parts.add('المبلغ: ${line.amount.toStringAsFixed(2)}');
     if (line.sourceKindLabel != null &&
         line.sourceKindLabel!.trim().isNotEmpty) {
-      parts.add('نوع العملية: ${line.sourceKindLabel}');
+      parts.add('نوع الربط: ${line.sourceKindLabel}');
+    }
+    if (line.claimId != null) {
+      parts.add('مرجع المستحق: Claim#${line.claimId}');
     }
     final service = _extractServiceLine(line.details);
     if (service != null) parts.add(service);
     if (line.remainingAfter != null) {
       parts.add(
-        'المتبقي بعد التسوية: ${line.remainingAfter!.toStringAsFixed(2)}',
+        'المتبقي بعد العملية: ${line.remainingAfter!.toStringAsFixed(2)}',
       );
     }
     if (parts.isEmpty) return null;
@@ -2079,8 +2079,12 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     if (line.lineType == _CustomerLineType.claimOpen) {
       return line.claimType == 'receivable' ? 'مستحق (عليه)' : 'مستحق (له)';
     }
-    if (line.txnKind == 'claim_collect') return 'تحصيل';
-    if (line.txnKind == 'claim_pay') return 'سداد';
+    if (line.txnKind == 'claim_collect') {
+      return (line.remainingAfter ?? 0) > 0 ? 'تحصيل جزئي' : 'تحصيل كامل';
+    }
+    if (line.txnKind == 'claim_pay') {
+      return (line.remainingAfter ?? 0) > 0 ? 'سداد جزئي' : 'سداد كامل';
+    }
     if (line.txnKind == 'transfer') {
       return line.txnStatus == 'pending' ? 'تحويل معلّق' : 'تحويل';
     }
@@ -2280,9 +2284,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                         final chipLabel = _lineChipLabel(line);
                         final chipColor = _lineChipColor(line);
                         final displayTitle = isSettlement
-                            ? (line.txnKind == 'claim_collect'
-                                  ? 'تحصيل مستحق'
-                                  : 'سداد مستحق')
+                            ? _lineChipLabel(line)
                             : line.title;
                         final displayDetails = isSettlement
                             ? _buildSettlementDetails(line)
