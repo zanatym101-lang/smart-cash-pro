@@ -259,6 +259,21 @@ Behavior:
 
 ---
 
+### 19. Customer settlement dialog lifecycle fix
+A Windows UI lifecycle issue was fixed in the customer settlement amount dialogs.
+
+Issue:
+- `A TextEditingController was used after being disposed`
+
+Fix approach:
+- no accounting logic was changed
+- no database change was made
+- controller disposal was delayed until dialog teardown completed
+
+This was treated as a UI/controller lifecycle fix only.
+
+---
+
 ## Things Intentionally Not Changed
 
 For safety, the following were intentionally left unchanged:
@@ -295,6 +310,7 @@ Do not change these unless the task explicitly requires it and the risk is analy
 - approved_at shown
 - copy button for transaction reference
 - ledger search accepts `ZA` reference and direct `txnId`
+- customer settlement dialog controller lifecycle fixed on Windows
 
 ### Tests
 Current stable suite reached:
@@ -389,6 +405,7 @@ The following features are already implemented and exist in the codebase:
 - `txnIdFromReference(String reference)` helper
 - tests for `txnIdFromReference(...)`
 - ledger search hook using ZA reference -> txnId
+- customer settlement dialog lifecycle fix on Windows
 - approval metadata (approved_by, approved_at)
 - confirmPending() protection against double approval
 - test coverage for approval, claims, and settlement

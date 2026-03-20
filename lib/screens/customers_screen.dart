@@ -738,7 +738,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final ctrl = TextEditingController();
     String? error;
     try {
-      return await showDialog<double>(
+      final result = await showDialog<double>(
         context: context,
         barrierDismissible: false,
         builder: (ctx) => StatefulBuilder(
@@ -793,6 +793,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
           ),
         ),
       );
+      await WidgetsBinding.instance.endOfFrame;
+      return result;
     } finally {
       ctrl.dispose();
     }
@@ -1555,7 +1557,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     final ctrl = TextEditingController();
     String? error;
     try {
-      return showDialog<double>(
+      final result = await showDialog<double>(
         context: context,
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setState) => AlertDialog(
@@ -1604,6 +1606,8 @@ class _CustomerSheetState extends State<_CustomerSheet> {
           ),
         ),
       );
+      await WidgetsBinding.instance.endOfFrame;
+      return result;
     } finally {
       ctrl.dispose();
     }
