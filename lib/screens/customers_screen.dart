@@ -730,15 +730,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
     return list;
   }
 
-  Future<double?> _promptSettlementAmount({
+  Future<_SettlementAmountInput?> _promptSettlementAmount({
     required String actionLabel,
     required String party,
     required double remaining,
+    bool withNote = false,
   }) async {
-    final ctrl = TextEditingController();
+    final amountCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
     String? error;
     try {
-      final result = await showDialog<double>(
+      final result = await showDialog<_SettlementAmountInput>(
         context: context,
         barrierDismissible: false,
         builder: (ctx) => StatefulBuilder(
@@ -753,7 +755,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 Text('المتبقي: ${remaining.toStringAsFixed(2)}'),
                 const SizedBox(height: 12),
                 TextField(
-                  controller: ctrl,
+                  controller: amountCtrl,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
@@ -763,6 +765,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     isDense: true,
                   ),
                 ),
+                if (withNote) ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: noteCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'ملاحظة (اختياري)',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
                 if (error != null) ...[
                   const SizedBox(height: 8),
                   Text(error!, style: const TextStyle(color: Colors.red)),
@@ -776,7 +789,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
               ),
               ElevatedButton(
                 onPressed: () {
-                  final value = double.tryParse(ctrl.text.trim());
+                  final value = double.tryParse(amountCtrl.text.trim());
                   if (value == null || value <= 0) {
                     setState(() => error = 'أدخل مبلغًا صحيحًا');
                     return;
@@ -785,7 +798,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     setState(() => error = 'المبلغ أكبر من المتبقي');
                     return;
                   }
-                  Navigator.of(ctx).pop(value);
+                  final note = noteCtrl.text.trim();
+                  Navigator.of(ctx).pop(
+                    _SettlementAmountInput(
+                      amount: value,
+                      note: withNote && note.isNotEmpty ? note : null,
+                    ),
+                  );
                 },
                 child: Text(actionLabel),
               ),
@@ -796,7 +815,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
       await WidgetsBinding.instance.endOfFrame;
       return result;
     } finally {
-      ctrl.dispose();
+      amountCtrl.dispose();
+      noteCtrl.dispose();
     }
   }
 
@@ -874,18 +894,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       if (action == _LineAction.editSettlement) {
         final remainingBefore = (line.remainingAfter ?? 0) + line.amount;
-        final amount = await _promptSettlementAmount(
+        final result = await _promptSettlementAmount(
           actionLabel: actionLabel,
           party: party,
           remaining: remainingBefore,
         );
-        if (amount == null) return;
+        if (result == null) return;
         await run(() async {
           if (line.pendingTxnId != null) {
             await AppDb.instance.rollbackPendingSettlement(line.txnId!);
             await AppDb.instance.addPendingSettlementForTxn(
               pendingTxnId: line.pendingTxnId!,
-              amount: amount,
+              amount: result.amount,
             );
             return;
           }
@@ -893,7 +913,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
             await AppDb.instance.rollbackClaimSettlement(line.txnId!);
             await AppDb.instance.settleClaim(
               claimId: line.claimId!,
-              amount: amount,
+              amount: result.amount,
             );
             return;
           }
@@ -954,19 +974,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
         line.claimId!,
         line.amount,
       );
-      final amount = isFull
-          ? remaining
+      final result = isFull
+          ? _SettlementAmountInput(amount: remaining, note: null)
           : await _promptSettlementAmount(
               actionLabel: actionLabel,
               party: party,
               remaining: remaining,
+              withNote: true,
             );
-      if (amount == null) return;
+      if (result == null) return;
 
       await run(() async {
         await AppDb.instance.settleClaim(
           claimId: line.claimId!,
-          amount: amount,
+          amount: result.amount,
+          note: result.note,
         );
       });
       return;
@@ -985,16 +1007,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
             return 'العميل';
           }
         }();
-        final amount = await _promptSettlementAmount(
+        final result = await _promptSettlementAmount(
           actionLabel: actionLabel,
           party: party,
           remaining: line.amount,
         );
-        if (amount == null) return;
+        if (result == null) return;
         await run(() async {
           await AppDb.instance.addPendingSettlementForTxn(
             pendingTxnId: line.txnId!,
-            amount: amount,
+            amount: result.amount,
           );
         });
       } else if (action == _LineAction.confirmPending) {
