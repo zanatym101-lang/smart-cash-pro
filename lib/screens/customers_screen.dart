@@ -1964,26 +1964,26 @@ class _CustomerSheetState extends State<_CustomerSheet> {
   }
 
   String? _buildSettlementDetails(_CustomerLine line) {
-    final parts = <String>[];
-    parts.add('المبلغ: ${line.amount.toStringAsFixed(2)}');
+    final primary = <String>['المبلغ: ${line.amount.toStringAsFixed(2)}'];
+    final secondary = <String>[];
+    final service = _extractServiceLine(line.details);
+    if (line.remainingAfter != null) {
+      primary.add('المتبقي: ${line.remainingAfter!.toStringAsFixed(2)}');
+    }
+    final settlementNote = _extractSettlementNote(line.details);
+    if (settlementNote != null) secondary.add('ملاحظة: $settlementNote');
+    if (line.claimId != null) {
+      secondary.add('مرجع المستحق: Claim#${line.claimId}');
+    }
     if (line.sourceKindLabel != null &&
         line.sourceKindLabel!.trim().isNotEmpty) {
-      parts.add('نوع الربط: ${line.sourceKindLabel}');
+      secondary.add('نوع الربط: ${line.sourceKindLabel}');
     }
-    if (line.claimId != null) {
-      parts.add('مرجع المستحق: Claim#${line.claimId}');
-    }
-    final service = _extractServiceLine(line.details);
-    if (service != null) parts.add(service);
-    final settlementNote = _extractSettlementNote(line.details);
-    if (settlementNote != null) parts.add('ملاحظة: $settlementNote');
-    if (line.remainingAfter != null) {
-      parts.add(
-        'المتبقي بعد العملية: ${line.remainingAfter!.toStringAsFixed(2)}',
-      );
-    }
-    if (parts.isEmpty) return null;
-    return parts.join(' | ');
+    if (service != null) secondary.add(service);
+
+    final lines = <String>[primary.join(' | ')];
+    if (secondary.isNotEmpty) lines.add(secondary.join(' | '));
+    return lines.join('\n');
   }
 
   String? _compactDetailsForLine(_CustomerLine line) {
