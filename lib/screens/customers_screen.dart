@@ -16,6 +16,10 @@ import 'transfer_screen.dart';
 
 String _stripSystemTags(String input) {
   var v = input;
+  v = v.replaceAllMapped(
+    RegExp(r'settlement_note:\s*(.+?)(?=\s+-\s+claim_id:\d+|$)'),
+    (m) => 'ملاحظة التسوية: ${(m.group(1) ?? '').trim()}',
+  );
   v = v.replaceAll(RegExp(r'claim_id:\d+'), '');
   v = v.replaceAll(RegExp(r'pending_txn:\d+'), '');
   v = v.replaceAll(RegExp(r'\s+-\s+-+'), ' - ');
@@ -1419,6 +1423,13 @@ class _CustomerSheet extends StatefulWidget {
 
 enum _CustomerLineFilter { all, claims, settlements, pending, posted }
 
+class _SettlementAmountInput {
+  final double amount;
+  final String? note;
+
+  const _SettlementAmountInput({required this.amount, required this.note});
+}
+
 class _CustomerSheetState extends State<_CustomerSheet> {
   _CustomerLineFilter _filter = _CustomerLineFilter.all;
   bool _showActions = false;
@@ -1449,6 +1460,14 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       if (l.startsWith('خدمة:')) return l;
     }
     return null;
+  }
+
+  String? _extractSettlementNote(String? details) {
+    if (details == null) return null;
+    final m = RegExp(r'ملاحظة التسوية:\s*(.+)$').firstMatch(details.trim());
+    if (m == null) return null;
+    final note = (m.group(1) ?? '').trim();
+    return note.isEmpty ? null : note;
   }
 
   String? _extractDetailPart(String? details, String prefix) {
@@ -1545,15 +1564,16 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     );
   }
 
-  Future<double?> _promptTotalAmount({
+  Future<_SettlementAmountInput?> _promptTotalAmount({
     required String title,
     required String label,
     required double maxAmount,
   }) async {
-    final ctrl = TextEditingController();
+    final amountCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
     String? error;
     try {
-      final result = await showDialog<double>(
+      final result = await showDialog<_SettlementAmountInput>(
         context: context,
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setState) => AlertDialog(
@@ -1565,7 +1585,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                 Text('الإجمالي المتاح: ${maxAmount.toStringAsFixed(2)}'),
                 const SizedBox(height: 10),
                 TextField(
-                  controller: ctrl,
+                  controller: amountCtrl,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
@@ -1574,6 +1594,15 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                     border: const OutlineInputBorder(),
                     isDense: true,
                     errorText: error,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: noteCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظة (اختياري)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
                   ),
                 ),
               ],
@@ -1585,7 +1614,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
               ),
               ElevatedButton(
                 onPressed: () {
-                  final value = double.tryParse(ctrl.text.trim());
+                  final value = double.tryParse(amountCtrl.text.trim());
                   if (value == null || value <= 0) {
                     setState(() => error = 'أدخل مبلغًا صحيحًا');
                     return;
@@ -1594,7 +1623,13 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                     setState(() => error = 'المبلغ أكبر من الإجمالي المتاح');
                     return;
                   }
-                  Navigator.of(ctx).pop(value);
+                  final note = noteCtrl.text.trim();
+                  Navigator.of(ctx).pop(
+                    _SettlementAmountInput(
+                      amount: value,
+                      note: note.isEmpty ? null : note,
+                    ),
+                  );
                 },
                 child: const Text('تنفيذ'),
               ),
@@ -1605,7 +1640,8 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       await WidgetsBinding.instance.endOfFrame;
       return result;
     } finally {
-      ctrl.dispose();
+      amountCtrl.dispose();
+      noteCtrl.dispose();
     }
   }
 
@@ -1714,15 +1750,15 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       return;
     }
     final actionLabel = type == 'receivable' ? 'تحصيل' : 'سداد';
-    final amount = await _promptTotalAmount(
+    final result = await _promptTotalAmount(
       title: '$actionLabel جزئي من الإجمالي',
       label: 'مبلغ $actionLabel',
       maxAmount: total,
     );
-    if (amount == null) return;
+    if (result == null) return;
 
     await _runBatch('تم تنفيذ التسوية الجزئية بنجاح ✅', () async {
-      var remainingAmount = amount;
+      var remainingAmount = result.amount;
       for (final line in lines) {
         if (remainingAmount <= 0) break;
         final claimId = line.claimId;
@@ -1733,7 +1769,11 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             ? remainingAmount
             : claimRemaining;
         if (take <= 0) continue;
-        await AppDb.instance.settleClaim(claimId: claimId, amount: take);
+        await AppDb.instance.settleClaim(
+          claimId: claimId,
+          amount: take,
+          note: result.note,
+        );
         remainingAmount -= take;
       }
     });
@@ -1913,6 +1953,8 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     }
     final service = _extractServiceLine(line.details);
     if (service != null) parts.add(service);
+    final settlementNote = _extractSettlementNote(line.details);
+    if (settlementNote != null) parts.add('ملاحظة: $settlementNote');
     if (line.remainingAfter != null) {
       parts.add(
         'المتبقي بعد العملية: ${line.remainingAfter!.toStringAsFixed(2)}',
