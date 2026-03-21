@@ -274,6 +274,42 @@ This was treated as a UI/controller lifecycle fix only.
 
 ---
 
+### 20. Clearer partial claim settlement lines in customers screen
+Customer settlement lines for `claim_collect` and `claim_pay`
+were made visually clearer inside the customers screen.
+
+Behavior:
+- partial collection/payment appears as a clearer standalone line
+- amount is shown clearly
+- remaining amount after the operation is shown
+- claim reference is shown when available
+
+This was a UI-only clarity improvement.
+
+---
+
+### 21. Optional note support for partial claim settlements
+An optional note was added to partial claim settlement flow.
+
+Behavior:
+- the note is optional
+- the note is saved into `txn.note`
+- the note is shown in the customers screen when present
+- no database/schema change was required
+- no accounting logic was changed
+
+---
+
+### 22. Unified note support across both partial settlement flows
+Optional note support is now available in both customer partial settlement paths:
+
+- partial settlement from total claims
+- partial settlement from the open claim line itself
+
+This keeps the behavior consistent across both UI flows.
+
+---
+
 ## Things Intentionally Not Changed
 
 For safety, the following were intentionally left unchanged:
@@ -311,10 +347,12 @@ Do not change these unless the task explicitly requires it and the risk is analy
 - copy button for transaction reference
 - ledger search accepts `ZA` reference and direct `txnId`
 - customer settlement dialog controller lifecycle fixed on Windows
+- clearer customer partial settlement lines in customers screen
+- optional note support for partial claim settlements in both flows
 
 ### Tests
 Current stable suite reached:
-- `106 tests passed`
+- `112 tests passed` (latest user-confirmed run)
 
 ---
 
@@ -406,6 +444,9 @@ The following features are already implemented and exist in the codebase:
 - tests for `txnIdFromReference(...)`
 - ledger search hook using ZA reference -> txnId
 - customer settlement dialog lifecycle fix on Windows
+- clearer partial claim settlement lines in customers screen
+- optional note support for partial claim settlements
+- unified optional note support in both partial settlement flows
 - approval metadata (approved_by, approved_at)
 - confirmPending() protection against double approval
 - test coverage for approval, claims, and settlement
