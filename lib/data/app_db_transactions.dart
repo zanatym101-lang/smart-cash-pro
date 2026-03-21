@@ -447,19 +447,19 @@ extension AppDbTransactions on AppDb {
       beforeMonthly: beforeUsage.monthly,
       afterMonthly: afterMonthly,
     );
-    if (status == 'posted') {
+    if (savedTxn.status == 'posted') {
       await _notifyLowBalanceIfNeeded(w);
     }
     await _save();
     await enqueueOutbox(
       entity: 'txn',
-      entityId: txn.id.toString(),
+      entityId: savedTxn.id.toString(),
       action: 'create',
-      payload: txn.toJson(),
+      payload: savedTxn.toJson(),
     );
     await appendAudit(
       type: 'transfer_add',
-      txnId: txn.id,
+      txnId: savedTxn.id,
       walletId: walletId,
       amount: amount,
       note: note,
