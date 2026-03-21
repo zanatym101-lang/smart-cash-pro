@@ -120,6 +120,10 @@ extension AppDbAdmin on AppDb {
       license['cloudLastError'] = '';
       changed = true;
     }
+    if (!license.containsKey('cloudActivatedAt')) {
+      license['cloudActivatedAt'] = '';
+      changed = true;
+    }
 
     if (changed) {
       m['license'] = license;
@@ -230,9 +234,10 @@ extension AppDbAdmin on AppDb {
     if (storedDevice.isNotEmpty && storedDevice != deviceCode) return false;
 
     final now = DateTime.now().toUtc();
-    final tokenExpiresAt = _parseUtcDate(license['cloudTokenExpiresAt']);
-    if (tokenExpiresAt != null && !tokenExpiresAt.isAfter(now)) return false;
 
+    // Offline rule: once cloud activation succeeds, keep the app activated on the
+    // same device until the actual license expiry is reached or the server later
+    // returns a non-transient revocation/invalid state.
     final licenseExpiresAt = _parseUtcDate(license['cloudLicenseExpiresAt']);
     if (licenseExpiresAt != null && !licenseExpiresAt.isAfter(now)) {
       return false;
@@ -248,6 +253,7 @@ extension AppDbAdmin on AppDb {
     license['cloudDeviceId'] = '';
     license['cloudLastCheckAt'] = '';
     license['cloudLastError'] = '';
+    license['cloudActivatedAt'] = '';
     license['activationCode'] = '';
   }
 
@@ -266,7 +272,9 @@ extension AppDbAdmin on AppDb {
     license['cloudDeviceId'] = resolvedDevice.isEmpty
         ? deviceCode
         : resolvedDevice;
-    license['cloudLastCheckAt'] = DateTime.now().toUtc().toIso8601String();
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    license['cloudLastCheckAt'] = nowIso;
+    license['cloudActivatedAt'] = nowIso;
     license['cloudLastError'] = '';
     if (activationCode != null && activationCode.trim().isNotEmpty) {
       license['activationCode'] = activationCode.trim();
