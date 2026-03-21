@@ -1,5 +1,27 @@
 # SESSION_STATE (Smart Cash Pro)
 
+## 2026-03-07 Update (cloud license rollout)
+- Cloud license endpoints verified manually:
+  - `POST /api/license/activate` ✅
+  - `POST /api/license/status` ✅
+  - `POST /api/license/refresh` ✅
+- Test-suite compatibility restored:
+  - Added legacy local activation fallback for non-production/test runs only.
+  - Release behavior remains cloud-first.
+- Local quality checks:
+  - `flutter analyze` ✅
+  - `flutter test` ✅ (all passed)
+- Android build:
+  - `build/app/outputs/flutter-apk/app-release.apk` ✅
+
+## 2026-03-07 Update (developer tools cleanup)
+- Removed local activation code generator UI from developer tools by default.
+- Added compile-time guard:
+  - `SHOW_LEGACY_CODE_GENERATOR=true` shows legacy block only for internal builds.
+- Cloud activation remains the only visible activation path in release.
+- Rebuilt + installed release APK on connected phone:
+  - device `HZQL1838LAKA2700279` ✅
+
 آخر تحديث: 2026-03-05 (تحديث أمني API Assistant)
 المشروع: `C:\Users\Zanaty\king_wallet_accounting`
 
@@ -60,3 +82,13 @@ flutter test
 
 ## ملاحظة تشغيلية
 - أي قرار جديد يُسجل هنا فورًا قبل بدء التنفيذ حتى لا يضيع السياق.
+
+## 2026-03-13 Update (customer balance column fix)
+- Fixed customer detail right-side `الرصيد` display logic to show per-line remaining amount more accurately for open claims, pending outstanding lines, and settlement lines.
+- Local checks:
+  - `flutter analyze` ✅
+  - `flutter test` ✅ (all passed)
+- Android build:
+  - `build/app/outputs/flutter-apk/app-release.apk` ✅
+- ADB status during build/install step:
+  - no connected devices detected

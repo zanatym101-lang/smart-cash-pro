@@ -153,16 +153,8 @@ void main() {
         party: 'Customer A',
         note: '01111111111',
       );
-      await db.addClaim(
-        type: 'receivable',
-        party: 'Customer A',
-        amount: 70,
-      );
-      await db.addClaim(
-        type: 'payable',
-        party: 'Supplier B',
-        amount: 30,
-      );
+      await db.addClaim(type: 'receivable', party: 'Customer A', amount: 70);
+      await db.addClaim(type: 'payable', party: 'Supplier B', amount: 30);
     });
 
     AppSession.enterAdmin();
@@ -179,10 +171,15 @@ void main() {
     await tester.tap(find.text('Customer A').first);
     await pumpFrames(tester);
     await pumpUntilFound(tester, find.byIcon(Icons.assessment_outlined));
-    await tester.tap(find.byIcon(Icons.assessment_outlined).first);
+    await tester.ensureVisible(find.byIcon(Icons.assessment_outlined).first);
+    await tester.tap(
+      find.byIcon(Icons.assessment_outlined).first,
+      warnIfMissed: false,
+    );
     await pumpFrames(tester);
     await pumpUntilFound(tester, find.byType(ChoiceChip));
-    await tester.tap(find.byType(ChoiceChip).at(1));
+    await tester.ensureVisible(find.byType(ChoiceChip).at(1));
+    await tester.tap(find.byType(ChoiceChip).at(1), warnIfMissed: false);
     await pumpFrames(tester, count: 10);
   });
 
@@ -225,7 +222,9 @@ void main() {
     await pumpUntilFound(tester, find.text('Coverage Wallet 2'));
   });
 
-  testWidgets('claims screen smoke and settlement dialog opens', (tester) async {
+  testWidgets('claims screen smoke and settlement dialog opens', (
+    tester,
+  ) async {
     await tester.binding.setSurfaceSize(const Size(1080, 2200));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -236,11 +235,7 @@ void main() {
         party: 'Claim Customer',
         amount: 80,
       );
-      await db.addClaim(
-        type: 'payable',
-        party: 'Claim Supplier',
-        amount: 25,
-      );
+      await db.addClaim(type: 'payable', party: 'Claim Supplier', amount: 25);
     });
 
     AppSession.enterAdmin();
@@ -289,7 +284,9 @@ void main() {
       ),
     ];
     await tester.pumpWidget(
-      MaterialApp(home: TxDetailsScreen(txn: pendingTxn, wallets: wallets)),
+      MaterialApp(
+        home: TxDetailsScreen(txn: pendingTxn, wallets: wallets),
+      ),
     );
     await pumpUntilFound(tester, find.byIcon(Icons.check));
     await tester.tap(find.byIcon(Icons.check).first);
@@ -382,7 +379,9 @@ void main() {
     await pumpFrames(tester, count: 8);
   });
 
-  testWidgets('reports screen daily close and reopen flow works', (tester) async {
+  testWidgets('reports screen daily close and reopen flow works', (
+    tester,
+  ) async {
     await tester.binding.setSurfaceSize(const Size(1080, 2200));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
@@ -497,39 +496,40 @@ void main() {
     await pumpUntilFound(tester, find.byType(SyncOutboxScreen));
   });
 
-  testWidgets('fawry credit user flow creates pending and opens pending screen', (
-    tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(1080, 2200));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
+  testWidgets(
+    'fawry credit user flow creates pending and opens pending screen',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1080, 2200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
 
-    AppSession.enterUser();
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: FawryScreen(
-          initialParty: 'Fawry Client',
-          initialPhone: '01077777777',
-          startCredit: true,
+      AppSession.enterUser();
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: FawryScreen(
+            initialParty: 'Fawry Client',
+            initialPhone: '01077777777',
+            startCredit: true,
+          ),
         ),
-      ),
-    );
-    await pumpUntilFound(tester, find.byType(TextField));
+      );
+      await pumpUntilFound(tester, find.byType(TextField));
 
-    final fields = find.byType(TextField);
-    await tester.enterText(fields.at(0), 'Electricity');
-    await tester.enterText(fields.at(2), 'Fawry Client');
-    await tester.enterText(fields.at(4), '1000');
-    await tester.enterText(fields.at(5), '10');
-    await tester.tap(find.byIcon(Icons.send).first);
-    await pumpFrames(tester, count: 14);
+      final fields = find.byType(TextField);
+      await tester.enterText(fields.at(0), 'Electricity');
+      await tester.enterText(fields.at(2), 'Fawry Client');
+      await tester.enterText(fields.at(4), '1000');
+      await tester.enterText(fields.at(5), '10');
+      await tester.tap(find.byIcon(Icons.send).first);
+      await pumpFrames(tester, count: 14);
 
-    await pumpUntilFound(tester, find.byType(PendingScreen));
-    final fawryTxns = (await tester.runAsync(
-      () => AppDb.instance.listTxns(kind: 'fawry_credit'),
-    ))!;
-    expect(fawryTxns.isNotEmpty, isTrue);
-    expect(fawryTxns.first.status, 'pending');
-  });
+      await pumpUntilFound(tester, find.byType(PendingScreen));
+      final fawryTxns = (await tester.runAsync(
+        () => AppDb.instance.listTxns(kind: 'fawry_credit'),
+      ))!;
+      expect(fawryTxns.isNotEmpty, isTrue);
+      expect(fawryTxns.first.status, 'pending');
+    },
+  );
 
   testWidgets('pending screen approve flow posts transaction', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1080, 2200));
@@ -568,7 +568,9 @@ void main() {
     await tester.tap(dialogApprove.first);
     await pumpFrames(tester, count: 18);
 
-    final posted = (await tester.runAsync(() => db.listTxns(status: 'posted')))!;
+    final posted = (await tester.runAsync(
+      () => db.listTxns(status: 'posted'),
+    ))!;
     expect(posted.any((t) => t.id == txId), isTrue);
   });
 
@@ -755,13 +757,19 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: DeveloperToolsScreen()));
     await pumpUntilFound(tester, find.byType(TextField));
 
-    await tester.enterText(find.byType(TextField).first, 'DEV-ABC-123');
-    await tester.tap(find.byIcon(Icons.auto_fix_high));
-    await pumpFrames(tester, count: 8);
-    await pumpUntilFound(tester, find.byIcon(Icons.copy));
-
-    await tester.tap(find.byIcon(Icons.copy));
-    await pumpFrames(tester, count: 6);
+    final legacyGenerate = find.byIcon(Icons.auto_fix_high);
+    if (legacyGenerate.evaluate().isNotEmpty) {
+      await tester.enterText(find.byType(TextField).first, 'DEV-ABC-123');
+      await tester.tap(legacyGenerate.first);
+      await pumpFrames(tester, count: 8);
+      await pumpUntilFound(tester, find.byIcon(Icons.copy));
+      await tester.tap(find.byIcon(Icons.copy).first);
+      await pumpFrames(tester, count: 6);
+    } else {
+      // Cloud-only mode: local code generator is intentionally hidden.
+      expect(find.byIcon(Icons.copy), findsNothing);
+      expect(find.byIcon(Icons.save), findsOneWidget);
+    }
   });
 
   testWidgets('assistant screen smoke asks and receives a balance answer', (

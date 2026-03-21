@@ -173,6 +173,7 @@ extension AppDbClaims on AppDb {
   Future<int> settleClaim({
     required int claimId,
     required double amount,
+    String? note,
   }) async {
     await _ensureLoaded();
     await _ensureOperationAllowed();
@@ -207,6 +208,10 @@ extension AppDbClaims on AppDb {
     final noteParts = <String>[base];
     if (claim.note != null && claim.note!.trim().isNotEmpty) {
       noteParts.add(claim.note!.trim());
+    }
+    final settlementNote = note?.trim();
+    if (settlementNote != null && settlementNote.isNotEmpty) {
+      noteParts.add('settlement_note:$settlementNote');
     }
     noteParts.add('claim_id:${claim.id}');
 

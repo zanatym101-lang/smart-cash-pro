@@ -7,7 +7,63 @@ import '../data/app_db.dart';
 import '../data/app_session.dart';
 import '../models/transaction.dart';
 import '../models/wallet.dart';
+import '../utils/txn_reference.dart';
 import 'tx_details_screen.dart';
+
+bool matchesLedgerTxnSearch(Txn txn, String query) {
+  final normalized = query.trim();
+  if (normalized.isEmpty) return true;
+
+  final parsedReferenceTxnId = txnIdFromReference(normalized);
+  if (parsedReferenceTxnId != null) {
+    return txn.id == parsedReferenceTxnId;
+  }
+
+  final parsedTxnId = int.tryParse(normalized);
+  if (parsedTxnId != null) {
+    return txn.id == parsedTxnId;
+  }
+
+  return false;
+}
+
+bool matchesLedgerTxnFilters({
+  required Txn txn,
+  required String period,
+  required String type,
+  required String status,
+  required String query,
+  required DateTime now,
+}) {
+  bool inPeriod() {
+    if (period == 'all') return true;
+    if (period == 'today') {
+      return txn.entryDate.year == now.year &&
+          txn.entryDate.month == now.month &&
+          txn.entryDate.day == now.day;
+    }
+
+    return txn.entryDate.year == now.year && txn.entryDate.month == now.month;
+  }
+
+  final inType = type == 'all' ? true : txn.kind == type;
+  final inStatus = status == 'all' ? true : txn.status == status;
+  final inSearch = matchesLedgerTxnSearch(txn, query);
+
+  return inPeriod() && inType && inStatus && inSearch;
+}
+
+String ledgerEmptyStateMessage(String query) {
+  if (query.trim().isNotEmpty) {
+    return 'لا توجد عملية مطابقة لرقم العملية أو مرجع ZA.';
+  }
+
+  return 'لا توجد عمليات حسب الفلاتر الحالية';
+}
+
+Widget buildLedgerEmptyState(String query) {
+  return Center(child: Text(ledgerEmptyStateMessage(query)));
+}
 
 class LedgerScreen extends StatefulWidget {
   const LedgerScreen({super.key});
@@ -29,6 +85,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
   String _type =
       'all'; // all | transfer | receive | external_funding | drawer_deposit | rollback
   String _status = 'all'; // all | pending | posted | rolled_back
+  String _query = '';
 
   @override
   void initState() {
@@ -57,22 +114,19 @@ class _LedgerScreenState extends State<LedgerScreen> {
   void _applyFilters() {
     final now = DateTime.now();
 
-    bool inPeriod(Txn t) {
-      if (_period == 'all') return true;
-      if (_period == 'today') {
-        return t.entryDate.year == now.year &&
-            t.entryDate.month == now.month &&
-            t.entryDate.day == now.day;
-      }
-      // month
-      return t.entryDate.year == now.year && t.entryDate.month == now.month;
-    }
-
-    bool inType(Txn t) => _type == 'all' ? true : t.kind == _type;
-    bool inStatus(Txn t) => _status == 'all' ? true : t.status == _status;
-
     _filtered =
-        _all.where((t) => inPeriod(t) && inType(t) && inStatus(t)).toList()
+        _all
+            .where(
+              (t) => matchesLedgerTxnFilters(
+                txn: t,
+                period: _period,
+                type: _type,
+                status: _status,
+                query: _query,
+                now: now,
+              ),
+            )
+            .toList()
           ..sort((a, b) => b.entryDate.compareTo(a.entryDate));
 
     if (mounted) setState(() {});
@@ -371,6 +425,19 @@ class _LedgerScreenState extends State<LedgerScreen> {
                         ),
                       ],
                     ),
+                    SizedBox(
+                      width: 220,
+                      child: TextField(
+                        onChanged: (v) {
+                          _query = v;
+                          _applyFilters();
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'بحث برقم العملية أو مرجع ZA',
+                          isDense: true,
+                        ),
+                      ),
+                    ),
                     if (isAdmin)
                       const Text(
                         'للأدمن: يمكن الاعتماد/الإلغاء/عكس التأثير من تفاصيل العملية.',
@@ -386,9 +453,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
                   : _error != null
                   ? Center(child: Text('خطأ: $_error'))
                   : _filtered.isEmpty
-                  ? const Center(
-                      child: Text('لا توجد عمليات حسب الفلاتر الحالية'),
-                    )
+                  ? buildLedgerEmptyState(_query)
                   : ListView.separated(
                       itemCount: _filtered.length,
                       separatorBuilder: (_, _) => const SizedBox(height: 8),

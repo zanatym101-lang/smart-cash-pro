@@ -16,6 +16,10 @@ import 'transfer_screen.dart';
 
 String _stripSystemTags(String input) {
   var v = input;
+  v = v.replaceAllMapped(
+    RegExp(r'settlement_note:\s*(.+?)(?=\s+-\s+claim_id:\d+|$)'),
+    (m) => 'ملاحظة التسوية: ${(m.group(1) ?? '').trim()}',
+  );
   v = v.replaceAll(RegExp(r'claim_id:\d+'), '');
   v = v.replaceAll(RegExp(r'pending_txn:\d+'), '');
   v = v.replaceAll(RegExp(r'\s+-\s+-+'), ' - ');
@@ -87,7 +91,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   String _customerKeyFor(_CustomerBucket c) {
-    return _bucketKey(name: c.name, phone: c.phone);
+    return c.key;
   }
 
   bool _isPinned(_CustomerBucket c) {
@@ -229,6 +233,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         return map.putIfAbsent(
           key,
           () => _CustomerBucket(
+            key: key,
             name: normalizedName,
             phone: normalizedPhone.isEmpty ? null : normalizedPhone,
           ),
@@ -394,12 +399,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
         final pendingRef = pendingRefFromNote;
         final claimIdForTxn = _extractClaimIdFromNote(t.note);
         final pendingSource = pendingRef != null ? txnById[pendingRef] : null;
-        final remainingAfter = pendingRef != null
-            ? settlementRemainingByTxnId[t.id]
-            : null;
-        final sourceKindLabel = pendingRef != null
-            ? settlementSourceLabelByTxnId[t.id]
-            : null;
+        final remainingAfter = settlementRemainingByTxnId[t.id];
+        final sourceKindLabel = settlementSourceLabelByTxnId[t.id];
 
         b.lines.add(
           _CustomerLine(
@@ -433,7 +434,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       final customers = map.values.where((c) => c.lines.isNotEmpty).toList();
       for (final c in customers) {
-        c.lines.sort((a, b) => b.date.compareTo(a.date));
+        c.lines.sort((a, b) {
+          final cDate = b.date.compareTo(a.date);
+          if (cDate != 0) return cDate;
+          final aId = a.txnId ?? a.claimId ?? 0;
+          final bId = b.txnId ?? b.claimId ?? 0;
+          return bId.compareTo(aId);
+        });
         if (c.lines.isNotEmpty) {
           c.lastActivity = c.lines.first.date;
         }
@@ -723,15 +730,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
     return list;
   }
 
-  Future<double?> _promptSettlementAmount({
+  Future<_SettlementAmountInput?> _promptSettlementAmount({
     required String actionLabel,
     required String party,
     required double remaining,
+    bool withNote = false,
   }) async {
-    final ctrl = TextEditingController();
+    final amountCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
     String? error;
     try {
-      return await showDialog<double>(
+      final result = await showDialog<_SettlementAmountInput>(
         context: context,
         barrierDismissible: false,
         builder: (ctx) => StatefulBuilder(
@@ -746,7 +755,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 Text('المتبقي: ${remaining.toStringAsFixed(2)}'),
                 const SizedBox(height: 12),
                 TextField(
-                  controller: ctrl,
+                  controller: amountCtrl,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
@@ -756,6 +765,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     isDense: true,
                   ),
                 ),
+                if (withNote) ...[
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: noteCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'ملاحظة (اختياري)',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ],
                 if (error != null) ...[
                   const SizedBox(height: 8),
                   Text(error!, style: const TextStyle(color: Colors.red)),
@@ -769,7 +789,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
               ),
               ElevatedButton(
                 onPressed: () {
-                  final value = double.tryParse(ctrl.text.trim());
+                  final value = double.tryParse(amountCtrl.text.trim());
                   if (value == null || value <= 0) {
                     setState(() => error = 'أدخل مبلغًا صحيحًا');
                     return;
@@ -778,7 +798,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     setState(() => error = 'المبلغ أكبر من المتبقي');
                     return;
                   }
-                  Navigator.of(ctx).pop(value);
+                  final note = noteCtrl.text.trim();
+                  Navigator.of(ctx).pop(
+                    _SettlementAmountInput(
+                      amount: value,
+                      note: withNote && note.isNotEmpty ? note : null,
+                    ),
+                  );
                 },
                 child: Text(actionLabel),
               ),
@@ -786,8 +812,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
           ),
         ),
       );
+      await WidgetsBinding.instance.endOfFrame;
+      return result;
     } finally {
-      ctrl.dispose();
+      amountCtrl.dispose();
+      noteCtrl.dispose();
     }
   }
 
@@ -865,18 +894,18 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       if (action == _LineAction.editSettlement) {
         final remainingBefore = (line.remainingAfter ?? 0) + line.amount;
-        final amount = await _promptSettlementAmount(
+        final result = await _promptSettlementAmount(
           actionLabel: actionLabel,
           party: party,
           remaining: remainingBefore,
         );
-        if (amount == null) return;
+        if (result == null) return;
         await run(() async {
           if (line.pendingTxnId != null) {
             await AppDb.instance.rollbackPendingSettlement(line.txnId!);
             await AppDb.instance.addPendingSettlementForTxn(
               pendingTxnId: line.pendingTxnId!,
-              amount: amount,
+              amount: result.amount,
             );
             return;
           }
@@ -884,7 +913,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
             await AppDb.instance.rollbackClaimSettlement(line.txnId!);
             await AppDb.instance.settleClaim(
               claimId: line.claimId!,
-              amount: amount,
+              amount: result.amount,
             );
             return;
           }
@@ -945,19 +974,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
         line.claimId!,
         line.amount,
       );
-      final amount = isFull
-          ? remaining
+      final result = isFull
+          ? _SettlementAmountInput(amount: remaining, note: null)
           : await _promptSettlementAmount(
               actionLabel: actionLabel,
               party: party,
               remaining: remaining,
+              withNote: true,
             );
-      if (amount == null) return;
+      if (result == null) return;
 
       await run(() async {
         await AppDb.instance.settleClaim(
           claimId: line.claimId!,
-          amount: amount,
+          amount: result.amount,
+          note: result.note,
         );
       });
       return;
@@ -976,16 +1007,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
             return 'العميل';
           }
         }();
-        final amount = await _promptSettlementAmount(
+        final result = await _promptSettlementAmount(
           actionLabel: actionLabel,
           party: party,
           remaining: line.amount,
         );
-        if (amount == null) return;
+        if (result == null) return;
         await run(() async {
           await AppDb.instance.addPendingSettlementForTxn(
             pendingTxnId: line.txnId!,
-            amount: amount,
+            amount: result.amount,
           );
         });
       } else if (action == _LineAction.confirmPending) {
@@ -1414,6 +1445,13 @@ class _CustomerSheet extends StatefulWidget {
 
 enum _CustomerLineFilter { all, claims, settlements, pending, posted }
 
+class _SettlementAmountInput {
+  final double amount;
+  final String? note;
+
+  const _SettlementAmountInput({required this.amount, required this.note});
+}
+
 class _CustomerSheetState extends State<_CustomerSheet> {
   _CustomerLineFilter _filter = _CustomerLineFilter.all;
   bool _showActions = false;
@@ -1444,6 +1482,14 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       if (l.startsWith('خدمة:')) return l;
     }
     return null;
+  }
+
+  String? _extractSettlementNote(String? details) {
+    if (details == null) return null;
+    final m = RegExp(r'ملاحظة التسوية:\s*(.+)$').firstMatch(details.trim());
+    if (m == null) return null;
+    final note = (m.group(1) ?? '').trim();
+    return note.isEmpty ? null : note;
   }
 
   String? _extractDetailPart(String? details, String prefix) {
@@ -1540,15 +1586,16 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     );
   }
 
-  Future<double?> _promptTotalAmount({
+  Future<_SettlementAmountInput?> _promptTotalAmount({
     required String title,
     required String label,
     required double maxAmount,
   }) async {
-    final ctrl = TextEditingController();
+    final amountCtrl = TextEditingController();
+    final noteCtrl = TextEditingController();
     String? error;
     try {
-      return showDialog<double>(
+      final result = await showDialog<_SettlementAmountInput>(
         context: context,
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setState) => AlertDialog(
@@ -1560,7 +1607,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                 Text('الإجمالي المتاح: ${maxAmount.toStringAsFixed(2)}'),
                 const SizedBox(height: 10),
                 TextField(
-                  controller: ctrl,
+                  controller: amountCtrl,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
@@ -1569,6 +1616,15 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                     border: const OutlineInputBorder(),
                     isDense: true,
                     errorText: error,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: noteCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظة (اختياري)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
                   ),
                 ),
               ],
@@ -1580,7 +1636,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
               ),
               ElevatedButton(
                 onPressed: () {
-                  final value = double.tryParse(ctrl.text.trim());
+                  final value = double.tryParse(amountCtrl.text.trim());
                   if (value == null || value <= 0) {
                     setState(() => error = 'أدخل مبلغًا صحيحًا');
                     return;
@@ -1589,7 +1645,13 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                     setState(() => error = 'المبلغ أكبر من الإجمالي المتاح');
                     return;
                   }
-                  Navigator.of(ctx).pop(value);
+                  final note = noteCtrl.text.trim();
+                  Navigator.of(ctx).pop(
+                    _SettlementAmountInput(
+                      amount: value,
+                      note: note.isEmpty ? null : note,
+                    ),
+                  );
                 },
                 child: const Text('تنفيذ'),
               ),
@@ -1597,8 +1659,11 @@ class _CustomerSheetState extends State<_CustomerSheet> {
           ),
         ),
       );
+      await WidgetsBinding.instance.endOfFrame;
+      return result;
     } finally {
-      ctrl.dispose();
+      amountCtrl.dispose();
+      noteCtrl.dispose();
     }
   }
 
@@ -1707,15 +1772,15 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       return;
     }
     final actionLabel = type == 'receivable' ? 'تحصيل' : 'سداد';
-    final amount = await _promptTotalAmount(
+    final result = await _promptTotalAmount(
       title: '$actionLabel جزئي من الإجمالي',
       label: 'مبلغ $actionLabel',
       maxAmount: total,
     );
-    if (amount == null) return;
+    if (result == null) return;
 
     await _runBatch('تم تنفيذ التسوية الجزئية بنجاح ✅', () async {
-      var remainingAmount = amount;
+      var remainingAmount = result.amount;
       for (final line in lines) {
         if (remainingAmount <= 0) break;
         final claimId = line.claimId;
@@ -1726,7 +1791,11 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             ? remainingAmount
             : claimRemaining;
         if (take <= 0) continue;
-        await AppDb.instance.settleClaim(claimId: claimId, amount: take);
+        await AppDb.instance.settleClaim(
+          claimId: claimId,
+          amount: take,
+          note: result.note,
+        );
         remainingAmount -= take;
       }
     });
@@ -1895,20 +1964,26 @@ class _CustomerSheetState extends State<_CustomerSheet> {
   }
 
   String? _buildSettlementDetails(_CustomerLine line) {
-    final parts = <String>[];
+    final primary = <String>['المبلغ: ${line.amount.toStringAsFixed(2)}'];
+    final secondary = <String>[];
+    final service = _extractServiceLine(line.details);
+    if (line.remainingAfter != null) {
+      primary.add('المتبقي: ${line.remainingAfter!.toStringAsFixed(2)}');
+    }
+    final settlementNote = _extractSettlementNote(line.details);
+    if (settlementNote != null) secondary.add('ملاحظة: $settlementNote');
+    if (line.claimId != null) {
+      secondary.add('مرجع المستحق: Claim#${line.claimId}');
+    }
     if (line.sourceKindLabel != null &&
         line.sourceKindLabel!.trim().isNotEmpty) {
-      parts.add('نوع العملية: ${line.sourceKindLabel}');
+      secondary.add('نوع الربط: ${line.sourceKindLabel}');
     }
-    final service = _extractServiceLine(line.details);
-    if (service != null) parts.add(service);
-    if (line.remainingAfter != null) {
-      parts.add(
-        'المتبقي بعد التحصيل: ${line.remainingAfter!.toStringAsFixed(2)}',
-      );
-    }
-    if (parts.isEmpty) return null;
-    return parts.join(' | ');
+    if (service != null) secondary.add(service);
+
+    final lines = <String>[primary.join(' | ')];
+    if (secondary.isNotEmpty) lines.add(secondary.join(' | '));
+    return lines.join('\n');
   }
 
   String? _compactDetailsForLine(_CustomerLine line) {
@@ -1952,38 +2027,35 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     }
   }
 
-  Map<_CustomerLine, double> _computeBalances(List<_CustomerLine> lines) {
-    final sorted = List<_CustomerLine>.from(lines)
-      ..sort((a, b) {
-        final c = a.date.compareTo(b.date);
-        if (c != 0) return c;
-        final aId = a.txnId ?? a.claimId ?? 0;
-        final bId = b.txnId ?? b.claimId ?? 0;
-        return aId.compareTo(bId);
-      });
-    double running = 0;
+  Map<_CustomerLine, double> _computeBalances({
+    required List<_CustomerLine> lines,
+    required double currentNet,
+  }) {
     final map = <_CustomerLine, double>{};
-    for (final l in sorted) {
-      running += l.side == _LineSide.receivable ? l.amount : -l.amount;
-      map[l] = running;
+    var runningAfter = currentNet;
+    for (final l in lines) {
+      map[l] = runningAfter;
+      final delta = l.side == _LineSide.receivable ? l.amount : -l.amount;
+      runningAfter -= delta;
     }
     return map;
   }
 
-  bool _isSettlementLine(_CustomerLine line) {
-    return line.txnKind == 'claim_collect' || line.txnKind == 'claim_pay';
+  double _displayBalanceAmountForLine(
+    _CustomerLine line,
+    Map<_CustomerLine, double> balances,
+    double currentNet,
+  ) {
+    return (balances[line] ?? currentNet).abs();
   }
 
-  _LineSide _remainingSideForSettlement(_CustomerLine line) {
-    if (line.txnKind == 'claim_collect') {
-      // Remaining after collection = still due on customer (عليه).
-      return _LineSide.receivable;
-    }
-    if (line.txnKind == 'claim_pay') {
-      // Remaining after payment = still due to customer (له).
-      return _LineSide.payable;
-    }
-    return line.side;
+  _LineSide _displayBalanceSideForLine(
+    _CustomerLine line,
+    Map<_CustomerLine, double> balances,
+    double currentNet,
+  ) {
+    final runningBalance = balances[line] ?? currentNet;
+    return runningBalance >= 0 ? _LineSide.receivable : _LineSide.payable;
   }
 
   List<_CustomerLine> _applyFilter(List<_CustomerLine> lines) {
@@ -2071,8 +2143,12 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     if (line.lineType == _CustomerLineType.claimOpen) {
       return line.claimType == 'receivable' ? 'مستحق (عليه)' : 'مستحق (له)';
     }
-    if (line.txnKind == 'claim_collect') return 'تحصيل';
-    if (line.txnKind == 'claim_pay') return 'سداد';
+    if (line.txnKind == 'claim_collect') {
+      return (line.remainingAfter ?? 0) > 0 ? 'تحصيل جزئي' : 'تحصيل كامل';
+    }
+    if (line.txnKind == 'claim_pay') {
+      return (line.remainingAfter ?? 0) > 0 ? 'سداد جزئي' : 'سداد كامل';
+    }
     if (line.txnKind == 'transfer') {
       return line.txnStatus == 'pending' ? 'تحويل معلّق' : 'تحويل';
     }
@@ -2117,7 +2193,10 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     final netColor = customer.net >= 0
         ? const Color(0xFF047857)
         : const Color(0xFFB91C1C);
-    final balances = _computeBalances(customer.lines);
+    final balances = _computeBalances(
+      lines: customer.lines,
+      currentNet: customer.net,
+    );
     final visibleLines = _applyFilter(customer.lines);
 
     return Padding(
@@ -2246,18 +2325,16 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                             ? const Color(0xFF047857)
                             : const Color(0xFFB91C1C);
                         final amountBg = amountColor.withValues(alpha: 0.12);
-                        final runningBalance = balances[line] ?? customer.net;
-                        final useRemainingAfter =
-                            line.remainingAfter != null &&
-                            _isSettlementLine(line);
-                        final balance = useRemainingAfter
-                            ? line.remainingAfter!.abs()
-                            : runningBalance.abs();
-                        final balanceSide = useRemainingAfter
-                            ? _remainingSideForSettlement(line)
-                            : (runningBalance >= 0
-                                  ? _LineSide.receivable
-                                  : _LineSide.payable);
+                        final balance = _displayBalanceAmountForLine(
+                          line,
+                          balances,
+                          customer.net,
+                        );
+                        final balanceSide = _displayBalanceSideForLine(
+                          line,
+                          balances,
+                          customer.net,
+                        );
                         final balanceColor = balanceSide == _LineSide.receivable
                             ? const Color(0xFFB91C1C)
                             : const Color(0xFF047857);
@@ -2271,9 +2348,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                         final chipLabel = _lineChipLabel(line);
                         final chipColor = _lineChipColor(line);
                         final displayTitle = isSettlement
-                            ? (line.txnKind == 'claim_collect'
-                                  ? 'تحصيل مستحق'
-                                  : 'سداد مستحق')
+                            ? _lineChipLabel(line)
                             : line.title;
                         final displayDetails = isSettlement
                             ? _buildSettlementDetails(line)
@@ -2836,6 +2911,7 @@ class _CustomerLine {
 }
 
 class _CustomerBucket {
+  final String key;
   final String name;
   final String? phone;
 
@@ -2846,7 +2922,7 @@ class _CustomerBucket {
   final List<_CustomerLine> lines = [];
   DateTime? lastActivity;
 
-  _CustomerBucket({required this.name, this.phone});
+  _CustomerBucket({required this.key, required this.name, this.phone});
 
   double get receivableTotal => receivableClaims + receivablePending;
   double get payableTotal => payableClaims + payablePending;

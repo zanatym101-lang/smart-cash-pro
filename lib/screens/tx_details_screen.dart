@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
 import '../models/transaction.dart';
 import '../models/wallet.dart';
+import 'package:king_wallet_accounting/utils/txn_reference.dart';
 
 class TxDetailsScreen extends StatefulWidget {
   final Txn txn;
@@ -16,14 +18,51 @@ class TxDetailsScreen extends StatefulWidget {
 }
 
 class _TxDetailsScreenState extends State<TxDetailsScreen> {
+
+  Future<void> _copyValue(String value, {String label = 'تم النسخ'}) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('$label: $value')),
+    );
+  }
+
+  Widget _copyableInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Expanded(child: Text(label)),
+          Row(
+            children: [
+              Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+              IconButton(
+                icon: const Icon(Icons.copy, size: 18),
+                onPressed: () => _copyValue(value, label: 'تم نسخ رقم العملية'),
+              ),
+            ],
+          )
+        ],
+      ),
+    );
+  }
+
   late Txn _txn;
   bool _working = false;
+  String? _approvedBy;
+  DateTime? _approvedAt;
 
   @override
   void initState() {
     super.initState();
     _txn = widget.txn;
+    _refreshApprovalMeta();
   }
+
+  String _dateTime(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+
 
   String _walletName(int? id) {
     if (id == null) return '-';
@@ -187,6 +226,17 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
     final txns = await AppDb.instance.listTxns();
     final updated = txns.firstWhere((t) => t.id == _txn.id, orElse: () => _txn);
     setState(() => _txn = updated);
+    await _refreshApprovalMeta();
+  }
+
+  Future<void> _refreshApprovalMeta() async {
+    final approvedBy = await AppDb.instance.getTxnApprovedBy(_txn.id);
+    final approvedAt = await AppDb.instance.getTxnApprovedAt(_txn.id);
+    if (!mounted) return;
+    setState(() {
+      _approvedBy = approvedBy;
+      _approvedAt = approvedAt;
+    });
   }
 
   Future<void> _approve() async {
@@ -252,9 +302,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
     final date =
         '${_txn.entryDate.year}-${_txn.entryDate.month.toString().padLeft(2, '0')}-${_txn.entryDate.day.toString().padLeft(2, '0')} '
         '${_txn.entryDate.hour.toString().padLeft(2, '0')}:${_txn.entryDate.minute.toString().padLeft(2, '0')}';
-    final created =
-        '${_txn.createdAt.year}-${_txn.createdAt.month.toString().padLeft(2, '0')}-${_txn.createdAt.day.toString().padLeft(2, '0')} '
-        '${_txn.createdAt.hour.toString().padLeft(2, '0')}:${_txn.createdAt.minute.toString().padLeft(2, '0')}';
+    final created = _dateTime(_txn.createdAt);
 
     final isPending = _txn.status == 'pending';
     final isPosted = _txn.status == 'posted';
@@ -328,6 +376,11 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                   '${_txn.createdBy} (${_roleLabel(_txn.createdRole)})',
                 ),
                 _infoRow('تاريخ الإنشاء', created),
+                _copyableInfoRow('رقم العملية', formatTxnReference(_txn.id)),
+                if (_approvedBy != null)
+                  _infoRow('اعتمد بواسطة', _approvedBy!),
+                if (_approvedAt != null)
+                  _infoRow('وقت الاعتماد', _dateTime(_approvedAt!)),
                 _infoRow('نوع العملية', _kindLabel(_txn.kind)),
                 if (_txn.kind == 'transfer')
                   _infoRow('نوع التحويل', _transferModeLabel(_txn.mode)),
