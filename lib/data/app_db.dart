@@ -244,6 +244,7 @@ class SystemHealthSummary {
 /// - Posted balances are still preserved for audit and reports.
 /// - Wallets cannot go negative (engine validates on approval).
 class AppDb {
+  final Set<int> _confirmingPendingTxnIds = <int>{};
   static final AppDb instance = AppDb._();
   AppDb._();
 
