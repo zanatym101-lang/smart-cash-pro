@@ -183,6 +183,222 @@ void main() {
     await pumpFrames(tester, count: 10);
   });
 
+  testWidgets('customer ledger shows datetime rows and unsigned amounts', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1080, 2200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final db = AppDb.instance;
+    await tester.runAsync(() async {
+      final claimId = await db.addClaim(
+        type: 'receivable',
+        party: 'Ledger Pattern Customer',
+        amount: 70,
+      );
+      await db.settleClaim(claimId: claimId, amount: 30);
+    });
+
+    AppSession.enterAdmin();
+    await tester.pumpWidget(const MaterialApp(home: CustomersScreen()));
+    await pumpUntilFound(tester, find.text('Ledger Pattern Customer'));
+    await tester.tap(find.text('Ledger Pattern Customer').first);
+    await pumpFrames(tester, count: 12);
+    await pumpUntilFound(tester, find.text('الرصيد'));
+
+    final dateTimeCell = find.byWidgetPredicate((widget) {
+      if (widget is! Text) return false;
+      final value = widget.data?.trim() ?? '';
+      return RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$').hasMatch(value);
+    });
+
+    expect(dateTimeCell, findsWidgets);
+    expect(find.text('+70.00'), findsNothing);
+    expect(find.text('-30.00'), findsNothing);
+    expect(find.text('70.00'), findsWidgets);
+    expect(find.text('30.00'), findsWidgets);
+    expect(find.text('مستحق'), findsWidgets);
+    expect(find.text('تحصيل'), findsWidgets);
+    expect(find.textContaining('متبقي 40.00'), findsOneWidget);
+    expect(find.textContaining('المبلغ: 30.00'), findsNothing);
+  });
+
+  testWidgets(
+    'customer batch partial settlement total includes claims and deferred rows',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1080, 2200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final db = AppDb.instance;
+      await tester.runAsync(() async {
+        final walletId = await db.addWallet(
+          name: 'Batch Settlement Wallet',
+          phone: '01090909090',
+          openingBalance: 1000,
+        );
+        await db.addClaim(
+          type: 'receivable',
+          party: 'Batch Settlement Customer',
+          amount: 70,
+          entryDate: DateTime.now().subtract(const Duration(days: 1)),
+        );
+        await db.addTransfer(
+          walletId: walletId,
+          amount: 100,
+          clientFee: 10,
+          networkFee: 0,
+          transferType: 'type1',
+          isPending: true,
+          party: 'Batch Settlement Customer',
+          note: 'batch deferred transfer',
+        );
+      });
+
+      AppSession.enterAdmin();
+      await tester.pumpWidget(const MaterialApp(home: CustomersScreen()));
+      await pumpUntilFound(tester, find.text('Batch Settlement Customer'));
+      await tester.tap(find.text('Batch Settlement Customer').first);
+      await pumpFrames(tester, count: 12);
+
+      await tester.tap(find.byIcon(Icons.expand_more).first);
+      await pumpFrames(tester, count: 8);
+
+      final partialButton = find.text('تسوية جزئية من الإجمالي');
+      await pumpUntilFound(tester, partialButton);
+      final partialAction = find.ancestor(
+        of: partialButton,
+        matching: find.byWidgetPredicate(
+          (widget) => widget is ButtonStyleButton,
+        ),
+      );
+      await tester.ensureVisible(partialAction.first);
+      await tester.tap(partialAction.first);
+      await pumpUntilFound(tester, find.byType(AlertDialog));
+      expect(find.textContaining('180.00'), findsWidgets);
+    },
+  );
+
+  testWidgets(
+    'customer ledger keeps original claim row after full settlement',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1080, 2200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final db = AppDb.instance;
+      await tester.runAsync(() async {
+        final claimId = await db.addClaim(
+          type: 'receivable',
+          party: 'Closed Claim History Customer',
+          amount: 500,
+        );
+        await db.settleClaim(claimId: claimId, amount: 500);
+        await db.addClaim(
+          type: 'payable',
+          party: 'Closed Claim History Customer',
+          amount: 1,
+        );
+      });
+
+      AppSession.enterAdmin();
+      await tester.pumpWidget(const MaterialApp(home: CustomersScreen()));
+      await pumpUntilFound(tester, find.text('Closed Claim History Customer'));
+      await tester.tap(find.text('Closed Claim History Customer').first);
+      await pumpFrames(tester, count: 12);
+
+      expect(find.text('مستحق'), findsWidgets);
+      expect(find.text('تحصيل'), findsWidgets);
+      expect(find.text('500.00'), findsAtLeastNWidgets(2));
+      expect(find.textContaining('المتبقي: 0.00'), findsWidgets);
+    },
+  );
+
+  testWidgets('customer opposite deferred settlement creates offset rows', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1080, 2200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final db = AppDb.instance;
+    late int transferId;
+    late int receiveId;
+    await tester.runAsync(() async {
+      final walletId = await db.addWallet(
+        name: 'Opposite Deferred Wallet',
+        phone: '01030303030',
+        openingBalance: 1000,
+      );
+      transferId = await db.addTransfer(
+        walletId: walletId,
+        amount: 300,
+        clientFee: 0,
+        networkFee: 0,
+        transferType: 'type1',
+        isPending: true,
+        party: 'Opposite Deferred Customer',
+        note: 'opposite transfer',
+      );
+      receiveId = await db.addReceive(
+        walletId: walletId,
+        amount: 200,
+        commission: 0,
+        receiveType: 'cash',
+        isPending: true,
+        party: 'Opposite Deferred Customer',
+        note: 'opposite receive',
+      );
+    });
+
+    AppSession.enterAdmin();
+    await tester.pumpWidget(const MaterialApp(home: CustomersScreen()));
+    await pumpUntilFound(tester, find.text('Opposite Deferred Customer'));
+    await tester.tap(find.text('Opposite Deferred Customer').first);
+    await pumpFrames(tester, count: 12);
+
+    await tester.tap(find.byIcon(Icons.expand_more).first);
+    await pumpFrames(tester, count: 8);
+
+    final action = find.text('تسوية الآجل المتقابل');
+    await pumpUntilFound(tester, action);
+    final actionButton = find.ancestor(
+      of: action,
+      matching: find.byWidgetPredicate((widget) => widget is ButtonStyleButton),
+    );
+    await tester.ensureVisible(actionButton.first);
+    await tester.tap(actionButton.first);
+    await pumpUntilFound(tester, find.byType(AlertDialog));
+    expect(find.textContaining('200.00'), findsWidgets);
+
+    final cancelButton = find.descendant(
+      of: find.byType(AlertDialog),
+      matching: find.byWidgetPredicate((widget) => widget is TextButton),
+    );
+    await tester.tap(cancelButton.first);
+    await pumpFrames(tester, count: 8);
+
+    await tester.runAsync(() async {
+      await db.addPendingSettlementForTxn(
+        pendingTxnId: transferId,
+        amount: 200,
+        note: 'تسوية آجل متقابل',
+      );
+      await db.addPendingSettlementForTxn(
+        pendingTxnId: receiveId,
+        amount: 200,
+        note: 'تسوية آجل متقابل',
+      );
+    });
+
+    final txns = await tester.runAsync(() => db.listTxns());
+    final reciprocal = txns!
+        .where(
+          (t) =>
+              t.mode == 'pending_settlement' && (t.amount - 200).abs() < 0.0001,
+        )
+        .toList();
+    expect(reciprocal.where((t) => t.kind == 'claim_collect').length, 1);
+    expect(reciprocal.where((t) => t.kind == 'claim_pay').length, 1);
+  });
+
   testWidgets('wallets screen add and edit wallet flow', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1080, 2200));
     addTearDown(() => tester.binding.setSurfaceSize(null));

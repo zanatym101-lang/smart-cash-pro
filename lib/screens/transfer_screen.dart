@@ -300,13 +300,11 @@ class _TransferScreenState extends State<TransferScreen> {
                     value: markPending,
                     onChanged: (v) => setState(() => markPending = v ?? false),
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('تسجيل العملية كمعلقة'),
+                    title: const Text('تسجيل العملية كآجلة'),
                     subtitle: const Text('إذا لم تحددها سيتم تنفيذها فورًا.'),
                   )
                 else
-                  const Text(
-                    'كمستخدم عادي سيتم تسجيل العملية كمعلقة تلقائيًا.',
-                  ),
+                  const Text('كمستخدم عادي سيتم تسجيل العملية كآجلة تلقائيًا.'),
               ],
             ),
           ),
@@ -349,9 +347,9 @@ class _TransferScreenState extends State<TransferScreen> {
       return;
     }
     if (_amountCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('أدخل المبلغ')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('أدخل المبلغ')));
       return;
     }
     final amt = _toDouble(_amountCtrl.text);
@@ -407,7 +405,7 @@ class _TransferScreenState extends State<TransferScreen> {
     if (_viaPhone && review.isPending) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('التنفيذ عبر الهاتف يتطلب تنفيذًا فوريًا وليس معلقًا'),
+          content: Text('التنفيذ عبر الهاتف يتطلب تنفيذًا فوريًا وليس آجلًا'),
         ),
       );
       return;
@@ -508,7 +506,7 @@ class _TransferScreenState extends State<TransferScreen> {
       if (review.isPending) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('تم تسجيل تحويل معلق (ID=$id)')));
+        ).showSnackBar(SnackBar(content: Text('تم تسجيل تحويل آجل (ID=$id)')));
         await Navigator.of(
           context,
         ).push(MaterialPageRoute(builder: (_) => const PendingScreen()));
@@ -529,7 +527,6 @@ class _TransferScreenState extends State<TransferScreen> {
     }
   }
 
-  
   void _clearForm() {
     _amountCtrl.clear();
     _clientFeeCtrl.clear();
@@ -543,9 +540,9 @@ class _TransferScreenState extends State<TransferScreen> {
     setState(() {});
   }
 
-@override
+  @override
   Widget build(BuildContext context) {
-    final title = AppSession.isAdmin ? 'تحويل' : 'تحويل (كمعلقة للمستخدم)';
+    final title = AppSession.isAdmin ? 'تحويل' : 'تحويل (كآجل للمستخدم)';
     final wallet = _selectedWallet();
     final provider = wallet == null || wallet.phone.trim().isEmpty
         ? 'unknown'
@@ -762,8 +759,8 @@ class _TransferScreenState extends State<TransferScreen> {
                 const SizedBox(height: 8),
                 Text(
                   AppSession.isAdmin
-                      ? 'يمكنك من نافذة المراجعة تحديد العملية كمعلقة أو تنفيذها فورًا.'
-                      : 'كمستخدم عادي، أي عملية جديدة تُسجل كمعلقة وتظهر في شاشة المعلقة.',
+                      ? 'يمكنك من نافذة المراجعة تحديد العملية كآجلة أو تنفيذها فورًا.'
+                      : 'كمستخدم عادي، أي عملية جديدة تُسجل كآجلة وتظهر في شاشة الآجل.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],

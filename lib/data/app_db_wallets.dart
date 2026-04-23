@@ -138,11 +138,13 @@ extension AppDbWallets on AppDb {
       lowBalanceThreshold: lowBalanceThreshold,
     );
     _wallets.add(w);
+    Txn? openingTxn;
+    final outboxItems = <PendingOutboxInsert>[];
 
     if (openingBalance > 0) {
       final now = DateTime.now();
       final entryDate = _nextOpenDate(now);
-      final txn = Txn(
+      openingTxn = Txn(
         id: _nextTxnId++,
         kind: 'external_funding',
         status: 'posted',
@@ -163,34 +165,40 @@ extension AppDbWallets on AppDb {
         note: 'رصيد أول المدة',
       );
       _engine.createPending(
-        txId: _txId(txn.id),
+        txId: _txId(openingTxn.id),
         spec: spec,
-        payload: txn.toJson(),
+        payload: openingTxn.toJson(),
       );
-      _engine.approve(txId: _txId(txn.id), spec: spec);
-      _txns.add(txn);
-      await enqueueOutbox(
-        entity: 'txn',
-        entityId: txn.id.toString(),
+      _engine.approve(txId: _txId(openingTxn.id), spec: spec);
+      _txns.add(openingTxn);
+      outboxItems.add(
+        _outboxInsert(
+          entity: 'txn',
+          entityId: openingTxn.id.toString(),
+          action: 'create',
+          payload: openingTxn.toJson(),
+        ),
+      );
+    }
+
+    outboxItems.add(
+      _outboxInsert(
+        entity: 'wallet',
+        entityId: w.id.toString(),
         action: 'create',
-        payload: txn.toJson(),
-      );
+        payload: w.toJson(),
+      ),
+    );
+    await _save(outboxItems: outboxItems);
+    if (openingTxn != null) {
       await appendAudit(
         type: 'wallet_opening_balance',
-        txnId: txn.id,
+        txnId: openingTxn.id,
         walletId: w.id,
         amount: openingBalance,
         note: 'رصيد أول المدة',
       );
     }
-
-    await _save();
-    await enqueueOutbox(
-      entity: 'wallet',
-      entityId: w.id.toString(),
-      action: 'create',
-      payload: w.toJson(),
-    );
     await appendAudit(type: 'wallet_add', walletId: w.id, note: w.name);
     return w.id;
   }
@@ -240,12 +248,15 @@ extension AppDbWallets on AppDb {
       monthlyLimit: monthlyLimit,
       lowBalanceThreshold: lowBalanceThreshold,
     );
-    await _save();
-    await enqueueOutbox(
-      entity: 'wallet',
-      entityId: walletId.toString(),
-      action: 'update',
-      payload: _wallets[idx].toJson(),
+    await _save(
+      outboxItems: [
+        _outboxInsert(
+          entity: 'wallet',
+          entityId: walletId.toString(),
+          action: 'update',
+          payload: _wallets[idx].toJson(),
+        ),
+      ],
     );
     await appendAudit(type: 'wallet_update', walletId: walletId, note: n);
   }
@@ -540,8 +551,8 @@ extension AppDbWallets on AppDb {
     if (oldPending <= 0) return;
 
     await NotificationService.show(
-      title: 'تنبيه عمليات معلقة',
-      body: 'يوجد لديك $oldPending عملية معلقة أقدم من يوم وتحتاج مراجعة.',
+      title: 'تنبيه عمليات آجلة',
+      body: 'يوجد لديك $oldPending عملية آجلة أقدم من يوم وتحتاج مراجعة.',
     );
 
     _lastPendingAlertDate = todayKey;

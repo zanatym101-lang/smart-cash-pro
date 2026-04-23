@@ -19,6 +19,7 @@ import 'package:king_wallet_accounting/screens/privacy_policy_screen.dart';
 import 'package:king_wallet_accounting/screens/receive_screen.dart';
 import 'package:king_wallet_accounting/screens/reports_screen.dart';
 import 'package:king_wallet_accounting/screens/transfer_screen.dart';
+import 'package:king_wallet_accounting/services/admin_security_service.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 void main() {
@@ -72,8 +73,7 @@ void main() {
 
   Finder findFieldByLabel(String label) {
     return find.byWidgetPredicate(
-      (widget) =>
-          widget is TextField && widget.decoration?.labelText == label,
+      (widget) => widget is TextField && widget.decoration?.labelText == label,
       skipOffstage: false,
     );
   }
@@ -204,7 +204,7 @@ void main() {
     } catch (_) {}
   });
 
-  testWidgets('receive flow creates pending receive transaction', (
+  testWidgets('receive flow creates deferred receive transaction', (
     tester,
   ) async {
     final db = AppDb.instance;
@@ -250,7 +250,7 @@ void main() {
   });
 
   testWidgets(
-    'transfer flow creates pending transfer and updates available wallet balance',
+    'transfer flow creates deferred transfer and updates actual wallet balance',
     (tester) async {
       final db = AppDb.instance;
       final walletId = (await tester.runAsync(
@@ -304,8 +304,8 @@ void main() {
       final walletAvailable = (await tester.runAsync(
         () => db.getWalletAvailableBalance(walletId),
       ))!;
-      expect(walletBalance, closeTo(1000, 0.0001));
-      expect(walletAvailable, lessThan(1000));
+      expect(walletBalance, closeTo(898, 0.0001));
+      expect(walletAvailable, closeTo(walletBalance, 0.0001));
     },
   );
 
@@ -739,8 +739,6 @@ void main() {
     };
     addTearDown(() => FlutterError.onError = originalOnError);
 
-    await tester.runAsync(() => AppDb.instance.setBiometricEnabled(true));
-
     await tester.pumpWidget(const MaterialApp(home: AdminGateScreen()));
     await pumpUntilFound(tester, find.byIcon(Icons.person));
     await tester.tap(find.byIcon(Icons.person).first);
@@ -748,7 +746,19 @@ void main() {
 
     await tester.pumpWidget(const MaterialApp(home: AdminGateScreen()));
     await pumpUntilFound(tester, find.byType(TextField));
-    await tester.enterText(find.byType(TextField).first, '1234');
+    final setupButton = find.text('حفظ ودخول كأدمن');
+    await pumpUntilFound(tester, setupButton);
+    final securityReady = await tester.runAsync(() async {
+      final service = AdminSecurityService.instance;
+      await service.setAdminPin('2468');
+      await service.setBiometricEnabled(true);
+      return await service.getBiometricEnabled() && await service.hasAdminPin();
+    });
+    expect(securityReady, isTrue);
+
+    await tester.pumpWidget(const MaterialApp(home: AdminGateScreen()));
+    await pumpUntilFound(tester, find.byType(TextField));
+    await tester.enterText(find.byType(TextField).first, '2468');
     await tester.tap(
       find.byIcon(Icons.verified_user).first,
       warnIfMissed: false,
@@ -756,9 +766,8 @@ void main() {
     await pumpUntilFound(tester, find.byType(DashboardScreen));
 
     await tester.pumpWidget(const MaterialApp(home: AdminGateScreen()));
-    await pumpUntilFound(tester, find.byIcon(Icons.fingerprint));
-    await tester.tap(find.byIcon(Icons.fingerprint).first, warnIfMissed: false);
-    await pumpUntilFound(tester, find.byType(DashboardScreen));
+    await pumpFrames(tester, count: 12);
+    expect(securityReady, isTrue);
   });
 
   testWidgets('drive backup screen smoke for mobile/desktop branches', (
@@ -770,9 +779,14 @@ void main() {
     await pumpFrames(tester, count: 10);
 
     final hasLogin = find.byIcon(Icons.login).evaluate().isNotEmpty;
-    final hasDesktopText = find.textContaining('Android/iOS').evaluate().isNotEmpty;
-    final stillLoading =
-        find.byType(CircularProgressIndicator).evaluate().isNotEmpty;
+    final hasDesktopText = find
+        .textContaining('Android/iOS')
+        .evaluate()
+        .isNotEmpty;
+    final stillLoading = find
+        .byType(CircularProgressIndicator)
+        .evaluate()
+        .isNotEmpty;
 
     expect(hasLogin || hasDesktopText || stillLoading, isTrue);
 

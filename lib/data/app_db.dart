@@ -30,8 +30,16 @@ import 'reporting.dart';
 part 'app_db_internal.dart';
 part 'app_db_wallets.dart';
 part 'app_db_transactions.dart';
+part 'app_db_transactions_create.dart';
+part 'app_db_transactions_settlement.dart';
+part 'app_db_transactions_approve.dart';
+part 'app_db_transactions_cancel.dart';
 part 'app_db_claims.dart';
 part 'app_db_admin.dart';
+part 'app_db_admin_license.dart';
+part 'app_db_admin_maintenance.dart';
+part 'app_db_admin_backup.dart';
+part 'app_db_admin_restore.dart';
 part 'app_db_reports.dart';
 part 'app_db_contacts.dart';
 part 'app_db_audit.dart';
@@ -84,8 +92,9 @@ class TreasurySnapshot {
   double get actualTreasuryApproved =>
       drawerActualBalance + walletsActualTotal + fawryActualBalance;
 
-  // Available liquidity = confirmed treasury + pending receive - pending transfer.
-  double get availableLiquidityNow => actualTreasuryApproved + pendingNet;
+  // Deferred transfer/receive now already affects the actual treasury.
+  // pendingNet remains informational so the UI can show the deferred portion.
+  double get availableLiquidityNow => actualTreasuryApproved;
 
   // Approved real capital = confirmed treasury +/- open claims.
   double get realCapitalApproved => actualTreasuryApproved + claimsNet;
@@ -269,7 +278,7 @@ class AppDb {
   final Map<int, DateTime> _monthlyUsageResetAt = {};
   int? _cachedDayStartHour;
 
-  late AppDatabase _sqlite = AppDatabase();
+  AppDatabase? _sqlite;
 
   late final AccountingState _state = AccountingState(
     walletBalancesQirsh: <String, int>{},

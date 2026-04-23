@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import '../widgets/app_title.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'privacy_policy_screen.dart';
@@ -7,12 +7,14 @@ class HelpScreen extends StatelessWidget {
   const HelpScreen({super.key});
 
   Future<void> _openWhatsApp(BuildContext context) async {
-    final uri = Uri.parse('https://wa.me/201223361572?text=مرحبا%20،%20أرغب%20في%20التواصل%20بخصوص%20التطبيق');
+    final uri = Uri.parse(
+      'https://wa.me/201223361572?text=مرحبا%20،%20أرغب%20في%20التواصل%20بخصوص%20التطبيق',
+    );
     final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تعذر فتح واتساب')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تعذر فتح واتساب')));
     }
   }
 
@@ -65,12 +67,16 @@ class HelpScreen extends StatelessWidget {
                 ListTile(
                   leading: Icon(Icons.bolt),
                   title: Text('خدمات فوري'),
-                  subtitle: Text('نقدي أو آجل مع ربح واضح، والآجل يفتح مستحقات.'),
+                  subtitle: Text(
+                    'نقدي أو آجل مع ربح واضح، والآجل يفتح مستحقات.',
+                  ),
                 ),
                 ListTile(
                   leading: Icon(Icons.request_quote),
                   title: Text('المستحقات'),
-                  subtitle: Text('مبالغ لنا/علينا تظل مفتوحة حتى التحصيل/السداد.'),
+                  subtitle: Text(
+                    'مبالغ لنا/علينا تظل مفتوحة حتى التحصيل/السداد.',
+                  ),
                 ),
                 ListTile(
                   leading: Icon(Icons.account_balance_wallet),
@@ -94,7 +100,9 @@ class HelpScreen extends StatelessWidget {
                 ListTile(
                   leading: Icon(Icons.verified_user),
                   title: Text('أدمن / مستخدم'),
-                  subtitle: Text('المستخدم العادي ينشئ عمليات معلّقة، والأدمن يعتمدها.'),
+                  subtitle: Text(
+                    'المستخدم العادي ينشئ عمليات آجلة، والأدمن يعتمدها.',
+                  ),
                 ),
                 ListTile(
                   leading: Icon(Icons.lock),
@@ -132,7 +140,9 @@ class HelpScreen extends StatelessWidget {
                 ListTile(
                   leading: Icon(Icons.key),
                   title: Text('رمز الجهاز'),
-                  subtitle: Text('يظهر في إعدادات الأدمن. أرسله لتلقي كود التفعيل.'),
+                  subtitle: Text(
+                    'يظهر في إعدادات الأدمن. أرسله لتلقي كود التفعيل.',
+                  ),
                 ),
                 ListTile(
                   leading: Icon(Icons.offline_bolt),
@@ -157,7 +167,9 @@ class HelpScreen extends StatelessWidget {
                 OutlinedButton.icon(
                   onPressed: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const PrivacyPolicyScreen()),
+                      MaterialPageRoute(
+                        builder: (_) => const PrivacyPolicyScreen(),
+                      ),
                     );
                   },
                   icon: const Icon(Icons.privacy_tip),
@@ -172,7 +184,10 @@ class HelpScreen extends StatelessWidget {
               padding: const EdgeInsets.all(12),
               child: Column(
                 children: const [
-                  Text('Munzer Company Soft', style: TextStyle(fontWeight: FontWeight.w700)),
+                  Text(
+                    'Munzer Company Soft',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
                   SizedBox(height: 4),
                   Text('كوبي رايت © 2026 جميع الحقوق محفوظة'),
                 ],
@@ -184,7 +199,11 @@ class HelpScreen extends StatelessWidget {
     );
   }
 
-  Widget _sectionCard(BuildContext context, {required String title, required Widget child}) {
+  Widget _sectionCard(
+    BuildContext context, {
+    required String title,
+    required Widget child,
+  }) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(14),

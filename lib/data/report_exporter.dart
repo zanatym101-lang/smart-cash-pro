@@ -591,7 +591,7 @@ class ReportExporter {
               'منفذ: ${data.postedCount} • حجم ${data.postedVolume.toStringAsFixed(2)}',
             ),
             pw.Text(
-              'معلق: ${data.pendingCount} • حجم ${data.pendingVolume.toStringAsFixed(2)}',
+              'آجل: ${data.pendingCount} • حجم ${data.pendingVolume.toStringAsFixed(2)}',
             ),
             pw.Text('ربح منفذ: ${data.postedProfit.toStringAsFixed(2)}'),
             pw.SizedBox(height: 12),
@@ -682,9 +682,9 @@ class ReportExporter {
     ]);
     summary.appendRow([]);
     summary.appendRow([t('عدد المنفذ'), n(data.postedCount)]);
-    summary.appendRow([t('عدد المعلق'), n(data.pendingCount)]);
+    summary.appendRow([t('عدد الآجل'), n(data.pendingCount)]);
     summary.appendRow([t('حجم المنفذ'), n(data.postedVolume)]);
-    summary.appendRow([t('حجم المعلق'), n(data.pendingVolume)]);
+    summary.appendRow([t('حجم الآجل'), n(data.pendingVolume)]);
     summary.appendRow([t('ربح منفذ'), n(data.postedProfit)]);
     summary.appendRow([]);
     summary.appendRow([t('عدد التحويل'), n(data.transferCount)]);

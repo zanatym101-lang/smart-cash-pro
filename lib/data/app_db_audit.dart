@@ -1,6 +1,71 @@
 part of 'app_db.dart';
 
+const String _auditMetaKey = '__audit_snapshot_json';
+
 extension AppDbAudit on AppDb {
+  List<Map<String, dynamic>> _copyAuditList(List<Map<String, dynamic>> list) {
+    return list.map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  List<Map<String, dynamic>> _auditListFromMetaMap(Map<String, String> meta) {
+    final raw = (meta[_auditMetaKey] ?? '').trim();
+    if (raw.isEmpty) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      return _auditListFromRaw(decoded);
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
+
+  bool _sameAuditList(
+    List<Map<String, dynamic>> a,
+    List<Map<String, dynamic>> b,
+  ) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    return jsonEncode(a) == jsonEncode(b);
+  }
+
+  List<Map<String, dynamic>> _preferredAuditList(
+    List<Map<String, dynamic>> settingsList,
+    List<Map<String, dynamic>> metaList,
+  ) {
+    final settingsOk = settingsList.isEmpty || _hasAuditChain(settingsList);
+    final metaOk = metaList.isEmpty || _hasAuditChain(metaList);
+
+    if (settingsOk && !metaOk) return _copyAuditList(settingsList);
+    if (metaOk && !settingsOk) return _copyAuditList(metaList);
+    if (metaList.length > settingsList.length) return _copyAuditList(metaList);
+    return _copyAuditList(settingsList);
+  }
+
+  Future<({Map<String, dynamic> settings, List<Map<String, dynamic>> list})>
+  _loadAuditState({bool repairSettings = false}) async {
+    final settings = await _readSettingsMap();
+    final settingsList = _auditListFromRaw(settings['audit']);
+    final db = await _ensureSqliteInitialized();
+    final meta = await db.loadMeta();
+    final metaList = _auditListFromMetaMap(meta);
+    final chosen = _preferredAuditList(settingsList, metaList);
+
+    if (repairSettings && !_sameAuditList(settingsList, chosen)) {
+      settings['audit'] = _copyAuditList(chosen);
+      try {
+        await _writeSettingsMap(settings);
+      } catch (_) {}
+    }
+
+    return (settings: settings, list: chosen);
+  }
+
+  Future<void> _writeAuditListToSqliteMeta(
+    List<Map<String, dynamic>> list,
+  ) async {
+    final db = await _ensureSqliteInitialized();
+    await db.upsertMetaValue(key: _auditMetaKey, value: jsonEncode(list));
+  }
+
   List<Map<String, dynamic>> _auditListFromRaw(Object? raw) {
     final list = <Map<String, dynamic>>[];
     if (raw is! List) return list;
@@ -71,12 +136,16 @@ extension AppDbAudit on AppDb {
   }
 
   Future<void> ensureAuditChainInitialized() async {
-    final m = await _readSettingsMap();
-    final list = _auditListFromRaw(m['audit']);
+    final state = await _loadAuditState(repairSettings: true);
+    final m = state.settings;
+    final list = state.list;
     if (list.isEmpty || _hasAuditChain(list)) return;
     _seedAuditChainInMemory(list);
     m['audit'] = list;
-    await _writeSettingsMap(m);
+    await _writeAuditListToSqliteMeta(list);
+    try {
+      await _writeSettingsMap(m);
+    } catch (_) {}
   }
 
   Future<void> appendAudit({
@@ -88,8 +157,9 @@ extension AppDbAudit on AppDb {
     int? walletId,
     double? amount,
   }) async {
-    final m = await _readSettingsMap();
-    final list = _auditListFromRaw(m['audit']);
+    final state = await _loadAuditState(repairSettings: false);
+    final m = state.settings;
+    final list = state.list;
     if (!_hasAuditChain(list)) {
       _seedAuditChainInMemory(list);
     }
@@ -120,12 +190,15 @@ extension AppDbAudit on AppDb {
       list.removeRange(0, list.length - 1000);
     }
     m['audit'] = list;
-    await _writeSettingsMap(m);
+    await _writeAuditListToSqliteMeta(list);
+    try {
+      await _writeSettingsMap(m);
+    } catch (_) {}
   }
 
   Future<List<Map<String, dynamic>>> listAudit({int limit = 200}) async {
-    final m = await _readSettingsMap();
-    final list = _auditListFromRaw(m['audit']);
+    final state = await _loadAuditState(repairSettings: true);
+    final list = state.list;
     list.sort((a, b) {
       final aAt =
           DateTime.tryParse(a['at']?.toString() ?? '') ??
@@ -142,8 +215,8 @@ extension AppDbAudit on AppDb {
   }
 
   Future<AuditChainStatus> verifyAuditChain() async {
-    final m = await _readSettingsMap();
-    final list = _auditListFromRaw(m['audit']);
+    final state = await _loadAuditState(repairSettings: true);
+    final list = state.list;
     if (list.isEmpty) {
       return const AuditChainStatus(
         ok: true,
@@ -211,6 +284,7 @@ extension AppDbAudit on AppDb {
   Future<void> clearAudit() async {
     final m = await _readSettingsMap();
     m['audit'] = <Map<String, dynamic>>[];
+    await _writeAuditListToSqliteMeta(const <Map<String, dynamic>>[]);
     await _writeSettingsMap(m);
   }
 }

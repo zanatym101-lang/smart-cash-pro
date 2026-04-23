@@ -1,6 +1,21 @@
 part of 'app_db.dart';
 
 extension AppDbSync on AppDb {
+  PendingOutboxInsert _outboxInsert({
+    required String entity,
+    required String entityId,
+    required String action,
+    Map<String, dynamic>? payload,
+  }) {
+    return PendingOutboxInsert(
+      entity: entity,
+      entityId: entityId,
+      action: action,
+      payload: payload == null ? null : jsonEncode(payload),
+      createdAt: DateTime.now(),
+    );
+  }
+
   String _outboxFileName(DateTime now) {
     final y = now.year.toString().padLeft(4, '0');
     final m = now.month.toString().padLeft(2, '0');
@@ -27,7 +42,8 @@ extension AppDbSync on AppDb {
     Map<String, dynamic>? payload,
   }) async {
     final data = payload == null ? null : jsonEncode(payload);
-    await _sqlite.addOutbox(
+    final db = await _ensureSqliteInitialized();
+    await db.addOutbox(
       entity: entity,
       entityId: entityId,
       action: action,
@@ -52,21 +68,25 @@ extension AppDbSync on AppDb {
   }
 
   Future<List<DbOutbox>> listOutbox({int limit = 100}) async {
-    return _sqlite.pendingOutbox(limit: limit);
+    final db = await _ensureSqliteInitialized();
+    return db.pendingOutbox(limit: limit);
   }
 
   Future<void> markOutboxSent(int id) async {
-    await _sqlite.markOutboxSent(id);
+    final db = await _ensureSqliteInitialized();
+    await db.markOutboxSent(id);
   }
 
   Future<void> clearOutbox() async {
-    await _sqlite.clearOutbox();
+    final db = await _ensureSqliteInitialized();
+    await db.clearOutbox();
   }
 
   Future<void> markAllOutboxSent() async {
     final items = await listOutbox(limit: 1000);
+    final db = await _ensureSqliteInitialized();
     for (final e in items) {
-      await _sqlite.markOutboxSent(e.id);
+      await db.markOutboxSent(e.id);
     }
   }
 

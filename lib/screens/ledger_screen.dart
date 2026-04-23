@@ -164,7 +164,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
   String _statusLabel(String s) {
     if (s == 'posted') return 'معتمد';
     if (s == 'rolled_back') return 'ملغي';
-    return 'معلّق';
+    return 'آجل';
   }
 
   Widget _sectionTitle(String title) {
@@ -282,7 +282,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
                   children: [
                     _statChip('الإجمالي', total),
                     const SizedBox(width: 8),
-                    _statChip('المعلّق', pendingCount),
+                    _statChip('الآجل', pendingCount),
                     const SizedBox(width: 8),
                     _statChip('المعتمد', postedCount),
                   ],
@@ -400,7 +400,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
                           },
                         ),
                         ChoiceChip(
-                          label: const Text('معلّق'),
+                          label: const Text('آجل'),
                           selected: _status == 'pending',
                           onSelected: (_) {
                             _status = 'pending';

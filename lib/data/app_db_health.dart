@@ -31,6 +31,21 @@ extension AppDbHealth on AppDb {
     return DateTime.tryParse(s);
   }
 
+  Iterable<List<T>> _duplicateGroupsById<T>(
+    Iterable<T> items,
+    int Function(T item) selector,
+  ) sync* {
+    final groups = <int, List<T>>{};
+    for (final item in items) {
+      groups.putIfAbsent(selector(item), () => <T>[]).add(item);
+    }
+    for (final group in groups.values) {
+      if (group.length > 1) {
+        yield group;
+      }
+    }
+  }
+
   String _todayBusinessKey() => _businessDateKeyFromDateTime(DateTime.now());
 
   Map<String, dynamic> _readHealthMap(Map<String, dynamic> m) {
@@ -266,6 +281,74 @@ extension AppDbHealth on AppDb {
         a.sourceTxnId == b.sourceTxnId;
   }
 
+  bool _walletDuplicateGroupIsIdentical(List<Wallet> group) {
+    final first = group.first;
+    return group.skip(1).every((w) => _sameWallet(first, w));
+  }
+
+  bool _txnDuplicateGroupIsIdentical(List<Txn> group) {
+    final first = group.first;
+    return group.skip(1).every((t) => _sameTxn(first, t));
+  }
+
+  bool _claimDuplicateGroupIsIdentical(List<Claim> group) {
+    final first = group.first;
+    return group.skip(1).every((c) => _sameClaim(first, c));
+  }
+
+  bool _walletIdHasOperationalReferences(int walletId) {
+    if (_lowBalanceAlertDate.containsKey(walletId)) return true;
+    if (_dailyUsageResetAt.containsKey(walletId)) return true;
+    if (_monthlyUsageResetAt.containsKey(walletId)) return true;
+    return _txns.any(
+      (t) => t.walletFromId == walletId || t.walletToId == walletId,
+    );
+  }
+
+  bool _txnIdHasOperationalReferences(int txnId) {
+    final claimRefs = _claims.any(
+      (c) => c.sourceTxnId == txnId || c.settledTxnId == txnId,
+    );
+    if (claimRefs) return true;
+    return _txns.any((t) => _extractPendingSettlementRef(t.note) == txnId);
+  }
+
+  bool _claimIdHasOperationalReferences(int claimId) {
+    return _txns.any((t) => _extractClaimIdFromNote(t.note) == claimId);
+  }
+
+  void _ensureAutoRepairSafety() {
+    for (final group in _duplicateGroupsById(_wallets, (w) => w.id)) {
+      final duplicatedId = group.first.id;
+      if (_walletDuplicateGroupIsIdentical(group)) continue;
+      if (_walletIdHasOperationalReferences(duplicatedId)) {
+        throw Exception(
+          'Auto-repair blocked for wallet id=$duplicatedId because the duplicate records are different and already referenced by transactions or wallet state.',
+        );
+      }
+    }
+
+    for (final group in _duplicateGroupsById(_txns, (t) => t.id)) {
+      final duplicatedId = group.first.id;
+      if (_txnDuplicateGroupIsIdentical(group)) continue;
+      if (_txnIdHasOperationalReferences(duplicatedId)) {
+        throw Exception(
+          'Auto-repair blocked for txn id=$duplicatedId because the duplicate records are different and already referenced by claims or pending settlements.',
+        );
+      }
+    }
+
+    for (final group in _duplicateGroupsById(_claims, (c) => c.id)) {
+      final duplicatedId = group.first.id;
+      if (_claimDuplicateGroupIsIdentical(group)) continue;
+      if (_claimIdHasOperationalReferences(duplicatedId)) {
+        throw Exception(
+          'Auto-repair blocked for claim id=$duplicatedId because the duplicate records are different and already referenced by settlement transactions.',
+        );
+      }
+    }
+  }
+
   DailyClose _dailyCloseWithId(DailyClose c, int id) {
     return DailyClose(
       id: id,
@@ -486,6 +569,8 @@ extension AppDbHealth on AppDb {
       );
     }
 
+    _ensureAutoRepairSafety();
+
     String? backupPath;
     if (createJsonBackup) {
       final dir = await getApplicationSupportDirectory();
@@ -507,6 +592,11 @@ extension AppDbHealth on AppDb {
       );
 
       final after = await _runIntegrityCheckCore();
+      if (!after.ok) {
+        throw Exception(
+          'Auto-repair did not resolve all integrity issues safely.',
+        );
+      }
       await _writeHealthResult(after);
       return IntegrityRepairResult(
         changed:

@@ -11,15 +11,30 @@ extension _AppDbInternal on AppDb {
     return kind == 'transfer' || kind == 'receive';
   }
 
+  bool _pendingAppliesToActualBalance(Txn t) {
+    return _hasStatus(t, 'pending') && _walletPendingAffectsBalance(t);
+  }
+
+  Future<AppDatabase> _ensureSqliteInitialized() async {
+    final existing = _sqlite;
+    if (existing != null) return existing;
+    final created = AppDatabase();
+    _sqlite = created;
+    return created;
+  }
+
   Future<void> _closeSqlite() async {
+    final db = _sqlite;
+    if (db == null) return;
     try {
-      await _sqlite.close();
+      await db.close();
     } catch (_) {}
+    _sqlite = null;
   }
 
   Future<void> _reopenSqlite() async {
     await _closeSqlite();
-    _sqlite = AppDatabase();
+    await _ensureSqliteInitialized();
   }
 
   Future<File> _dataFile() async {
@@ -213,23 +228,24 @@ extension _AppDbInternal on AppDb {
   }
 
   Future<void> _loadFromSqlite() async {
+    final db = await _ensureSqliteInitialized();
     _wallets
       ..clear()
-      ..addAll(await _sqlite.loadWallets());
+      ..addAll(await db.loadWallets());
     _txns
       ..clear()
-      ..addAll(await _sqlite.loadTxns());
+      ..addAll(await db.loadTxns());
     _claims
       ..clear()
-      ..addAll(await _sqlite.loadClaims());
+      ..addAll(await db.loadClaims());
     _dailyCloses
       ..clear()
-      ..addAll(await _sqlite.loadDailyCloses());
+      ..addAll(await db.loadDailyCloses());
     _recentNumbers
       ..clear()
-      ..addAll(await _sqlite.loadRecentNumbers());
+      ..addAll(await db.loadRecentNumbers());
 
-    final meta = await _sqlite.loadMeta();
+    final meta = await db.loadMeta();
     _nextWalletId = int.tryParse(meta['nextWalletId'] ?? '') ?? 1;
     _nextTxnId = int.tryParse(meta['nextTxnId'] ?? '') ?? 1;
     _nextClaimId = int.tryParse(meta['nextClaimId'] ?? '') ?? 1;
@@ -334,7 +350,8 @@ extension _AppDbInternal on AppDb {
     try {
       await _ensureDayStartHourLoaded();
 
-      final hasSqlite = await _sqlite.hasAnyData();
+      final db = await _ensureSqliteInitialized();
+      final hasSqlite = await db.hasAnyData();
       if (hasSqlite) {
         await _loadFromSqlite();
       } else {
@@ -447,12 +464,14 @@ extension _AppDbInternal on AppDb {
   }
 
   Future<void> _clearSqliteAllData() async {
+    final db = await _ensureSqliteInitialized();
     try {
-      await _sqlite.clearAll();
+      await db.clearAll();
     } catch (e) {
       if (!_isReadonlyDatabaseError(e)) rethrow;
       await _recoverWritableDatabaseFile();
-      await _sqlite.clearAll();
+      final recoveredDb = await _ensureSqliteInitialized();
+      await recoveredDb.clearAll();
     }
   }
 
@@ -486,7 +505,13 @@ extension _AppDbInternal on AppDb {
     await _reopenSqlite();
   }
 
-  Future<void> _save() async {
+  Future<void> _save({
+    bool clearSyncOutbox = false,
+    List<PendingOutboxInsert> outboxItems = const [],
+  }) async {
+    final db = await _ensureSqliteInitialized();
+    final settings = await _readSettingsMap();
+    final auditList = _auditListFromRaw(settings['audit']);
     final meta = <String, String>{
       'nextWalletId': _nextWalletId.toString(),
       'nextTxnId': _nextTxnId.toString(),
@@ -511,25 +536,31 @@ extension _AppDbInternal on AppDb {
         _customerAttachments.map((a) => a.toJson()).toList(),
       ),
     };
+    meta[_auditMetaKey] = jsonEncode(auditList);
     try {
-      await _sqlite.saveSnapshot(
+      await db.saveSnapshot(
         walletItems: _wallets,
         txnItems: _txns,
         claimItems: _claims,
         dailyCloseItems: _dailyCloses,
         recentNumberItems: _recentNumbers,
         metaItems: meta,
+        clearSyncOutbox: clearSyncOutbox,
+        outboxItems: outboxItems,
       );
     } catch (e) {
       if (!_isReadonlyDatabaseError(e)) rethrow;
       await _recoverWritableDatabaseFile();
-      await _sqlite.saveSnapshot(
+      final recoveredDb = await _ensureSqliteInitialized();
+      await recoveredDb.saveSnapshot(
         walletItems: _wallets,
         txnItems: _txns,
         claimItems: _claims,
         dailyCloseItems: _dailyCloses,
         recentNumberItems: _recentNumbers,
         metaItems: meta,
+        clearSyncOutbox: clearSyncOutbox,
+        outboxItems: outboxItems,
       );
     }
   }
@@ -552,6 +583,8 @@ extension _AppDbInternal on AppDb {
 
   bool _autoRepairInMemoryDuplicatesAndCounters() {
     bool changed = false;
+
+    _ensureAutoRepairSafety();
 
     final hasWalletDup = _hasDuplicateIds(_wallets, (w) => w.id);
     final hasTxnDup = _hasDuplicateIds(_txns, (t) => t.id);
@@ -611,6 +644,12 @@ extension _AppDbInternal on AppDb {
       final txId = _txId(t.id);
       final spec = _specFromTxn(t);
 
+      if (_pendingAppliesToActualBalance(t)) {
+        _engine.createPending(txId: txId, spec: spec, payload: t.toJson());
+        _engine.approve(txId: txId, spec: spec);
+        continue;
+      }
+
       if (_hasStatus(t, 'pending')) {
         _engine.createPending(txId: txId, spec: spec, payload: t.toJson());
         continue;
@@ -660,6 +699,7 @@ extension _AppDbInternal on AppDb {
             .where(
               (t) =>
                   _hasStatus(t, 'pending') &&
+                  !_pendingAppliesToActualBalance(t) &&
                   (excludeTxnId == null || t.id != excludeTxnId),
             )
             .toList()
@@ -793,7 +833,7 @@ extension _AppDbInternal on AppDb {
 
     if (kind == 'pending_settlement_adjust') {
       final amtQ = Money.fromEgpDouble(t.amount);
-      final label = (t.note ?? 'تسوية تحصيل معلّق').toString();
+      final label = (t.note ?? 'تسوية تحصيل آجل').toString();
       return DrawerFundingTxSpec(amountQirsh: amtQ, note: label);
     }
 

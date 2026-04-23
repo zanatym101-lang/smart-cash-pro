@@ -31,7 +31,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
             'مرحبًا بك. اسألني عن:\n'
             '- السيولة والخزنة ورأس المال\n'
             '- الأرباح والمصروفات\n'
-            '- المستحقات والمعلّق\n'
+            '- المستحقات والآجل\n'
             '- طريقة عمل النظام المحاسبي',
       ),
     );
@@ -583,7 +583,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       case 'fawry_fund_drawer':
         return 'شحن رصيد فوري من الدرج';
       case 'pending_settlement_adjust':
-        return 'تسوية معلق';
+        return 'تسوية آجل';
       default:
         return kind;
     }
@@ -594,7 +594,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       case 'posted':
         return 'معتمد';
       case 'pending':
-        return 'معلق';
+        return 'آجل';
       case 'canceled':
         return 'ملغي';
       case 'rolled_back':
@@ -633,10 +633,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
 
   String _programGuideText() {
     return 'طريقة عمل البرنامج المحاسبية باختصار:\n'
-        '1) كل حركة تُسجل كعملية (معلقة أو معتمدة).\n'
+        '1) كل حركة تُسجل كعملية (آجلة أو معتمدة).\n'
         '2) المعتمد فقط هو الذي يدخل في الأرصدة الفعلية والربح.\n'
         '3) المستحقات نوعان: لنا (Receivable) وعلينا (Payable).\n'
-        '4) السيولة المتاحة = الخزنة الفعلية + صافي المعلق.\n'
+        '4) رصيد الآجل يظهر منفصلًا للتوضيح لأنه محسوب فعليًا في التحويل/الاستلام.\n'
         '5) رأس المال الحقيقي = الخزنة الفعلية + صافي المستحقات.\n'
         '6) التحويل/الاستلام/فوري تطبق قيود محاسبية مختلفة حسب النوع.\n'
         '7) التحصيل الجزئي يقلل المستحق ويُبقيه مفتوحًا حتى الإغلاق الكامل.\n'
