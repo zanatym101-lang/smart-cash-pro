@@ -90,7 +90,6 @@ class _WalletsScreenState extends State<WalletsScreen> {
   }
 
   double get _total => _balances.values.fold(0.0, (a, b) => a + b);
-  double get _totalActual => _actualBalances.values.fold(0.0, (a, b) => a + b);
   double get _totalPendingImpact =>
       _deferredImpacts.values.fold(0.0, (a, b) => a + b);
 

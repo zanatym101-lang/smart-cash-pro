@@ -653,15 +653,6 @@ if (res == null) return;
     }
   }
 
-  String _formatLineDate(DateTime value) {
-    final y = value.year.toString().padLeft(4, '0');
-    final m = value.month.toString().padLeft(2, '0');
-    final d = value.day.toString().padLeft(2, '0');
-    final hh = value.hour.toString().padLeft(2, '0');
-    final mm = value.minute.toString().padLeft(2, '0');
-    return '$y-$m-$d $hh:$mm';
-  }
-
   double _pendingTransferDue(Txn t) {
     if (t.mode == 'type2_v2') return t.amount + t.clientFee;
     final base = t.amount - t.networkFee;
