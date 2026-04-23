@@ -21,7 +21,6 @@ class _WalletsScreenState extends State<WalletsScreen> {
   List<Wallet> _wallets = [];
   final Map<int, double> _balances = {};
   final Map<int, double> _actualBalances = {};
-  final Map<int, double> _deferredImpacts = {};
   final Map<int, WalletLimitUsage> _limitUsage = {};
 
   @override
@@ -45,20 +44,6 @@ class _WalletsScreenState extends State<WalletsScreen> {
         wallets.map((w) => AppDb.instance.getWalletBalance(w.id)),
       );
       final usageMap = await AppDb.instance.getWalletLimitUsage();
-      final txns = await AppDb.instance.listTxns(status: 'pending');
-      final deferredImpacts = <int, double>{};
-      for (final t in txns) {
-        if (t.kind == 'transfer' && t.walletFromId != null) {
-          deferredImpacts[t.walletFromId!] =
-              (deferredImpacts[t.walletFromId!] ?? 0) - t.amount;
-        } else if (t.kind == 'receive' && t.walletToId != null) {
-          final delta = t.mode == 'electronic'
-              ? t.amount + t.clientFee
-              : t.amount;
-          deferredImpacts[t.walletToId!] =
-              (deferredImpacts[t.walletToId!] ?? 0) + delta;
-        }
-      }
       if (!mounted) return;
       setState(() {
         _wallets = wallets;
@@ -74,9 +59,6 @@ class _WalletsScreenState extends State<WalletsScreen> {
             for (var i = 0; i < wallets.length; i++)
               wallets[i].id: actualList[i],
           });
-        _deferredImpacts
-          ..clear()
-          ..addAll(deferredImpacts);
         _limitUsage
           ..clear()
           ..addAll(usageMap);
@@ -90,8 +72,8 @@ class _WalletsScreenState extends State<WalletsScreen> {
   }
 
   double get _total => _balances.values.fold(0.0, (a, b) => a + b);
-  double get _totalPendingImpact =>
-      _deferredImpacts.values.fold(0.0, (a, b) => a + b);
+  double get _totalActual => _actualBalances.values.fold(0.0, (a, b) => a + b);
+  double get _totalPendingImpact => _total - _totalActual;
 
   Color _providerColor(String provider) {
     switch (provider.toLowerCase()) {
@@ -482,46 +464,15 @@ class _WalletsScreenState extends State<WalletsScreen> {
         child: ListView(
           padding: const EdgeInsets.all(12),
           children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: _loading
-                    ? const Text('جارٍ التحميل...')
-                    : _error != null
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('حدث خطأ أثناء التحميل'),
-                          const SizedBox(height: 8),
-                          Text(_error!),
-                          const SizedBox(height: 12),
-                          ElevatedButton.icon(
-                            onPressed: _load,
-                            icon: const Icon(Icons.refresh),
-                            label: const Text('إعادة المحاولة'),
-                          ),
-                        ],
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'إجمالي أرصدة المحافظ الفعلية: ${_total.toStringAsFixed(2)}',
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'إجمالي الرصيد الآجل داخلها: ${_totalPendingImpact >= 0 ? '+' : '-'}${_totalPendingImpact.abs().toStringAsFixed(2)}',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'عدد المحافظ: ${_wallets.length}',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ],
-                      ),
-              ),
+            _WalletSummaryCardPresentation(
+              loading: _loading,
+              errorText: _error,
+              totalText: _total.toStringAsFixed(2),
+              totalActualText: _totalActual.toStringAsFixed(2),
+              totalPendingImpactText:
+                  '${_totalPendingImpact >= 0 ? '+' : '-'}${_totalPendingImpact.abs().toStringAsFixed(2)}',
+              walletCountText: _wallets.length.toString(),
+              onRetry: _load,
             ),
             const SizedBox(height: 10),
             if (!_loading && _error == null && _wallets.isEmpty)
@@ -532,144 +483,39 @@ class _WalletsScreenState extends State<WalletsScreen> {
             else
               ..._wallets.map((w) {
                 final bal = _balances[w.id] ?? 0.0;
-                final pendingImpact = _deferredImpacts[w.id] ?? 0.0;
+                final actual = _actualBalances[w.id] ?? 0.0;
+                final pendingImpact = bal - actual;
                 final usage = _limitUsage[w.id];
                 final provider = providerFromPhone(w.phone);
                 final providerName = providerDisplayName(provider);
                 final color = _providerColor(provider);
-                return InkWell(
-                  borderRadius: BorderRadius.circular(22),
+                return _WalletCardPresentation(
+                  walletName: w.name,
+                  providerName: providerName,
+                  phoneText: w.phone.isEmpty ? 'غير محدد' : w.phone,
+                  availableText: bal.toStringAsFixed(2),
+                  actualText: actual.toStringAsFixed(2),
+                  pendingImpactText:
+                      '${pendingImpact >= 0 ? '+' : '-'}${pendingImpact.abs().toStringAsFixed(2)}',
+                  dailyUsageText:
+                      '${usage?.dailyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.dailyLimit.toStringAsFixed(0) ?? w.dailyLimit.toStringAsFixed(0)}',
+                  monthlyUsageText:
+                      '${usage?.monthlyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.monthlyLimit.toStringAsFixed(0) ?? w.monthlyLimit.toStringAsFixed(0)}',
+                  color: color,
                   onTap: () => _editWallet(w),
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(22),
-                      gradient: LinearGradient(
-                        colors: [
-                          color.withValues(alpha: 0.92),
-                          color.withValues(alpha: 0.75),
-                        ],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: color.withValues(alpha: 0.2),
-                          blurRadius: 18,
-                          offset: const Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                w.name,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.2),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                providerName,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                            PopupMenuButton<String>(
-                              icon: const Icon(
-                                Icons.more_vert,
-                                color: Colors.white,
-                              ),
-                              onSelected: (value) async {
-                                if (value == 'reset_daily') {
-                                  await _resetUsage(wallet: w, monthly: false);
-                                } else if (value == 'reset_monthly') {
-                                  await _resetUsage(wallet: w, monthly: true);
-                                }
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                  value: 'reset_daily',
-                                  child: Text('تصفير استهلاك اليوم'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'reset_monthly',
-                                  child: Text('تصفير استهلاك الشهر'),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          'الرصيد الفعلي: ${bal.toStringAsFixed(2)}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'المعتمد + الآجل داخل نفس الرصيد',
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.85),
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'رصيد آجل: ${pendingImpact >= 0 ? '+' : '-'}${pendingImpact.abs().toStringAsFixed(2)}',
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.85),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'رقم المحفظة: ${w.phone.isEmpty ? 'غير محدد' : w.phone}',
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.85),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 10,
-                          runSpacing: 6,
-                          children: [
-                            _pill(
-                              'استهلاك اليوم: ${usage?.dailyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.dailyLimit.toStringAsFixed(0) ?? w.dailyLimit.toStringAsFixed(0)}',
-                            ),
-                            _pill(
-                              'استهلاك الشهر: ${usage?.monthlyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.monthlyLimit.toStringAsFixed(0) ?? w.monthlyLimit.toStringAsFixed(0)}',
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
+                  onMenuSelected: (value) async {
+                    if (value == 'reset_daily') {
+                      await _resetUsage(wallet: w, monthly: false);
+                    } else if (value == 'reset_monthly') {
+                      await _resetUsage(wallet: w, monthly: true);
+                    }
+                  },
                 );
               }),
             const SizedBox(height: 8),
             if (!_loading && _error == null)
               Text(
-                'الرصيد الفعلي يشمل العمليات الآجلة لأنها دخلت أو خرجت فعليًا، ورصيد الآجل يوضح الجزء غير المعتمد بعد.',
+                'المتاح يشمل العمليات المعلقة، بينما الفعلي يشمل المعتمد فقط.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
           ],
@@ -697,6 +543,76 @@ Widget _pill(String text) {
   );
 }
 
+class _WalletSummaryCardPresentation extends StatelessWidget {
+  final bool loading;
+  final String? errorText;
+  final String totalText;
+  final String totalActualText;
+  final String totalPendingImpactText;
+  final String walletCountText;
+  final VoidCallback onRetry;
+
+  const _WalletSummaryCardPresentation({
+    required this.loading,
+    required this.errorText,
+    required this.totalText,
+    required this.totalActualText,
+    required this.totalPendingImpactText,
+    required this.walletCountText,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: loading
+            ? const Text('جارٍ التحميل...')
+            : errorText != null
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('حدث خطأ أثناء التحميل'),
+                  const SizedBox(height: 8),
+                  Text(errorText!),
+                  const SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('إعادة المحاولة'),
+                  ),
+                ],
+              )
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'إجمالي أرصدة المحافظ المتاحة: $totalText',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'إجمالي فعلي (معتمد): $totalActualText',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'تأثير المعلق على المحافظ: $totalPendingImpactText',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'عدد المحافظ: $walletCountText',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
 class _WalletFormData {
   final String name;
   final String phone;
@@ -713,4 +629,139 @@ class _WalletFormData {
     required this.monthlyLimit,
     required this.lowBalanceThreshold,
   });
+}
+
+class _WalletCardPresentation extends StatelessWidget {
+  final String walletName;
+  final String providerName;
+  final String phoneText;
+  final String availableText;
+  final String actualText;
+  final String pendingImpactText;
+  final String dailyUsageText;
+  final String monthlyUsageText;
+  final Color color;
+  final VoidCallback onTap;
+  final ValueChanged<String> onMenuSelected;
+
+  const _WalletCardPresentation({
+    required this.walletName,
+    required this.providerName,
+    required this.phoneText,
+    required this.availableText,
+    required this.actualText,
+    required this.pendingImpactText,
+    required this.dailyUsageText,
+    required this.monthlyUsageText,
+    required this.color,
+    required this.onTap,
+    required this.onMenuSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(22),
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          gradient: LinearGradient(
+            colors: [color.withValues(alpha: 0.92), color.withValues(alpha: 0.75)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: color.withValues(alpha: 0.2),
+              blurRadius: 18,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    walletName,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    providerName,
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert, color: Colors.white),
+                  onSelected: onMenuSelected,
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                      value: 'reset_daily',
+                      child: Text('تصفير استهلاك اليوم'),
+                    ),
+                    PopupMenuItem(
+                      value: 'reset_monthly',
+                      child: Text('تصفير استهلاك الشهر'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'المتاح: $availableText',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'الفعلي (معتمد): $actualText',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.85)),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'تأثير المعلق: $pendingImpactText',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.85)),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'رقم المحفظة: $phoneText',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.85)),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 6,
+              children: [
+                _pill('استهلاك اليوم: $dailyUsageText'),
+                _pill('استهلاك الشهر: $monthlyUsageText'),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
