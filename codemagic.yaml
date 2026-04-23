@@ -38,7 +38,7 @@ workflows:
       - name: Static analysis
         script: flutter analyze
       - name: Run tests
-        script: flutter test --coverage --reporter expanded
+        script: flutter test --coverage --reporter expanded --concurrency=1
       - name: Coverage summary
         script: python3 tool/coverage_summary.py --input coverage/lcov.info --out coverage/summary.txt --json coverage/summary.json --min-effective "${COVERAGE_MIN_EFFECTIVE:-38.0}"
       - name: Build release APK
