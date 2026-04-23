@@ -89,6 +89,78 @@ void main() {
   );
 
   test(
+    'listBackups returns files from drive folder and closes API client',
+    () async {
+      final signIn = _FakeSignInGateway(
+        signInResult: _testUser('list@example.com'),
+        silentResult: null,
+      );
+      final api = _FakeDriveApiGateway(
+        folders: const [
+          DriveFolderRef(id: 'folder-1', name: 'Smart Cash Pro Backups'),
+        ],
+        listedFiles: const [
+          DriveBackupFileRef(
+            id: 'f2',
+            name: 'smart_cash_backup_2.db',
+            modifiedTime: null,
+            sizeBytes: 12,
+          ),
+          DriveBackupFileRef(
+            id: 'f1',
+            name: 'smart_cash_backup_1.db',
+            modifiedTime: null,
+            sizeBytes: 10,
+          ),
+        ],
+      );
+      final service = DriveBackupService.testable(
+        signInGateway: signIn,
+        apiFactory: (_) => api,
+        backupPathProvider: () async => '${tempDir.path}/unused.db',
+      );
+
+      final files = await service.listBackups();
+      expect(files.length, 2);
+      expect(api.listFilesCalls, 1);
+      expect(api.lastListFolderId, 'folder-1');
+      expect(api.closed, isTrue);
+    },
+  );
+
+  test(
+    'downloadBackupToTemporary writes downloaded bytes to a temp file',
+    () async {
+      final signIn = _FakeSignInGateway(
+        signInResult: _testUser('download@example.com'),
+        silentResult: null,
+      );
+      final api = _FakeDriveApiGateway(
+        downloadPayloadById: const {
+          'file-1': [1, 2, 3, 4, 5],
+        },
+      );
+      final service = DriveBackupService.testable(
+        signInGateway: signIn,
+        apiFactory: (_) => api,
+        backupPathProvider: () async => '${tempDir.path}/unused.db',
+      );
+
+      final path = await service.downloadBackupToTemporary(
+        fileId: 'file-1',
+        fileName: 'test_backup.db',
+      );
+      final file = File(path);
+      expect(await file.exists(), isTrue);
+      expect(await file.readAsBytes(), equals(const <int>[1, 2, 3, 4, 5]));
+      expect(api.downloadCalls, 1);
+      expect(api.lastDownloadFileId, 'file-1');
+      expect(api.closed, isTrue);
+      await file.delete();
+    },
+  );
+
+  test(
     'uploadLatestBackup creates folder when folder does not exist',
     () async {
       final backupFile = File('${tempDir.path}/backup2.db');
@@ -265,23 +337,31 @@ class _FakeSignInGateway implements DriveSignInGateway {
 class _FakeDriveApiGateway implements DriveApiGateway {
   _FakeDriveApiGateway({
     this.folders = const [],
+    this.listedFiles = const [],
+    this.downloadPayloadById = const {},
     this.createdFolderId = 'created-folder',
     this.uploadedFileId = 'uploaded-file',
   });
 
   final List<DriveFolderRef> folders;
+  final List<DriveBackupFileRef> listedFiles;
+  final Map<String, List<int>> downloadPayloadById;
   final String createdFolderId;
   final String? uploadedFileId;
 
   int findFoldersCalls = 0;
   int createFolderCalls = 0;
+  int listFilesCalls = 0;
   int uploadCalls = 0;
+  int downloadCalls = 0;
 
   String? lastCreatedFolderName;
+  String? lastListFolderId;
   String? lastUploadName;
   String? lastUploadFolderId;
   int? lastUploadLength;
   int lastUploadedBytes = 0;
+  String? lastDownloadFileId;
   bool closed = false;
 
   @override
@@ -295,6 +375,13 @@ class _FakeDriveApiGateway implements DriveApiGateway {
     createFolderCalls += 1;
     lastCreatedFolderName = folderName;
     return createdFolderId;
+  }
+
+  @override
+  Future<List<DriveBackupFileRef>> listFilesInFolder(String folderId) async {
+    listFilesCalls += 1;
+    lastListFolderId = folderId;
+    return listedFiles;
   }
 
   @override
@@ -313,6 +400,14 @@ class _FakeDriveApiGateway implements DriveApiGateway {
       (sum, chunk) => sum + chunk.length,
     );
     return uploadedFileId;
+  }
+
+  @override
+  Future<Stream<List<int>>> downloadFileStream(String fileId) async {
+    downloadCalls += 1;
+    lastDownloadFileId = fileId;
+    final payload = downloadPayloadById[fileId] ?? const <int>[];
+    return Stream<List<int>>.value(payload);
   }
 
   @override

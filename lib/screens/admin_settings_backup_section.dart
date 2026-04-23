@@ -1,6 +1,130 @@
 part of 'admin_settings_screen.dart';
 
+class _LocalBackupCandidate {
+  final String path;
+  final String name;
+  final DateTime modifiedAt;
+  final int sizeBytes;
+
+  const _LocalBackupCandidate({
+    required this.path,
+    required this.name,
+    required this.modifiedAt,
+    required this.sizeBytes,
+  });
+}
+
 extension _AdminSettingsBackupSection on _AdminSettingsScreenState {
+  Future<List<_LocalBackupCandidate>> _latestLocalDbBackups() async {
+    final dirs = <Directory>[];
+    final downloads = await getDownloadsDirectory();
+    if (downloads != null) dirs.add(downloads);
+    dirs.add(await getApplicationSupportDirectory());
+
+    final byPath = <String, _LocalBackupCandidate>{};
+    for (final dir in dirs) {
+      if (!await dir.exists()) continue;
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is! File) continue;
+        final name = p.basename(entity.path).toLowerCase();
+        final isDbBackup =
+            name.endsWith('.db') &&
+            (name.startsWith('smart_cash_backup_') ||
+                name == 'king_wallet_backup.db');
+        if (!isDbBackup) continue;
+
+        final stat = await entity.stat();
+        if (stat.type != FileSystemEntityType.file) continue;
+        final candidate = _LocalBackupCandidate(
+          path: entity.path,
+          name: p.basename(entity.path),
+          modifiedAt: stat.modified,
+          sizeBytes: stat.size,
+        );
+        byPath[entity.path] = candidate;
+      }
+    }
+
+    final all = byPath.values.toList()
+      ..sort((a, b) => b.modifiedAt.compareTo(a.modifiedAt));
+    if (all.length <= 2) return all;
+    return all.sublist(0, 2);
+  }
+
+  Future<void> _restoreFromLocalBackup(_LocalBackupCandidate backup) async {
+    if (!AppSession.isAdmin) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Admin only')));
+      return;
+    }
+
+    final ok = await _confirmDialog(
+      title: 'Restore local backup?',
+      body:
+          'Current data will be replaced by:\n${backup.name}\n\nThis action cannot be undone.',
+      okText: 'Restore',
+    );
+    if (!ok) return;
+
+    _setMountedState(() => _backupWorking = true);
+    try {
+      await AppDb.instance.restoreBackupFromPath(backup.path);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Restore completed')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Restore failed: $e')));
+    } finally {
+      if (mounted) _setMountedState(() => _backupWorking = false);
+    }
+  }
+
+  Widget _smartLocalRestoreSection() {
+    return FutureBuilder<List<_LocalBackupCandidate>>(
+      future: _latestLocalDbBackups(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: LinearProgressIndicator(minHeight: 2),
+          );
+        }
+
+        final backups = snapshot.data ?? const <_LocalBackupCandidate>[];
+        if (backups.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text('لا توجد نسخ محلية متاحة للاسترجاع السريع.'),
+          );
+        }
+
+        return Column(
+          children: [
+            for (final backup in backups)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(backup.name),
+                subtitle: Text(
+                  '${_fmtDateTime(backup.modifiedAt)} • ${_fmtSize(backup.sizeBytes)}',
+                ),
+                trailing: OutlinedButton(
+                  onPressed: _backupWorking
+                      ? null
+                      : () => _restoreFromLocalBackup(backup),
+                  child: const Text('استرجاع'),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _backupToFile() async {
     if (!AppSession.isAdmin) {
       ScaffoldMessenger.of(

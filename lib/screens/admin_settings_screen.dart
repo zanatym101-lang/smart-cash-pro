@@ -6,6 +6,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
@@ -433,6 +434,14 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                           icon: const Icon(Icons.restore),
                           label: const Text('استعادة من ملف'),
                         ),
+                        const SizedBox(height: 10),
+                        const Divider(),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'استرجاع ذكي (آخر نسختين محليًا)',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        _smartLocalRestoreSection(),
                         const SizedBox(height: 12),
                         const Divider(),
                         const Text('نسخة JSON'),

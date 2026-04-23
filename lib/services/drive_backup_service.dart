@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 import '../data/app_db.dart';
 
@@ -26,6 +27,20 @@ class DriveFolderRef {
   const DriveFolderRef({required this.id, required this.name});
 }
 
+class DriveBackupFileRef {
+  final String id;
+  final String name;
+  final DateTime? modifiedTime;
+  final int? sizeBytes;
+
+  const DriveBackupFileRef({
+    required this.id,
+    required this.name,
+    required this.modifiedTime,
+    required this.sizeBytes,
+  });
+}
+
 abstract class DriveSignInGateway {
   Future<DriveUser?> signIn();
   Future<DriveUser?> signInSilently();
@@ -37,12 +52,16 @@ abstract class DriveApiGateway {
 
   Future<String> createFolder(String folderName);
 
+  Future<List<DriveBackupFileRef>> listFilesInFolder(String folderId);
+
   Future<String?> uploadFile({
     required String name,
     required String folderId,
     required Stream<List<int>> stream,
     required int length,
   });
+
+  Future<Stream<List<int>>> downloadFileStream(String fileId);
 
   void close();
 }
@@ -80,6 +99,7 @@ class DriveBackupService {
 
   static const String _iosClientId =
       '384868879764-7o2gae27cc56m14p273bjnq46ic59f68.apps.googleusercontent.com';
+  static const String _backupFolderName = 'Smart Cash Pro Backups';
 
   final DriveSignInGateway _signInGateway;
   final DriveApiGatewayFactory _apiFactory;
@@ -130,6 +150,12 @@ class DriveBackupService {
     return folderId;
   }
 
+  Future<String?> _findFolderId(DriveApiGateway api, String folderName) async {
+    final existing = await api.findFoldersByName(folderName);
+    if (existing.isEmpty) return null;
+    return existing.first.id;
+  }
+
   @visibleForTesting
   String backupName(DateTime now) {
     final y = now.year.toString().padLeft(4, '0');
@@ -148,7 +174,7 @@ class DriveBackupService {
       final file = File(path);
       if (!await file.exists()) throw Exception('ملف النسخة غير موجود');
 
-      final folderId = await _ensureFolder(api, 'Smart Cash Pro Backups');
+      final folderId = await _ensureFolder(api, _backupFolderName);
       final name = backupName(_nowProvider());
       final createdId = await api.uploadFile(
         name: name,
@@ -161,6 +187,65 @@ class DriveBackupService {
       }
       return createdId;
     } finally {
+      api.close();
+    }
+  }
+
+  Future<List<DriveBackupFileRef>> listBackups() async {
+    final api = await _api();
+    try {
+      final folderId = await _findFolderId(api, _backupFolderName);
+      if (folderId == null || folderId.trim().isEmpty) return const [];
+      final files = <DriveBackupFileRef>[
+        ...await api.listFilesInFolder(folderId),
+      ];
+      files.sort((a, b) {
+        final am = a.modifiedTime;
+        final bm = b.modifiedTime;
+        if (am == null && bm == null) return b.name.compareTo(a.name);
+        if (am == null) return 1;
+        if (bm == null) return -1;
+        return bm.compareTo(am);
+      });
+      return files;
+    } finally {
+      api.close();
+    }
+  }
+
+  Future<String> downloadBackupToTemporary({
+    required String fileId,
+    required String fileName,
+  }) async {
+    final api = await _api();
+    IOSink? sink;
+    try {
+      final stream = await api.downloadFileStream(fileId);
+      Directory tmpDir;
+      try {
+        tmpDir = await getTemporaryDirectory();
+      } catch (_) {
+        tmpDir = Directory.systemTemp;
+      }
+      final cleanName = (fileName.trim().isEmpty ? 'backup.db' : fileName)
+          .replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+      final safeName = cleanName.toLowerCase().endsWith('.db')
+          ? cleanName
+          : '$cleanName.db';
+      final out = File(
+        '${tmpDir.path}/drive_restore_${DateTime.now().millisecondsSinceEpoch}_$safeName',
+      );
+      sink = out.openWrite();
+      await sink.addStream(stream);
+      await sink.flush();
+      await sink.close();
+      return out.path;
+    } finally {
+      if (sink != null) {
+        try {
+          await sink.close();
+        } catch (_) {}
+      }
       api.close();
     }
   }
@@ -234,6 +319,28 @@ class _GoogleDriveApiGateway implements DriveApiGateway {
   }
 
   @override
+  Future<List<DriveBackupFileRef>> listFilesInFolder(String folderId) async {
+    final res = await _api.files.list(
+      q: "'$folderId' in parents and trashed=false",
+      spaces: 'drive',
+      $fields: 'files(id, name, modifiedTime, size)',
+      orderBy: 'modifiedTime desc,name',
+    );
+    final files = res.files ?? <drive.File>[];
+    return files
+        .where((f) => f.id != null && f.name != null)
+        .map(
+          (f) => DriveBackupFileRef(
+            id: f.id!,
+            name: f.name!,
+            modifiedTime: f.modifiedTime,
+            sizeBytes: f.size == null ? null : int.tryParse(f.size!),
+          ),
+        )
+        .toList();
+  }
+
+  @override
   Future<String?> uploadFile({
     required String name,
     required String folderId,
@@ -246,6 +353,18 @@ class _GoogleDriveApiGateway implements DriveApiGateway {
       ..parents = <String>[folderId];
     final created = await _api.files.create(driveFile, uploadMedia: media);
     return created.id;
+  }
+
+  @override
+  Future<Stream<List<int>>> downloadFileStream(String fileId) async {
+    final media = await _api.files.get(
+      fileId,
+      downloadOptions: drive.DownloadOptions.fullMedia,
+    );
+    if (media is! drive.Media) {
+      throw Exception('تعذر تنزيل الملف من Google Drive');
+    }
+    return media.stream;
   }
 
   @override
