@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import '../widgets/app_title.dart';
-import 'package:flutter/foundation.dart';
 import 'package:local_auth/local_auth.dart';
 import '../core/branding.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
+import '../services/admin_security_service.dart';
 import '../widgets/brand_logo.dart';
 import 'dashboard_screen.dart';
 
@@ -18,7 +18,11 @@ class AdminGateScreen extends StatefulWidget {
 class _AdminGateScreenState extends State<AdminGateScreen> {
   bool _loading = true;
   final _pinCtrl = TextEditingController();
+  final _setupPinCtrl = TextEditingController();
+  final _setupConfirmCtrl = TextEditingController();
   final _auth = LocalAuthentication();
+  final _adminSecurity = AdminSecurityService.instance;
+  bool _requiresPinSetup = false;
   bool _biometricAvailable = false;
   bool _biometricEnabled = false;
   SecureRestoreStatus _pinStatus = const SecureRestoreStatus(
@@ -37,13 +41,16 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
 
   Future<void> _init() async {
     try {
-      // Ensures settings file exists (default PIN = 1234)
-      await AppDb.instance.getAdminPin();
-      _pinStatus = await AppDb.instance.getAdminPinStatus();
-      _biometricEnabled = await AppDb.instance.getBiometricEnabled();
+      _requiresPinSetup = await _adminSecurity.requiresPinSetup();
+      if (!_requiresPinSetup) {
+        await _adminSecurity.getAdminPin();
+        _pinStatus = await _adminSecurity.getAdminPinStatus();
+        _biometricEnabled = await _adminSecurity.getBiometricEnabled();
+      }
       final supported = await _auth.isDeviceSupported();
       final canCheck = await _auth.canCheckBiometrics;
-      _biometricAvailable = _biometricEnabled && (supported || canCheck);
+      _biometricAvailable =
+          !_requiresPinSetup && _biometricEnabled && (supported || canCheck);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -61,7 +68,7 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
   }
 
   Future<void> _refreshPinStatus() async {
-    final status = await AppDb.instance.getAdminPinStatus();
+    final status = await _adminSecurity.getAdminPinStatus();
     if (!mounted) return;
     setState(() => _pinStatus = status);
   }
@@ -69,6 +76,8 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
   @override
   void dispose() {
     _pinCtrl.dispose();
+    _setupPinCtrl.dispose();
+    _setupConfirmCtrl.dispose();
     super.dispose();
   }
 
@@ -80,6 +89,10 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
   }
 
   Future<void> _enterAdmin() async {
+    if (_requiresPinSetup) {
+      await _completeFirstPinSetup();
+      return;
+    }
     try {
       await _refreshPinStatus();
       if (_pinStatus.locked && _pinStatus.lockedUntil != null) {
@@ -95,7 +108,7 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
         return;
       }
 
-      final ok = await AppDb.instance.verifyAdminPin(_pinCtrl.text);
+      final ok = await _adminSecurity.verifyAdminPin(_pinCtrl.text);
       await _refreshPinStatus();
       if (!mounted) return;
 
@@ -154,42 +167,28 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
     }
   }
 
-  Future<void> _resetPinToDefault() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('إعادة تعيين PIN'),
-        content: const Text(
-          'سيتم ضبط PIN الأدمن إلى 1234.\n\n'
-          'ملاحظة: زر تجريبي أثناء التطوير.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('تأكيد'),
-          ),
-        ],
-      ),
-    );
-
-    if (ok != true) return;
-
-    try {
-      await AppDb.instance.setAdminPin('1234');
-      await _refreshPinStatus();
-      if (!mounted) return;
+  Future<void> _completeFirstPinSetup() async {
+    final pin = _setupPinCtrl.text.trim();
+    final confirm = _setupConfirmCtrl.text.trim();
+    if (pin != confirm) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('تم ضبط PIN إلى 1234 ✅')));
+      ).showSnackBar(const SnackBar(content: Text('PIN غير متطابق')));
+      return;
+    }
+    try {
+      await _adminSecurity.setAdminPin(pin);
+      await _refreshPinStatus();
+      if (!mounted) return;
+      AppSession.enterAdmin();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const DashboardScreen()),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('فشل إعادة التعيين: $e')));
+      ).showSnackBar(SnackBar(content: Text('فشل إعداد PIN: $e')));
     }
   }
 
@@ -235,9 +234,11 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
                             ),
                           ),
                           const SizedBox(height: 12),
-                          const Text(
-                            'اختر وضع الدخول',
-                            style: TextStyle(
+                          Text(
+                            _requiresPinSetup
+                                ? 'إعداد PIN الأدمن لأول مرة'
+                                : 'اختر وضع الدخول',
+                            style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w700,
                             ),
@@ -251,38 +252,60 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
                           const SizedBox(height: 14),
                           const Divider(),
                           const SizedBox(height: 10),
-                          TextField(
-                            controller: _pinCtrl,
-                            obscureText: true,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'PIN الأدمن',
-                              prefixIcon: Icon(Icons.lock),
-                              hintText: 'افتراضي: 1234',
+                          if (_requiresPinSetup) ...[
+                            const Text(
+                              'قم بإنشاء PIN خاص بالأدمن قبل الدخول.',
+                              textAlign: TextAlign.center,
                             ),
-                          ),
-                          const SizedBox(height: 10),
-                          ElevatedButton.icon(
-                            icon: const Icon(Icons.verified_user),
-                            label: const Text('دخول كأدمن'),
-                            onPressed: _enterAdmin,
-                          ),
+                            const SizedBox(height: 10),
+                            TextField(
+                              controller: _setupPinCtrl,
+                              obscureText: true,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'PIN جديد للأدمن',
+                                prefixIcon: Icon(Icons.lock),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            TextField(
+                              controller: _setupConfirmCtrl,
+                              obscureText: true,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'تأكيد PIN',
+                                prefixIcon: Icon(Icons.lock_outline),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            ElevatedButton.icon(
+                              icon: const Icon(Icons.verified_user),
+                              label: const Text('حفظ ودخول كأدمن'),
+                              onPressed: _enterAdmin,
+                            ),
+                          ] else ...[
+                            TextField(
+                              controller: _pinCtrl,
+                              obscureText: true,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'PIN الأدمن',
+                                prefixIcon: Icon(Icons.lock),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            ElevatedButton.icon(
+                              icon: const Icon(Icons.verified_user),
+                              label: const Text('دخول كأدمن'),
+                              onPressed: _enterAdmin,
+                            ),
+                          ],
                           if (_biometricAvailable) ...[
                             const SizedBox(height: 8),
                             OutlinedButton.icon(
                               icon: const Icon(Icons.fingerprint),
                               label: const Text('دخول بالبصمة'),
                               onPressed: _enterAdminBiometric,
-                            ),
-                          ],
-                          if (kDebugMode) ...[
-                            const SizedBox(height: 6),
-                            TextButton.icon(
-                              onPressed: _resetPinToDefault,
-                              icon: const Icon(Icons.restart_alt),
-                              label: const Text(
-                                'إعادة تعيين PIN إلى 1234 (تجريبي)',
-                              ),
                             ),
                           ],
                         ],

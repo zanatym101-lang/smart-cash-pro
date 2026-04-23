@@ -209,7 +209,7 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
       case 'posted':
         return 'منفذ';
       case 'pending':
-        return 'معلق';
+        return 'آجل';
       case 'rolled_back':
         return 'ملغي';
       default:
@@ -223,10 +223,10 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
   }
 
   String _statementLabelForTxn(Txn t) {
-    if (t.kind == 'transfer' && t.status == 'pending') return 'تحويل معلق';
-    if (t.kind == 'receive' && t.status == 'pending') return 'استلام معلق';
+    if (t.kind == 'transfer' && t.status == 'pending') return 'تحويل آجل';
+    if (t.kind == 'receive' && t.status == 'pending') return 'استلام آجل';
     if (t.kind == 'fawry_credit' && t.status == 'pending') {
-      return 'فوري آجل معلق';
+      return 'فوري آجل';
     }
     if (t.kind == 'claim_collect') return 'تحصيل مستحق';
     if (t.kind == 'claim_pay') return 'سداد مستحق';
@@ -299,14 +299,14 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
       delta = isReceivable ? -t.amount.abs() : t.amount.abs();
     } else if (t.kind == 'transfer' && t.status == 'pending') {
       delta = _transferDue(t).abs();
-      title = 'تحويل معلق';
+      title = 'تحويل آجل';
     } else if (t.kind == 'receive' && t.status == 'pending') {
       delta = -_receiveDue(t).abs();
-      title = 'استلام معلق';
+      title = 'استلام آجل';
     } else if (t.kind == 'fawry_credit' && t.status == 'pending') {
       if (linkedClaim != null) return null;
       delta = (t.amount + t.clientFee).abs();
-      title = 'فوري آجل معلق';
+      title = 'فوري آجل';
     } else if (t.kind.startsWith('claim_open_')) {
       if (linkedClaim != null) return null;
       final isReceivable = _isReceivableByText(t.kind);
@@ -653,7 +653,7 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
                   title: 'حركة الفترة',
                   lines: [
                     'منفذ: ${stats.postedCount} • حجم ${stats.postedVolume.toStringAsFixed(2)}',
-                    'معلق: ${stats.pendingCount} • حجم ${stats.pendingVolume.toStringAsFixed(2)}',
+                    'آجل: ${stats.pendingCount} • حجم ${stats.pendingVolume.toStringAsFixed(2)}',
                     'ربح منفذ من العميل: ${stats.postedProfit.toStringAsFixed(2)}',
                   ],
                 ),

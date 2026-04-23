@@ -51,6 +51,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _expensesTotalAll = 0;
   double _expensesTotalToday = 0;
   double _expensesTotalMonth = 0;
+  int _pendingDueTodayCount = 0;
+  int _pendingOverdueCount = 0;
 
   DateTime _businessShift(DateTime d) {
     if (_dayStartHour <= 0) return d;
@@ -76,8 +78,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final now = DateTime.now();
     final shifted = _businessShift(now);
     final start = DateTime(shifted.year, shifted.month, 1, _dayStartHour);
-    final end = DateTime(shifted.year, shifted.month + 1, 1, _dayStartHour)
-        .subtract(const Duration(milliseconds: 1));
+    final end = DateTime(
+      shifted.year,
+      shifted.month + 1,
+      1,
+      _dayStartHour,
+    ).subtract(const Duration(milliseconds: 1));
     return DateRange(start: start, end: end);
   }
 
@@ -141,6 +147,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return (receivable: receivable, payable: payable);
   }
 
+  ({int dueToday, int overdue}) _pendingDateCounts({
+    required List<Txn> txns,
+    required DateRange todayRange,
+  }) {
+    var dueToday = 0;
+    var overdue = 0;
+
+    for (final t in txns) {
+      if (t.status != 'pending') continue;
+      if (todayRange.contains(t.entryDate)) {
+        dueToday++;
+      } else if (t.entryDate.isBefore(todayRange.start)) {
+        overdue++;
+      }
+    }
+
+    return (dueToday: dueToday, overdue: overdue);
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -168,6 +193,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _dayStartHour = settings.dayStartHour;
       final todayRange = _todayRange();
       final monthRange = _monthRange();
+      final pendingDateCounts = _pendingDateCounts(
+        txns: txns,
+        todayRange: todayRange,
+      );
       final todayReport = ReportCalculator.build(
         txns: txns,
         claims: claims,
@@ -198,6 +227,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _expensesTotalAll = expensesAll;
         _expensesTotalToday = expensesToday;
         _expensesTotalMonth = expensesMonth;
+        _pendingDueTodayCount = pendingDateCounts.dueToday;
+        _pendingOverdueCount = pendingDateCounts.overdue;
         _lastUpdated = DateTime.now();
       });
     } catch (e) {
@@ -242,6 +273,76 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pendingSummaryTile(TreasurySnapshot snap) {
+    final hasOverdue = _pendingOverdueCount > 0;
+    return Card(
+      child: ListTile(
+        leading: Icon(
+          hasOverdue ? Icons.warning_amber_rounded : Icons.pending_actions,
+          color: hasOverdue ? Colors.red.shade700 : null,
+        ),
+        title: const Text('العمليات الآجلة المفتوحة'),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('إجمالي القيمة: ${snap.pendingTotal.toStringAsFixed(2)}'),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                _pendingBadge(
+                  label: 'مستحق اليوم',
+                  count: _pendingDueTodayCount,
+                  color: Colors.blue.shade700,
+                ),
+                if (hasOverdue)
+                  _pendingBadge(
+                    label: 'متأخر',
+                    count: _pendingOverdueCount,
+                    color: Colors.red.shade700,
+                  ),
+              ],
+            ),
+          ],
+        ),
+        trailing: Text(
+          snap.pendingCount.toString(),
+          style: Theme.of(context).textTheme.headlineSmall,
+        ),
+        onTap: () async {
+          await Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const PendingScreen()));
+          await _load();
+        },
+      ),
+    );
+  }
+
+  Widget _pendingBadge({
+    required String label,
+    required int count,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        '$label: $count',
+        style: TextStyle(
+          color: color,
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );
@@ -329,7 +430,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                   ButtonSegment(
                     value: _DashboardFocus.pending,
-                    label: Text('المعلق'),
+                    label: Text('الآجل'),
                   ),
                 ],
                 selected: {_focus},
@@ -342,7 +443,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 16),
           Text(
             focusPending
-                ? 'إجمالي المبالغ المعلقة'
+                ? 'إجمالي المبالغ الآجلة'
                 : 'إجمالي السيولة المتاحة الآن',
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
@@ -391,8 +492,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               _darkRow('رأس المال الحقيقي (معتمد)', realCapitalApproved),
             ],
           ] else ...[
-            _darkRow('داخل المعلق', snap.pendingInflow),
-            _darkRow('خارج المعلق', snap.pendingOutflow),
+            _darkRow('داخل الآجل', snap.pendingInflow),
+            _darkRow('خارج الآجل', snap.pendingOutflow),
             const SizedBox(height: 6),
             _darkRow('الفرق ($pendingDiffLabel)', pendingDiffAbs),
             const SizedBox(height: 6),
@@ -648,6 +749,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
               )
             else if (s != null) ...[
               _heroCard(snap: s, isAdmin: isAdmin, license: license),
+              const SizedBox(height: 10),
+              _pendingSummaryTile(s),
               if (_lastUpdated != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
@@ -682,7 +785,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       'ربح: ${s.dailyProfit.toStringAsFixed(2)} • عمليات: ${_opsCount(today.ops)}',
                   icon: Icons.insights,
                   hint:
-                      'معلق اليوم: ${today.ops.pendingCount}\n'
+                      'آجل اليوم: ${today.ops.pendingCount}\n'
                       'استهلاك الحد اليومي: ${dailyLimitUsed.toStringAsFixed(0)} / ${dailyLimitTotal.toStringAsFixed(0)} (${dailyPct.toStringAsFixed(0)}%)\n'
                       'متبقي الحدود الشهرية: ${monthlyRemaining.toStringAsFixed(0)}',
                 ),
@@ -730,7 +833,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       QuickActionItem(
         id: 'transfer',
-        title: isAdmin ? 'تحويل' : 'تحويل (معلق)',
+        title: isAdmin ? 'تحويل' : 'تحويل (آجل)',
         icon: Icons.swap_horiz,
         color: const Color(0xFF14B8A6),
         onTap: () async {
@@ -742,7 +845,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       QuickActionItem(
         id: 'receive',
-        title: isAdmin ? 'استلام' : 'استلام (معلق)',
+        title: isAdmin ? 'استلام' : 'استلام (آجل)',
         icon: Icons.call_received,
         color: const Color(0xFF1D4ED8),
         onTap: () async {
@@ -812,7 +915,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       QuickActionItem(
         id: 'pending',
-        title: 'المعلق',
+        title: 'الآجل',
         icon: Icons.pending_actions,
         color: const Color(0xFF0EA5E9),
         onTap: () async {

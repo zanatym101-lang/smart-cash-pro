@@ -103,7 +103,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     }
     setState(() => _walletBalanceLoading = true);
     try {
-      final available = await AppDb.instance.getWalletAvailableBalance(walletId);
+      final available = await AppDb.instance.getWalletAvailableBalance(
+        walletId,
+      );
       final actual = await AppDb.instance.getWalletBalance(walletId);
       if (!mounted) return;
       setState(() {
@@ -145,9 +147,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
             ),
           ),
           if (actual != null)
-            Chip(
-              label: Text('المعتمد: ${actual.toStringAsFixed(2)}'),
-            ),
+            Chip(label: Text('المعتمد: ${actual.toStringAsFixed(2)}')),
         ],
       ),
     );
@@ -340,13 +340,11 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                     value: markPending,
                     onChanged: (v) => setState(() => markPending = v ?? false),
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('تسجيل العملية كمعلقة'),
+                    title: const Text('تسجيل العملية كآجلة'),
                     subtitle: const Text('إذا لم تحددها سيتم تنفيذها فورًا.'),
                   )
                 else
-                  const Text(
-                    'كمستخدم عادي سيتم تسجيل العملية كمعلقة تلقائيًا.',
-                  ),
+                  const Text('كمستخدم عادي سيتم تسجيل العملية كآجلة تلقائيًا.'),
               ],
             ),
           ),
@@ -379,9 +377,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     }
 
     if (_amountCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('أدخل المبلغ')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('أدخل المبلغ')));
       return;
     }
     final amt = _toDouble(_amountCtrl.text);
@@ -446,11 +444,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
         isPending: review.isPending,
         note: _composeNote(note, partyPhone),
         party: partyName,
-      );      if (!mounted) return;
+      );
+      if (!mounted) return;
       if (review.isPending) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم تسجيل استلام معلّق (ID=$id)')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('تم تسجيل استلام آجل (ID=$id)')));
         await Navigator.of(
           context,
         ).push(MaterialPageRoute(builder: (_) => const PendingScreen()));
@@ -471,7 +470,6 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     }
   }
 
-  
   void _clearForm() {
     _amountCtrl.clear();
     _feeCtrl.clear();
@@ -483,9 +481,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     setState(() {});
   }
 
-@override
+  @override
   Widget build(BuildContext context) {
-    final title = AppSession.isAdmin ? 'استلام' : 'استلام (كمعلقة للمستخدم)';
+    final title = AppSession.isAdmin ? 'استلام' : 'استلام (كآجل للمستخدم)';
 
     return Scaffold(
       appBar: AppBar(
@@ -520,9 +518,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                               ),
                             )
                             .toList(),
-                        onChanged: _saving
-                            ? null
-                            : _onWalletChanged,
+                        onChanged: _saving ? null : _onWalletChanged,
                         decoration: const InputDecoration(
                           labelText: 'المحفظة (تزيد)',
                         ),
@@ -632,8 +628,8 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
                 const SizedBox(height: 8),
                 Text(
                   AppSession.isAdmin
-                      ? 'يمكنك من نافذة المراجعة تحديد العملية كمعلقة أو تنفيذها فورًا.'
-                      : 'كمستخدم عادي، أي عملية جديدة تُسجل كمعلقة وتظهر في شاشة المعلقة.',
+                      ? 'يمكنك من نافذة المراجعة تحديد العملية كآجلة أو تنفيذها فورًا.'
+                      : 'كمستخدم عادي، أي عملية جديدة تُسجل كآجلة وتظهر في شاشة الآجل.',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],

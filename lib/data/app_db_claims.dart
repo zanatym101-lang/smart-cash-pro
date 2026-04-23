@@ -129,20 +129,26 @@ extension AppDbClaims on AppDb {
       _txns.add(openTxn);
     }
 
-    await _save();
-    await enqueueOutbox(
-      entity: 'claim',
-      entityId: claim.id.toString(),
-      action: 'create',
-      payload: claim.toJson(),
-    );
-    if (openTxn != null) {
-      await enqueueOutbox(
-        entity: 'txn',
-        entityId: openTxn.id.toString(),
+    final outboxItems = <PendingOutboxInsert>[
+      _outboxInsert(
+        entity: 'claim',
+        entityId: claim.id.toString(),
         action: 'create',
-        payload: openTxn.toJson(),
+        payload: claim.toJson(),
+      ),
+    ];
+    if (openTxn != null) {
+      outboxItems.add(
+        _outboxInsert(
+          entity: 'txn',
+          entityId: openTxn.id.toString(),
+          action: 'create',
+          payload: openTxn.toJson(),
+        ),
       );
+    }
+    await _save(outboxItems: outboxItems);
+    if (openTxn != null) {
       await appendAudit(
         type: 'claim_open_post',
         txnId: openTxn.id,
@@ -246,18 +252,21 @@ extension AppDbClaims on AppDb {
       _claims[idx] = claim.copyWith(amount: remainingAmount);
     }
 
-    await _save();
-    await enqueueOutbox(
-      entity: 'claim',
-      entityId: claim.id.toString(),
-      action: 'update',
-      payload: _claims[idx].toJson(),
-    );
-    await enqueueOutbox(
-      entity: 'txn',
-      entityId: txn.id.toString(),
-      action: 'create',
-      payload: txn.toJson(),
+    await _save(
+      outboxItems: [
+        _outboxInsert(
+          entity: 'claim',
+          entityId: claim.id.toString(),
+          action: 'update',
+          payload: _claims[idx].toJson(),
+        ),
+        _outboxInsert(
+          entity: 'txn',
+          entityId: txn.id.toString(),
+          action: 'create',
+          payload: txn.toJson(),
+        ),
+      ],
     );
     await appendAudit(
       type: remainingQ == 0 ? 'claim_settle' : 'claim_settle_partial',
@@ -306,17 +315,20 @@ extension AppDbClaims on AppDb {
       throw Exception('تعذر تحديد المستحق المرتبط بهذه العملية.');
     }
 
-    final settlements = _txns
-        .where((t) =>
-            t.status == 'posted' &&
-            (t.kind == 'claim_collect' || t.kind == 'claim_pay') &&
-            _extractClaimIdFromNote(t.note) == claimId)
-        .toList()
-      ..sort((a, b) {
-        final c = a.entryDate.compareTo(b.entryDate);
-        if (c != 0) return c;
-        return a.id.compareTo(b.id);
-      });
+    final settlements =
+        _txns
+            .where(
+              (t) =>
+                  t.status == 'posted' &&
+                  (t.kind == 'claim_collect' || t.kind == 'claim_pay') &&
+                  _extractClaimIdFromNote(t.note) == claimId,
+            )
+            .toList()
+          ..sort((a, b) {
+            final c = a.entryDate.compareTo(b.entryDate);
+            if (c != 0) return c;
+            return a.id.compareTo(b.id);
+          });
     if (settlements.isNotEmpty && settlements.last.id != txn.id) {
       throw Exception('لا يمكن تعديل/حذف تسوية ليست الأحدث على المستحق.');
     }
@@ -336,8 +348,8 @@ extension AppDbClaims on AppDb {
         settledDate: null,
       );
     } else {
-      final newAmountQ = Money.fromEgpDouble(current.amount) +
-          Money.fromEgpDouble(txn.amount);
+      final newAmountQ =
+          Money.fromEgpDouble(current.amount) + Money.fromEgpDouble(txn.amount);
       _claims[claimIdx] = current.copyWith(
         amount: Money.toEgpDouble(newAmountQ),
       );
@@ -345,18 +357,21 @@ extension AppDbClaims on AppDb {
 
     _txns[txnIdx] = txn.copyWith(status: 'rolled_back');
     _rebuildEngineFromTxns();
-    await _save();
-    await enqueueOutbox(
-      entity: 'claim',
-      entityId: claimId.toString(),
-      action: 'update',
-      payload: _claims[claimIdx].toJson(),
-    );
-    await enqueueOutbox(
-      entity: 'txn',
-      entityId: txn.id.toString(),
-      action: 'update',
-      payload: _txns[txnIdx].toJson(),
+    await _save(
+      outboxItems: [
+        _outboxInsert(
+          entity: 'claim',
+          entityId: claimId.toString(),
+          action: 'update',
+          payload: _claims[claimIdx].toJson(),
+        ),
+        _outboxInsert(
+          entity: 'txn',
+          entityId: txn.id.toString(),
+          action: 'update',
+          payload: _txns[txnIdx].toJson(),
+        ),
+      ],
     );
     await appendAudit(
       type: 'claim_settlement_rollback',

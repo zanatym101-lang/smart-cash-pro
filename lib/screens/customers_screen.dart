@@ -14,6 +14,13 @@ import 'fawry_screen.dart';
 import 'receive_screen.dart';
 import 'transfer_screen.dart';
 
+part 'customer_filters_and_sort.dart';
+part 'customer_bucket_builder.dart';
+part 'customer_attachment_actions.dart';
+part 'customer_details_panel.dart';
+part 'customers_list_section.dart';
+part 'customers_navigation_actions.dart';
+
 String _stripSystemTags(String input) {
   var v = input;
   v = v.replaceAllMapped(
@@ -52,50 +59,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
     _load();
   }
 
-  String _normalizePhone(String raw) {
-    final b = StringBuffer();
-    for (final r in raw.runes) {
-      final ch = String.fromCharCode(r);
-      final cu = ch.codeUnitAt(0);
-      if (cu >= 48 && cu <= 57) b.write(ch);
-    }
-    return b.toString();
-  }
-
-  String? _extractPhone(String? text) {
-    if (text == null || text.trim().isEmpty) return null;
-    final matches = RegExp(r'\d{10,15}').allMatches(text);
-    if (matches.isEmpty) return null;
-    final phone = _normalizePhone(matches.first.group(0) ?? '');
-    return phone.isEmpty ? null : phone;
-  }
-
-  int? _extractPendingSettlementRef(String? note) {
-    if (note == null || note.trim().isEmpty) return null;
-    final m = RegExp(r'pending_txn:(\d+)').firstMatch(note);
-    if (m == null) return null;
-    return int.tryParse(m.group(1) ?? '');
-  }
-
-  int? _extractClaimIdFromNote(String? note) {
-    if (note == null || note.trim().isEmpty) return null;
-    final m = RegExp(r'claim_id:(\d+)').firstMatch(note);
-    if (m == null) return null;
-    return int.tryParse(m.group(1) ?? '');
-  }
-
-  String _bucketKey({required String name, String? phone}) {
-    final p = _normalizePhone(phone ?? '');
-    if (p.isNotEmpty) return 'p:$p';
-    return 'n:${name.trim().toLowerCase()}';
-  }
-
-  String _customerKeyFor(_CustomerBucket c) {
-    return c.key;
-  }
-
-  bool _isPinned(_CustomerBucket c) {
-    return _pinnedCustomers.contains(_customerKeyFor(c));
+  void _setMountedState(VoidCallback fn) {
+    if (mounted) setState(fn);
   }
 
   String? _inferPartyFromClaimNote(Txn t) {
@@ -165,11 +130,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
       String pendingLabel(Txn t) {
         switch (t.kind) {
           case 'transfer':
-            return 'تحويل معلّق';
+            return 'تحويل آجل';
           case 'receive':
-            return 'استلام معلّق';
+            return 'استلام آجل';
           case 'fawry_credit':
-            return 'فوري آجل معلّق';
+            return 'فوري آجل';
           default:
             return t.kind;
         }
@@ -205,7 +170,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
         }
         if (claim == null) continue;
         final totalSettled = settledByClaimId[claimId] ?? 0;
-        final original = claim.amount + totalSettled;
+        final original = claim.status == 'open'
+            ? claim.amount + totalSettled
+            : (totalSettled > claim.amount ? totalSettled : claim.amount);
         var remaining = original;
         final list = entry.value
           ..sort((a, b) {
@@ -242,23 +209,31 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       final openClaimSourceTxnIds = <int>{};
       for (final c in claims) {
-        if (c.status != 'open') continue;
         final name = c.party.trim();
         if (name.isEmpty) continue;
-        if (c.sourceTxnId != null) {
+        if (c.status == 'open' && c.sourceTxnId != null) {
           openClaimSourceTxnIds.add(c.sourceTxnId!);
         }
         final phone = _extractPhone(c.note);
         final b = bucketFor(name: name, phone: phone);
         final settledForClaim = settledByClaimId[c.id] ?? 0;
-        final displayAmount = c.amount + settledForClaim;
+        final remainingAmount = c.status == 'open' ? c.amount : 0.0;
+        final originalAmount = c.status == 'open'
+            ? c.amount + settledForClaim
+            : (settledForClaim > c.amount ? settledForClaim : c.amount);
+        final settledAmount = (originalAmount - remainingAmount)
+            .clamp(0, 1e18)
+            .toDouble();
         if (c.type == 'receivable') {
-          b.receivableClaims += c.amount;
+          b.receivableClaims += remainingAmount;
           b.lines.add(
             _CustomerLine(
               date: c.entryDate,
               side: _LineSide.receivable,
-              amount: displayAmount,
+              amount: originalAmount,
+              displayAmount: remainingAmount,
+              originalAmount: originalAmount,
+              settledAmount: settledAmount,
               title: 'مستحق مفتوح (عليه)',
               details: _detailsForClaimLine(c),
               ref: 'Claim#${c.id}',
@@ -268,12 +243,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
             ),
           );
         } else if (c.type == 'payable') {
-          b.payableClaims += c.amount;
+          b.payableClaims += remainingAmount;
           b.lines.add(
             _CustomerLine(
               date: c.entryDate,
               side: _LineSide.payable,
-              amount: displayAmount,
+              amount: originalAmount,
+              displayAmount: remainingAmount,
+              originalAmount: originalAmount,
+              settledAmount: settledAmount,
               title: 'مستحق مفتوح (له)',
               details: _detailsForClaimLine(c),
               ref: 'Claim#${c.id}',
@@ -329,21 +307,24 @@ class _CustomersScreenState extends State<CustomersScreen> {
             final due = (dueBase - settled).clamp(0, 1e18).toDouble();
             if (due > 0) {
               b.receivablePending += due;
-              b.lines.add(
-                _CustomerLine(
-                  date: t.entryDate,
-                  side: _LineSide.receivable,
-                  amount: due,
-                  title: 'تحويل معلّق',
-                  details: _detailsForTransfer(t),
-                  ref: 'Txn#${t.id}',
-                  lineType: _CustomerLineType.txn,
-                  txnId: t.id,
-                  txnKind: t.kind,
-                  txnStatus: t.status,
-                ),
-              );
             }
+            b.lines.add(
+              _CustomerLine(
+                date: t.entryDate,
+                side: _LineSide.receivable,
+                amount: dueBase,
+                displayAmount: due,
+                originalAmount: dueBase,
+                settledAmount: settled,
+                title: 'تحويل آجل',
+                details: _detailsForTransfer(t),
+                ref: 'Txn#${t.id}',
+                lineType: _CustomerLineType.txn,
+                txnId: t.id,
+                txnKind: t.kind,
+                txnStatus: t.status,
+              ),
+            );
             continue;
           }
 
@@ -353,21 +334,24 @@ class _CustomersScreenState extends State<CustomersScreen> {
             final due = (dueBase - settled).clamp(0, 1e18).toDouble();
             if (due > 0) {
               b.payablePending += due;
-              b.lines.add(
-                _CustomerLine(
-                  date: t.entryDate,
-                  side: _LineSide.payable,
-                  amount: due,
-                  title: 'استلام معلّق',
-                  details: _detailsForReceive(t),
-                  ref: 'Txn#${t.id}',
-                  lineType: _CustomerLineType.txn,
-                  txnId: t.id,
-                  txnKind: t.kind,
-                  txnStatus: t.status,
-                ),
-              );
             }
+            b.lines.add(
+              _CustomerLine(
+                date: t.entryDate,
+                side: _LineSide.payable,
+                amount: dueBase,
+                displayAmount: due,
+                originalAmount: dueBase,
+                settledAmount: settled,
+                title: 'استلام آجل',
+                details: _detailsForReceive(t),
+                ref: 'Txn#${t.id}',
+                lineType: _CustomerLineType.txn,
+                txnId: t.id,
+                txnKind: t.kind,
+                txnStatus: t.status,
+              ),
+            );
             continue;
           }
 
@@ -377,21 +361,24 @@ class _CustomersScreenState extends State<CustomersScreen> {
             final due = (dueBase - settled).clamp(0, 1e18).toDouble();
             if (due > 0) {
               b.receivablePending += due;
-              b.lines.add(
-                _CustomerLine(
-                  date: t.entryDate,
-                  side: _LineSide.receivable,
-                  amount: due,
-                  title: 'فوري آجل معلّق',
-                  details: _detailsForFawry(t),
-                  ref: 'Txn#${t.id}',
-                  lineType: _CustomerLineType.txn,
-                  txnId: t.id,
-                  txnKind: t.kind,
-                  txnStatus: t.status,
-                ),
-              );
             }
+            b.lines.add(
+              _CustomerLine(
+                date: t.entryDate,
+                side: _LineSide.receivable,
+                amount: dueBase,
+                displayAmount: due,
+                originalAmount: dueBase,
+                settledAmount: settled,
+                title: 'فوري آجل',
+                details: _detailsForFawry(t),
+                ref: 'Txn#${t.id}',
+                lineType: _CustomerLineType.txn,
+                txnId: t.id,
+                txnKind: t.kind,
+                txnStatus: t.status,
+              ),
+            );
             continue;
           }
         }
@@ -434,13 +421,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       final customers = map.values.where((c) => c.lines.isNotEmpty).toList();
       for (final c in customers) {
-        c.lines.sort((a, b) {
-          final cDate = b.date.compareTo(a.date);
-          if (cDate != 0) return cDate;
-          final aId = a.txnId ?? a.claimId ?? 0;
-          final bId = b.txnId ?? b.claimId ?? 0;
-          return bId.compareTo(aId);
-        });
+        c.lines.sort(_compareCustomerLinesDesc);
         if (c.lines.isNotEmpty) {
           c.lastActivity = c.lines.first.date;
         }
@@ -501,37 +482,40 @@ class _CustomersScreenState extends State<CustomersScreen> {
           : _customerAlertThreshold.toStringAsFixed(2),
     );
     final res = await showDialog<double?>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('حد تنبيه العملاء'),
-        content: TextField(
-          controller: ctrl,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(
-            hintText: 'أدخل الحد (0 لتعطيل التنبيه)',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(null),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final raw = ctrl.text.trim();
-              if (raw.isEmpty) {
-                Navigator.of(ctx).pop(0);
-                return;
-              }
-              final parsed = double.tryParse(raw.replaceAll(',', ''));
-              Navigator.of(ctx).pop(parsed);
-            },
-            child: const Text('حفظ'),
-          ),
-        ],
+  context: context,
+  builder: (ctx) => AlertDialog(
+    title: const Text('حد تنبيه العملاء'),
+    content: TextField(
+      controller: ctrl,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      decoration: const InputDecoration(
+        hintText: 'أدخل الحد (0 لتعطيل التنبيه)',
       ),
-    );
-    if (res == null) return;
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(ctx).pop(null),
+        child: const Text('إلغاء'),
+      ),
+      ElevatedButton(
+        onPressed: () {
+          final raw = ctrl.text.trim();
+          if (raw.isEmpty) {
+            Navigator.of(ctx).pop(0);
+            return;
+          }
+          final parsed = double.tryParse(raw.replaceAll(',', ''));
+          Navigator.of(ctx).pop(parsed);
+        },
+        child: const Text('حفظ'),
+      ),
+    ],
+  ),
+);
+
+if (!mounted) return;   // ✅ أضف هذا السطر
+
+if (res == null) return;
     final double value = res.isNaN || res < 0 ? 0.0 : res;
     try {
       final settings = await AppDb.instance.getAppSettings();
@@ -669,6 +653,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
     }
   }
 
+  String _formatLineDate(DateTime value) {
+    final y = value.year.toString().padLeft(4, '0');
+    final m = value.month.toString().padLeft(2, '0');
+    final d = value.day.toString().padLeft(2, '0');
+    final hh = value.hour.toString().padLeft(2, '0');
+    final mm = value.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
+  }
+
   double _pendingTransferDue(Txn t) {
     if (t.mode == 'type2_v2') return t.amount + t.clientFee;
     final base = t.amount - t.networkFee;
@@ -682,52 +675,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
       return (t.amount - t.clientFee).clamp(0, 1e18).toDouble();
     }
     return 0;
-  }
-
-  List<_CustomerBucket> get _filtered {
-    final q = _query.trim().toLowerCase();
-    Iterable<_CustomerBucket> base = _customers;
-
-    switch (_listFilter) {
-      case _CustomerListFilter.archived:
-        base = base.where((c) => c.isArchived);
-        break;
-      case _CustomerListFilter.receivable:
-        base = base.where((c) => !c.isArchived && c.receivableTotal > 0);
-        break;
-      case _CustomerListFilter.payable:
-        base = base.where((c) => !c.isArchived && c.payableTotal > 0);
-        break;
-      case _CustomerListFilter.pending:
-        base = base.where(
-          (c) =>
-              !c.isArchived &&
-              (c.receivablePending > 0 || c.payablePending > 0),
-        );
-        break;
-      case _CustomerListFilter.all:
-        base = base.where((c) => !c.isArchived);
-        break;
-    }
-
-    if (q.isNotEmpty) {
-      base = base.where((c) {
-        final name = c.name.toLowerCase();
-        final phone = (c.phone ?? '').toLowerCase();
-        return name.contains(q) || phone.contains(q);
-      });
-    }
-
-    final list = base.toList();
-    list.sort((a, b) {
-      final aPinned = _pinnedCustomers.contains(_customerKeyFor(a));
-      final bPinned = _pinnedCustomers.contains(_customerKeyFor(b));
-      if (aPinned != bPinned) return aPinned ? -1 : 1;
-      final aDate = a.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bDate = b.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
-      return bDate.compareTo(aDate);
-    });
-    return list;
   }
 
   Future<_SettlementAmountInput?> _promptSettlementAmount({
@@ -972,7 +919,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       final remaining = await _resolveClaimRemaining(
         line.claimId!,
-        line.amount,
+        line.effectiveDisplayAmount,
       );
       final result = isFull
           ? _SettlementAmountInput(amount: remaining, note: null)
@@ -1021,7 +968,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         });
       } else if (action == _LineAction.confirmPending) {
         final ok = await _confirmAction(
-          title: 'اعتماد عملية معلّقة',
+          title: 'اعتماد عملية آجلة',
           body: 'سيتم تنفيذ العملية رقم #${line.txnId}.',
           okText: 'اعتماد',
         );
@@ -1031,7 +978,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         });
       } else if (action == _LineAction.cancelPending) {
         final ok = await _confirmAction(
-          title: 'إلغاء عملية معلّقة',
+          title: 'إلغاء عملية آجلة',
           body: 'سيتم إلغاء العملية رقم #${line.txnId}.',
           okText: 'إلغاء',
         );
@@ -1041,158 +988,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
         });
       }
     }
-  }
-
-  Future<void> _openCustomer(_CustomerBucket c) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (ctx) => _CustomerSheet(
-        customer: c,
-        onTransfer: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) =>
-                  TransferScreen(initialParty: c.name, initialPhone: c.phone),
-            ),
-          );
-          _load();
-        },
-        onReceive: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) =>
-                  ReceiveScreen(initialParty: c.name, initialPhone: c.phone),
-            ),
-          );
-          _load();
-        },
-        onTransferPending: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) => TransferScreen(
-                initialParty: c.name,
-                initialPhone: c.phone,
-                forcePendingDefault: true,
-              ),
-            ),
-          );
-          _load();
-        },
-        onReceivePending: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) => ReceiveScreen(
-                initialParty: c.name,
-                initialPhone: c.phone,
-                forcePendingDefault: true,
-              ),
-            ),
-          );
-          _load();
-        },
-        onFawryCredit: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) => FawryScreen(
-                initialParty: c.name,
-                initialPhone: c.phone,
-                startCredit: true,
-              ),
-            ),
-          );
-          _load();
-        },
-        onFawryCash: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) => FawryScreen(
-                initialParty: c.name,
-                initialPhone: c.phone,
-                startCredit: false,
-              ),
-            ),
-          );
-          _load();
-        },
-        onReport: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<void>(
-            MaterialPageRoute(
-              builder: (_) => CustomerReportScreen(
-                customerName: c.name,
-                customerPhone: c.phone,
-              ),
-            ),
-          );
-          _load();
-        },
-        onLineAction: _handleLineAction,
-        onShowDetails: _showLineDetails,
-        busyIds: _busyIds,
-        onRefresh: _load,
-      ),
-    );
-  }
-
-  String? _txnStatusLabel(String? status) {
-    if (status == null) return null;
-    final trimmed = status.trim();
-    if (trimmed.isEmpty) return null;
-    switch (trimmed) {
-      case 'posted':
-        return 'معتمد';
-      case 'pending':
-        return 'معلّق';
-      case 'rolled_back':
-        return 'ملغي';
-      default:
-        return trimmed;
-    }
-  }
-
-  void _showLineDetails(_CustomerLine line) {
-    final d = line.date;
-    final date =
-        '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-    final sideLabel = line.side == _LineSide.receivable
-        ? 'عليه (تحصيل)'
-        : 'له (سداد)';
-    final statusLabel = _txnStatusLabel(line.txnStatus);
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('تفاصيل العملية'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('العنوان: ${line.title}'),
-              Text('التاريخ: $date'),
-              Text('النوع: $sideLabel'),
-              Text('المبلغ: ${line.amount.toStringAsFixed(2)}'),
-              Text('المرجع: ${line.ref}'),
-              if (statusLabel != null) Text('الحالة: $statusLabel'),
-              if (line.details != null && line.details!.trim().isNotEmpty)
-                Text('التفاصيل: ${line.details}'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('إغلاق'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -1241,7 +1036,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 _listFilterChip('الكل', _CustomerListFilter.all),
                 _listFilterChip('لنا', _CustomerListFilter.receivable),
                 _listFilterChip('علينا', _CustomerListFilter.payable),
-                _listFilterChip('المعلّق', _CustomerListFilter.pending),
+                _listFilterChip('الآجل', _CustomerListFilter.pending),
                 _listFilterChip(
                   'الأرشيف',
                   _CustomerListFilter.archived,
@@ -1291,1569 +1086,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
       ),
     );
   }
-
-  Widget _summaryCard({
-    required double receivable,
-    required double payable,
-    required double net,
-    required int customers,
-  }) {
-    final netLabel = net >= 0 ? 'الصافي لنا' : 'الصافي علينا';
-    final netValue = net >= 0 ? net : -net;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
-          begin: Alignment.topRight,
-          end: Alignment.bottomLeft,
-        ),
-        borderRadius: BorderRadius.circular(22),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'إجمالي العملاء: $customers',
-            style: const TextStyle(color: Colors.white70),
-          ),
-          const SizedBox(height: 8),
-          _row('إجمالي لنا', receivable),
-          _row('إجمالي علينا', payable),
-          _row(netLabel, netValue),
-        ],
-      ),
-    );
-  }
-
-  Widget _listFilterChip(
-    String label,
-    _CustomerListFilter value, {
-    int? count,
-  }) {
-    final selected = _listFilter == value;
-    final text = count != null ? '$label ($count)' : label;
-    return ChoiceChip(
-      label: Text(text),
-      selected: selected,
-      onSelected: (_) => setState(() => _listFilter = value),
-    );
-  }
-
-  Widget _row(String label, double value) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(label, style: const TextStyle(color: Colors.white70)),
-          ),
-          Text(
-            value.toStringAsFixed(2),
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _customerCard(_CustomerBucket c, {required bool showArchivedLabel}) {
-    final netLabel = c.net >= 0 ? 'صافي عليه' : 'صافي له';
-    final netValue = c.net >= 0 ? c.net : -c.net;
-    final archivedTag = showArchivedLabel ? ' | مؤرشف' : '';
-    final isPinned = _isPinned(c);
-    final showWarning =
-        _customerAlertThreshold > 0 &&
-        (c.receivableTotal >= _customerAlertThreshold ||
-            c.payableTotal >= _customerAlertThreshold);
-    final last = c.lastActivity;
-    final lastText = last == null
-        ? 'لا توجد حركة'
-        : 'آخر حركة: ${last.year}-${last.month.toString().padLeft(2, '0')}-${last.day.toString().padLeft(2, '0')}';
-
-    return Card(
-      child: ListTile(
-        onTap: () => _openCustomer(c),
-        leading: const CircleAvatar(child: Icon(Icons.person)),
-        title: Text(
-          c.name,
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-        subtitle: Text(
-          '${c.phone ?? 'بدون هاتف'}$archivedTag\n$lastText\n$netLabel: ${netValue.toStringAsFixed(2)} | عليه: ${c.receivableTotal.toStringAsFixed(2)} | له: ${c.payableTotal.toStringAsFixed(2)}',
-        ),
-        isThreeLine: true,
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (showWarning)
-              const Icon(Icons.warning_amber, color: Colors.orange, size: 18),
-            IconButton(
-              onPressed: () => _togglePin(c),
-              icon: Icon(
-                isPinned ? Icons.star : Icons.star_border,
-                color: isPinned ? Colors.amber : Colors.grey,
-              ),
-              tooltip: isPinned ? 'إزالة التثبيت' : 'تثبيت',
-              visualDensity: VisualDensity.compact,
-            ),
-            const Icon(Icons.chevron_right),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomerSheet extends StatefulWidget {
-  final _CustomerBucket customer;
-  final VoidCallback onTransfer;
-  final VoidCallback onReceive;
-  final VoidCallback onTransferPending;
-  final VoidCallback onReceivePending;
-  final VoidCallback onFawryCash;
-  final VoidCallback onFawryCredit;
-  final VoidCallback onReport;
-  final Future<void> Function(_CustomerLine line, _LineAction action)
-  onLineAction;
-  final void Function(_CustomerLine line) onShowDetails;
-  final Set<int> busyIds;
-  final Future<void> Function() onRefresh;
-
-  const _CustomerSheet({
-    required this.customer,
-    required this.onTransfer,
-    required this.onReceive,
-    required this.onTransferPending,
-    required this.onReceivePending,
-    required this.onFawryCash,
-    required this.onFawryCredit,
-    required this.onReport,
-    required this.onLineAction,
-    required this.onShowDetails,
-    required this.busyIds,
-    required this.onRefresh,
-  });
-
-  @override
-  State<_CustomerSheet> createState() => _CustomerSheetState();
-}
-
-enum _CustomerLineFilter { all, claims, settlements, pending, posted }
-
-class _SettlementAmountInput {
-  final double amount;
-  final String? note;
-
-  const _SettlementAmountInput({required this.amount, required this.note});
-}
-
-class _CustomerSheetState extends State<_CustomerSheet> {
-  _CustomerLineFilter _filter = _CustomerLineFilter.all;
-  bool _showActions = false;
-  bool _batchBusy = false;
-
-  _CustomerBucket get customer => widget.customer;
-  VoidCallback get onTransfer => widget.onTransfer;
-  VoidCallback get onReceive => widget.onReceive;
-  VoidCallback get onTransferPending => widget.onTransferPending;
-  VoidCallback get onReceivePending => widget.onReceivePending;
-  VoidCallback get onFawryCash => widget.onFawryCash;
-  VoidCallback get onFawryCredit => widget.onFawryCredit;
-  VoidCallback get onReport => widget.onReport;
-  Future<void> Function(_CustomerLine line, _LineAction action)
-  get onLineAction => widget.onLineAction;
-  void Function(_CustomerLine line) get onShowDetails => widget.onShowDetails;
-  Set<int> get busyIds => widget.busyIds;
-  Future<void> Function() get onRefresh => widget.onRefresh;
-
-  String? _extractServiceLine(String? details) {
-    if (details == null) return null;
-    final lines = details
-        .split('|')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    for (final l in lines) {
-      if (l.startsWith('خدمة:')) return l;
-    }
-    return null;
-  }
-
-  String? _extractSettlementNote(String? details) {
-    if (details == null) return null;
-    final m = RegExp(r'ملاحظة التسوية:\s*(.+)$').firstMatch(details.trim());
-    if (m == null) return null;
-    final note = (m.group(1) ?? '').trim();
-    return note.isEmpty ? null : note;
-  }
-
-  String? _extractDetailPart(String? details, String prefix) {
-    if (details == null) return null;
-    final parts = details
-        .split('|')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty);
-    for (final p in parts) {
-      if (p.startsWith(prefix)) return p;
-    }
-    return null;
-  }
-
-  String _normalizePhone(String raw) {
-    final buf = StringBuffer();
-    for (final r in raw.runes) {
-      final ch = String.fromCharCode(r);
-      final code = ch.codeUnitAt(0);
-      if (code >= 48 && code <= 57) {
-        buf.write(ch);
-      }
-    }
-    return buf.toString();
-  }
-
-  String _customerKey() {
-    final phone = _normalizePhone(customer.phone ?? '');
-    if (phone.isNotEmpty) return 'p:$phone';
-    return 'n:${customer.name.trim().toLowerCase()}';
-  }
-
-  Future<void> _openAttachments() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (ctx) => _CustomerAttachmentsSheet(
-        customer: customer,
-        customerKey: _customerKey(),
-      ),
-    );
-  }
-
-  List<_CustomerLine> _openClaimsOfType(String type) {
-    final claims = customer.lines
-        .where(
-          (l) =>
-              l.lineType == _CustomerLineType.claimOpen && l.claimType == type,
-        )
-        .toList();
-    claims.sort((a, b) {
-      final c = a.date.compareTo(b.date);
-      if (c != 0) return c;
-      final aId = a.claimId ?? 0;
-      final bId = b.claimId ?? 0;
-      return aId.compareTo(bId);
-    });
-    return claims;
-  }
-
-  Future<Map<int, double>> _openClaimRemainingById() async {
-    final claims = await AppDb.instance.listClaims(status: 'open');
-    return {for (final c in claims) c.id: c.amount};
-  }
-
-  Future<String?> _pickSettlementType() async {
-    final hasReceivable = _openClaimsOfType('receivable').isNotEmpty;
-    final hasPayable = _openClaimsOfType('payable').isNotEmpty;
-    if (!hasReceivable && !hasPayable) return null;
-    if (hasReceivable && !hasPayable) return 'receivable';
-    if (!hasReceivable && hasPayable) return 'payable';
-
-    return showModalBottomSheet<String>(
-      context: context,
-      useSafeArea: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.call_received),
-              title: const Text('تسوية مستحقات لنا (تحصيل)'),
-              onTap: () => Navigator.of(ctx).pop('receivable'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.call_made),
-              title: const Text('تسوية مستحقات علينا (سداد)'),
-              onTap: () => Navigator.of(ctx).pop('payable'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<_SettlementAmountInput?> _promptTotalAmount({
-    required String title,
-    required String label,
-    required double maxAmount,
-  }) async {
-    final amountCtrl = TextEditingController();
-    final noteCtrl = TextEditingController();
-    String? error;
-    try {
-      final result = await showDialog<_SettlementAmountInput>(
-        context: context,
-        builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setState) => AlertDialog(
-            title: Text(title),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('الإجمالي المتاح: ${maxAmount.toStringAsFixed(2)}'),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  decoration: InputDecoration(
-                    labelText: label,
-                    border: const OutlineInputBorder(),
-                    isDense: true,
-                    errorText: error,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: noteCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'ملاحظة (اختياري)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('إلغاء'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  final value = double.tryParse(amountCtrl.text.trim());
-                  if (value == null || value <= 0) {
-                    setState(() => error = 'أدخل مبلغًا صحيحًا');
-                    return;
-                  }
-                  if (value > maxAmount) {
-                    setState(() => error = 'المبلغ أكبر من الإجمالي المتاح');
-                    return;
-                  }
-                  final note = noteCtrl.text.trim();
-                  Navigator.of(ctx).pop(
-                    _SettlementAmountInput(
-                      amount: value,
-                      note: note.isEmpty ? null : note,
-                    ),
-                  );
-                },
-                child: const Text('تنفيذ'),
-              ),
-            ],
-          ),
-        ),
-      );
-      await WidgetsBinding.instance.endOfFrame;
-      return result;
-    } finally {
-      amountCtrl.dispose();
-      noteCtrl.dispose();
-    }
-  }
-
-  Future<void> _runBatch(
-    String successMessage,
-    Future<void> Function() action,
-  ) async {
-    if (_batchBusy) return;
-    setState(() => _batchBusy = true);
-    try {
-      await action();
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(successMessage)));
-      await onRefresh();
-      if (mounted) Navigator.of(context).pop();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
-    } finally {
-      if (mounted) setState(() => _batchBusy = false);
-    }
-  }
-
-  Future<void> _settleAllClaims() async {
-    final type = await _pickSettlementType();
-    if (type == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    final lines = _openClaimsOfType(type);
-    if (lines.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    if (!mounted) return;
-    final label = type == 'receivable' ? 'تحصيل' : 'سداد';
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('$label كل المستحقات'),
-        content: Text('سيتم تنفيذ $label لكل المستحقات المفتوحة لهذا العميل.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('تنفيذ'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    await _runBatch('تمت تسوية كل المستحقات بنجاح ✅', () async {
-      final remainingById = await _openClaimRemainingById();
-      for (final line in lines) {
-        final claimId = line.claimId;
-        if (claimId == null) continue;
-        final remaining = remainingById[claimId] ?? 0;
-        if (remaining <= 0) continue;
-        await AppDb.instance.settleClaim(claimId: claimId, amount: remaining);
-      }
-    });
-  }
-
-  Future<void> _settlePartialFromTotal() async {
-    final type = await _pickSettlementType();
-    if (type == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    final lines = _openClaimsOfType(type);
-    if (lines.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    final remainingById = await _openClaimRemainingById();
-    final total = lines.fold<double>(0, (sum, line) {
-      final claimId = line.claimId;
-      if (claimId == null) return sum;
-      return sum + (remainingById[claimId] ?? 0);
-    });
-    if (total <= 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مبالغ متبقية للتسوية')),
-      );
-      return;
-    }
-    final actionLabel = type == 'receivable' ? 'تحصيل' : 'سداد';
-    final result = await _promptTotalAmount(
-      title: '$actionLabel جزئي من الإجمالي',
-      label: 'مبلغ $actionLabel',
-      maxAmount: total,
-    );
-    if (result == null) return;
-
-    await _runBatch('تم تنفيذ التسوية الجزئية بنجاح ✅', () async {
-      var remainingAmount = result.amount;
-      for (final line in lines) {
-        if (remainingAmount <= 0) break;
-        final claimId = line.claimId;
-        if (claimId == null) continue;
-        final claimRemaining = remainingById[claimId] ?? 0;
-        if (claimRemaining <= 0) continue;
-        final take = remainingAmount < claimRemaining
-            ? remainingAmount
-            : claimRemaining;
-        if (take <= 0) continue;
-        await AppDb.instance.settleClaim(
-          claimId: claimId,
-          amount: take,
-          note: result.note,
-        );
-        remainingAmount -= take;
-      }
-    });
-  }
-
-  Future<void> _addClaimForCustomer(String type) async {
-    final amountCtrl = TextEditingController();
-    final noteCtrl = TextEditingController();
-    String? error;
-    try {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setState) => AlertDialog(
-            title: Text(
-              type == 'receivable' ? 'إضافة مستحق لنا' : 'إضافة مستحق علينا',
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('العميل: ${customer.name}'),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  decoration: InputDecoration(
-                    labelText: 'المبلغ',
-                    border: const OutlineInputBorder(),
-                    isDense: true,
-                    errorText: error,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: noteCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'ملاحظة (اختياري)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('إلغاء'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  final value = double.tryParse(amountCtrl.text.trim());
-                  if (value == null || value <= 0) {
-                    setState(() => error = 'أدخل مبلغًا صحيحًا');
-                    return;
-                  }
-                  Navigator.of(ctx).pop(true);
-                },
-                child: const Text('حفظ'),
-              ),
-            ],
-          ),
-        ),
-      );
-      if (ok != true) return;
-      final amount = double.parse(amountCtrl.text.trim());
-      await _runBatch('تمت إضافة المستحق بنجاح ✅', () async {
-        await AppDb.instance.addClaim(
-          type: type,
-          party: customer.name,
-          amount: amount,
-          note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
-          phone: customer.phone,
-        );
-      });
-    } finally {
-      amountCtrl.dispose();
-      noteCtrl.dispose();
-    }
-  }
-
-  Future<void> _openAddOperationMenu() async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      useSafeArea: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.swap_horiz),
-              title: const Text('تحويل'),
-              onTap: () => Navigator.of(ctx).pop('transfer'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.swap_horiz),
-              title: const Text('تحويل معلّق'),
-              onTap: () => Navigator.of(ctx).pop('transfer_pending'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.call_received),
-              title: const Text('استلام'),
-              onTap: () => Navigator.of(ctx).pop('receive'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.call_received),
-              title: const Text('استلام معلّق'),
-              onTap: () => Navigator.of(ctx).pop('receive_pending'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.flash_on),
-              title: const Text('فوري نقدي'),
-              onTap: () => Navigator.of(ctx).pop('fawry_cash'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.flash_on),
-              title: const Text('فوري آجل'),
-              onTap: () => Navigator.of(ctx).pop('fawry_credit'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.account_balance_wallet_outlined),
-              title: const Text('مستحق لنا'),
-              onTap: () => Navigator.of(ctx).pop('claim_receivable'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.account_balance_wallet_outlined),
-              title: const Text('مستحق علينا'),
-              onTap: () => Navigator.of(ctx).pop('claim_payable'),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (!mounted || action == null) return;
-
-    switch (action) {
-      case 'transfer':
-        onTransfer();
-        return;
-      case 'receive':
-        onReceive();
-        return;
-      case 'transfer_pending':
-        onTransferPending();
-        return;
-      case 'receive_pending':
-        onReceivePending();
-        return;
-      case 'fawry_cash':
-        onFawryCash();
-        return;
-      case 'fawry_credit':
-        onFawryCredit();
-        return;
-      case 'claim_receivable':
-        await _addClaimForCustomer('receivable');
-        return;
-      case 'claim_payable':
-        await _addClaimForCustomer('payable');
-        return;
-      default:
-        return;
-    }
-  }
-
-  String? _buildSettlementDetails(_CustomerLine line) {
-    final primary = <String>['المبلغ: ${line.amount.toStringAsFixed(2)}'];
-    final secondary = <String>[];
-    final service = _extractServiceLine(line.details);
-    if (line.remainingAfter != null) {
-      primary.add('المتبقي: ${line.remainingAfter!.toStringAsFixed(2)}');
-    }
-    final settlementNote = _extractSettlementNote(line.details);
-    if (settlementNote != null) secondary.add('ملاحظة: $settlementNote');
-    if (line.claimId != null) {
-      secondary.add('مرجع المستحق: Claim#${line.claimId}');
-    }
-    if (line.sourceKindLabel != null &&
-        line.sourceKindLabel!.trim().isNotEmpty) {
-      secondary.add('نوع الربط: ${line.sourceKindLabel}');
-    }
-    if (service != null) secondary.add(service);
-
-    final lines = <String>[primary.join(' | ')];
-    if (secondary.isNotEmpty) lines.add(secondary.join(' | '));
-    return lines.join('\n');
-  }
-
-  String? _compactDetailsForLine(_CustomerLine line) {
-    if (line.lineType == _CustomerLineType.claimOpen) {
-      return line.details != null ? _stripSystemTags(line.details!) : null;
-    }
-    switch (line.txnKind) {
-      case 'transfer':
-        final requiredLine = _extractDetailPart(
-          line.details,
-          'المطلوب من العميل:',
-        );
-        final sentLine = _extractDetailPart(line.details, 'المحوّل للعميل:');
-        final feeLine = _extractDetailPart(line.details, 'عمولة العميل:');
-        final parts = <String>[];
-        if (requiredLine != null) parts.add(requiredLine);
-        if (sentLine != null) parts.add(sentLine);
-        if (feeLine != null && !feeLine.endsWith(': 0.00')) parts.add(feeLine);
-        return parts.isEmpty ? null : parts.join(' | ');
-      case 'receive':
-        final amountLine = _extractDetailPart(line.details, 'المبلغ المستلم:');
-        final feeLine = _extractDetailPart(line.details, 'العمولة/الربح:');
-        final parts = <String>[];
-        if (amountLine != null) parts.add(amountLine);
-        if (feeLine != null && !feeLine.endsWith(': 0.00')) parts.add(feeLine);
-        return parts.isEmpty ? null : parts.join(' | ');
-      case 'fawry_cash':
-      case 'fawry_credit':
-        final service = _extractServiceLine(line.details);
-        final parts = <String>[];
-        if (service != null) parts.add(service);
-        parts.add('الإجمالي: ${line.amount.toStringAsFixed(2)}');
-        return parts.join(' | ');
-      case 'claim_collect':
-      case 'claim_pay':
-        return _buildSettlementDetails(line);
-      default:
-        if (line.details == null) return null;
-        final trimmed = _stripSystemTags(line.details!);
-        return trimmed.isEmpty ? null : trimmed;
-    }
-  }
-
-  Map<_CustomerLine, double> _computeBalances({
-    required List<_CustomerLine> lines,
-    required double currentNet,
-  }) {
-    final map = <_CustomerLine, double>{};
-    var runningAfter = currentNet;
-    for (final l in lines) {
-      map[l] = runningAfter;
-      final delta = l.side == _LineSide.receivable ? l.amount : -l.amount;
-      runningAfter -= delta;
-    }
-    return map;
-  }
-
-  double _displayBalanceAmountForLine(
-    _CustomerLine line,
-    Map<_CustomerLine, double> balances,
-    double currentNet,
-  ) {
-    return (balances[line] ?? currentNet).abs();
-  }
-
-  _LineSide _displayBalanceSideForLine(
-    _CustomerLine line,
-    Map<_CustomerLine, double> balances,
-    double currentNet,
-  ) {
-    final runningBalance = balances[line] ?? currentNet;
-    return runningBalance >= 0 ? _LineSide.receivable : _LineSide.payable;
-  }
-
-  List<_CustomerLine> _applyFilter(List<_CustomerLine> lines) {
-    switch (_filter) {
-      case _CustomerLineFilter.claims:
-        return lines
-            .where((l) => l.lineType == _CustomerLineType.claimOpen)
-            .toList();
-      case _CustomerLineFilter.settlements:
-        return lines
-            .where(
-              (l) =>
-                  l.lineType == _CustomerLineType.txn &&
-                  (l.txnKind == 'claim_collect' || l.txnKind == 'claim_pay'),
-            )
-            .toList();
-      case _CustomerLineFilter.pending:
-        return lines
-            .where(
-              (l) =>
-                  l.lineType == _CustomerLineType.txn &&
-                  l.txnStatus == 'pending',
-            )
-            .toList();
-      case _CustomerLineFilter.posted:
-        return lines
-            .where(
-              (l) =>
-                  l.lineType == _CustomerLineType.txn &&
-                  l.txnStatus == 'posted',
-            )
-            .toList();
-      case _CustomerLineFilter.all:
-        return lines;
-    }
-  }
-
-  Widget _filterChip(String label, _CustomerLineFilter value) {
-    final selected = _filter == value;
-    return ChoiceChip(
-      label: Text(label),
-      selected: selected,
-      onSelected: (v) {
-        if (!v) return;
-        setState(() => _filter = value);
-      },
-    );
-  }
-
-  Widget _summaryPill({
-    required String label,
-    required double value,
-    required Color color,
-  }) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          children: [
-            Text(
-              label,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.w600,
-                fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              value.toStringAsFixed(2),
-              style: TextStyle(color: color, fontWeight: FontWeight.w700),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _lineChipLabel(_CustomerLine line) {
-    if (line.lineType == _CustomerLineType.claimOpen) {
-      return line.claimType == 'receivable' ? 'مستحق (عليه)' : 'مستحق (له)';
-    }
-    if (line.txnKind == 'claim_collect') {
-      return (line.remainingAfter ?? 0) > 0 ? 'تحصيل جزئي' : 'تحصيل كامل';
-    }
-    if (line.txnKind == 'claim_pay') {
-      return (line.remainingAfter ?? 0) > 0 ? 'سداد جزئي' : 'سداد كامل';
-    }
-    if (line.txnKind == 'transfer') {
-      return line.txnStatus == 'pending' ? 'تحويل معلّق' : 'تحويل';
-    }
-    if (line.txnKind == 'receive') {
-      return line.txnStatus == 'pending' ? 'استلام معلّق' : 'استلام';
-    }
-    if (line.txnKind == 'fawry_cash') return 'فوري نقدي';
-    if (line.txnKind == 'fawry_credit') {
-      return line.txnStatus == 'pending' ? 'فوري آجل معلّق' : 'فوري آجل';
-    }
-    return line.title;
-  }
-
-  Color _lineChipColor(_CustomerLine line) {
-    if (line.txnStatus == 'pending') {
-      return const Color(0xFFB45309);
-    }
-    switch (line.txnKind) {
-      case 'transfer':
-        return const Color(0xFF2563EB);
-      case 'receive':
-        return const Color(0xFF0EA5E9);
-      case 'fawry_cash':
-        return const Color(0xFFF59E0B);
-      case 'fawry_credit':
-        return const Color(0xFF10B981);
-      case 'claim_collect':
-        return const Color(0xFF16A34A);
-      case 'claim_pay':
-        return const Color(0xFFDC2626);
-      default:
-        return line.side == _LineSide.receivable
-            ? const Color(0xFF047857)
-            : const Color(0xFFB91C1C);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final netLabel = customer.net >= 0 ? 'الصافي عليه' : 'الصافي له';
-    final netValue = customer.net >= 0 ? customer.net : -customer.net;
-    final netColor = customer.net >= 0
-        ? const Color(0xFF047857)
-        : const Color(0xFFB91C1C);
-    final balances = _computeBalances(
-      lines: customer.lines,
-      currentNet: customer.net,
-    );
-    final visibleLines = _applyFilter(customer.lines);
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  customer.name,
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ),
-              IconButton(
-                onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.close),
-              ),
-            ],
-          ),
-          Text('الهاتف: ${customer.phone ?? 'غير مسجل'}'),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _summaryPill(
-                label: 'له',
-                value: customer.payableTotal,
-                color: const Color(0xFF047857),
-              ),
-              const SizedBox(width: 6),
-              _summaryPill(
-                label: 'عليه',
-                value: customer.receivableTotal,
-                color: const Color(0xFFB91C1C),
-              ),
-              const SizedBox(width: 6),
-              _summaryPill(label: netLabel, value: netValue, color: netColor),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Text(
-                'إجراءات سريعة',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              const Spacer(),
-              IconButton(
-                onPressed: () => setState(() => _showActions = !_showActions),
-                icon: Icon(
-                  _showActions ? Icons.expand_less : Icons.expand_more,
-                ),
-                tooltip: _showActions ? 'إخفاء الإجراءات' : 'إظهار الإجراءات',
-              ),
-            ],
-          ),
-          AnimatedCrossFade(
-            firstChild: const SizedBox.shrink(),
-            secondChild: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _batchBusy ? null : _openAddOperationMenu,
-                  icon: const Icon(Icons.add_circle_outline),
-                  label: const Text('إضافة عملية'),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _batchBusy ? null : _settleAllClaims,
-                  icon: const Icon(Icons.done_all),
-                  label: const Text('تسوية كل المستحقات'),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _batchBusy ? null : _settlePartialFromTotal,
-                  icon: const Icon(Icons.tune),
-                  label: const Text('تسوية جزئية من الإجمالي'),
-                ),
-                ElevatedButton.icon(
-                  onPressed: onReport,
-                  icon: const Icon(Icons.assessment_outlined),
-                  label: const Text('تقرير العميل'),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _openAttachments,
-                  icon: const Icon(Icons.attach_file),
-                  label: const Text('مرفقات العميل'),
-                ),
-              ],
-            ),
-            crossFadeState: _showActions
-                ? CrossFadeState.showSecond
-                : CrossFadeState.showFirst,
-            duration: const Duration(milliseconds: 180),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _filterChip('الكل', _CustomerLineFilter.all),
-              _filterChip('المستحقات', _CustomerLineFilter.claims),
-              _filterChip('التحصيل/السداد', _CustomerLineFilter.settlements),
-              _filterChip('المعلّق', _CustomerLineFilter.pending),
-              _filterChip('المعتمد', _CustomerLineFilter.posted),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Expanded(
-            child: visibleLines.isEmpty
-                ? const Center(child: Text('لا توجد حركات مرتبطة لهذا العميل'))
-                : ListView(
-                    children: [
-                      _tableHeader(context),
-                      const SizedBox(height: 6),
-                      ...visibleLines.map((line) {
-                        final d = line.date;
-                        final date =
-                            '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
-                        final amountSign = line.side == _LineSide.receivable
-                            ? '+'
-                            : '-';
-                        final amountColor = line.side == _LineSide.receivable
-                            ? const Color(0xFF047857)
-                            : const Color(0xFFB91C1C);
-                        final amountBg = amountColor.withValues(alpha: 0.12);
-                        final balance = _displayBalanceAmountForLine(
-                          line,
-                          balances,
-                          customer.net,
-                        );
-                        final balanceSide = _displayBalanceSideForLine(
-                          line,
-                          balances,
-                          customer.net,
-                        );
-                        final balanceColor = balanceSide == _LineSide.receivable
-                            ? const Color(0xFFB91C1C)
-                            : const Color(0xFF047857);
-                        final balanceBg = balanceColor.withValues(alpha: 0.12);
-                        final balanceLabel = balance.toStringAsFixed(2);
-
-                        final actions = <PopupMenuEntry<_LineAction>>[];
-                        final isSettlement =
-                            line.txnKind == 'claim_collect' ||
-                            line.txnKind == 'claim_pay';
-                        final chipLabel = _lineChipLabel(line);
-                        final chipColor = _lineChipColor(line);
-                        final displayTitle = isSettlement
-                            ? _lineChipLabel(line)
-                            : line.title;
-                        final displayDetails = isSettlement
-                            ? _buildSettlementDetails(line)
-                            : _compactDetailsForLine(line);
-                        if (line.lineType == _CustomerLineType.claimOpen) {
-                          final isReceivable = line.claimType == 'receivable';
-                          actions.add(
-                            PopupMenuItem(
-                              value: isReceivable
-                                  ? _LineAction.collectPartial
-                                  : _LineAction.payPartial,
-                              child: Text(
-                                isReceivable ? 'تحصيل جزئي' : 'سداد جزئي',
-                              ),
-                            ),
-                          );
-                          actions.add(
-                            PopupMenuItem(
-                              value: isReceivable
-                                  ? _LineAction.collectFull
-                                  : _LineAction.payFull,
-                              child: Text(
-                                isReceivable ? 'تحصيل كلي' : 'سداد كلي',
-                              ),
-                            ),
-                          );
-                        } else if (line.lineType == _CustomerLineType.txn &&
-                            isSettlement &&
-                            line.txnStatus == 'posted') {
-                          final isCollect = line.txnKind == 'claim_collect';
-                          actions.add(
-                            PopupMenuItem(
-                              value: _LineAction.editSettlement,
-                              child: Text(
-                                isCollect ? 'تعديل التحصيل' : 'تعديل السداد',
-                              ),
-                            ),
-                          );
-                          actions.add(
-                            PopupMenuItem(
-                              value: _LineAction.deleteSettlement,
-                              child: Text(
-                                isCollect ? 'حذف التحصيل' : 'حذف السداد',
-                              ),
-                            ),
-                          );
-                        } else if (line.lineType == _CustomerLineType.txn &&
-                            !isSettlement &&
-                            line.txnStatus == 'posted' &&
-                            (line.txnKind == 'transfer' ||
-                                line.txnKind == 'receive' ||
-                                line.txnKind == 'fawry_cash' ||
-                                line.txnKind == 'fawry_credit')) {
-                          actions.add(
-                            const PopupMenuItem(
-                              value: _LineAction.rollbackPosted,
-                              child: Text('إلغاء العملية'),
-                            ),
-                          );
-                        } else if (line.lineType == _CustomerLineType.txn &&
-                            line.txnStatus == 'pending') {
-                          if (line.txnKind == 'transfer' ||
-                              line.txnKind == 'fawry_credit') {
-                            actions.add(
-                              const PopupMenuItem(
-                                value: _LineAction.collectPendingPartial,
-                                child: Text('تحصيل جزئي'),
-                              ),
-                            );
-                          } else if (line.txnKind == 'receive') {
-                            actions.add(
-                              const PopupMenuItem(
-                                value: _LineAction.payPendingPartial,
-                                child: Text('سداد جزئي'),
-                              ),
-                            );
-                          }
-                          actions.add(
-                            const PopupMenuItem(
-                              value: _LineAction.confirmPending,
-                              child: Text('تنفيذ المعلّق'),
-                            ),
-                          );
-                          actions.add(
-                            const PopupMenuItem(
-                              value: _LineAction.cancelPending,
-                              child: Text('إلغاء المعلّق'),
-                            ),
-                          );
-                        }
-
-                        final busy =
-                            (line.claimId != null &&
-                                busyIds.contains(line.claimId)) ||
-                            (line.txnId != null &&
-                                busyIds.contains(line.txnId));
-
-                        return InkWell(
-                          onTap: () => onShowDetails(line),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 4),
-                            child: Row(
-                              children: [
-                                _tableCell(
-                                  text: date,
-                                  flex: 2,
-                                  background: Colors.transparent,
-                                  align: Alignment.center,
-                                ),
-                                _tableCell(
-                                  text:
-                                      '$amountSign${line.amount.toStringAsFixed(2)}',
-                                  flex: 2,
-                                  background: amountBg,
-                                  textColor: amountColor,
-                                  align: Alignment.center,
-                                ),
-                                Expanded(
-                                  flex: 4,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 6,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: const Color(0xFFE2E8F0),
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Container(
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                      horizontal: 8,
-                                                      vertical: 2,
-                                                    ),
-                                                decoration: BoxDecoration(
-                                                  color: chipColor.withValues(
-                                                    alpha: 0.12,
-                                                  ),
-                                                  borderRadius:
-                                                      BorderRadius.circular(
-                                                        999,
-                                                      ),
-                                                ),
-                                                child: Text(
-                                                  chipLabel,
-                                                  style: TextStyle(
-                                                    color: chipColor,
-                                                    fontWeight: FontWeight.w600,
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                              ),
-                                              const SizedBox(height: 4),
-                                              Text(
-                                                displayTitle,
-                                                style: const TextStyle(
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                              if ((displayDetails ?? '')
-                                                  .trim()
-                                                  .isNotEmpty)
-                                                Text(
-                                                  displayDetails!.trim(),
-                                                  style: Theme.of(
-                                                    context,
-                                                  ).textTheme.bodySmall,
-                                                ),
-                                              // تفاصيل فقط بدون مرجع/حالة لعرض مبسط
-                                            ],
-                                          ),
-                                        ),
-                                        if (actions.isNotEmpty)
-                                          PopupMenuButton<_LineAction>(
-                                            onSelected: busy
-                                                ? null
-                                                : (action) => onLineAction(
-                                                    line,
-                                                    action,
-                                                  ),
-                                            itemBuilder: (_) => actions,
-                                            icon: const Icon(
-                                              Icons.more_vert,
-                                              size: 18,
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                _tableCell(
-                                  text: balanceLabel,
-                                  flex: 2,
-                                  background: balanceBg,
-                                  textColor: balanceColor,
-                                  align: Alignment.center,
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-
-  Widget _tableHeader(BuildContext context) {
-    return Row(
-      children: [
-        _tableCell(
-          text: 'التاريخ',
-          flex: 2,
-          background: const Color(0xFF1E40AF).withValues(alpha: 0.08),
-          textColor: const Color(0xFF1E40AF),
-          align: Alignment.center,
-          bold: true,
-        ),
-        _tableCell(
-          text: 'المبلغ',
-          flex: 2,
-          background: const Color(0xFF1E40AF).withValues(alpha: 0.08),
-          textColor: const Color(0xFF1E40AF),
-          align: Alignment.center,
-          bold: true,
-        ),
-        _tableCell(
-          text: 'التفاصيل',
-          flex: 4,
-          background: const Color(0xFF1E40AF).withValues(alpha: 0.08),
-          textColor: const Color(0xFF1E40AF),
-          align: Alignment.center,
-          bold: true,
-        ),
-        _tableCell(
-          text: 'الرصيد',
-          flex: 2,
-          background: const Color(0xFF1E40AF).withValues(alpha: 0.08),
-          textColor: const Color(0xFF1E40AF),
-          align: Alignment.center,
-          bold: true,
-        ),
-      ],
-    );
-  }
-
-  Widget _tableCell({
-    required String text,
-    required int flex,
-    required Color background,
-    Color textColor = Colors.black87,
-    Alignment align = Alignment.centerLeft,
-    bool bold = false,
-  }) {
-    return Expanded(
-      flex: flex,
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        decoration: BoxDecoration(
-          color: background,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
-        ),
-        alignment: align,
-        child: Text(
-          text,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: textColor,
-            fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
-            fontSize: 12,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomerAttachmentsSheet extends StatefulWidget {
-  final _CustomerBucket customer;
-  final String customerKey;
-
-  const _CustomerAttachmentsSheet({
-    required this.customer,
-    required this.customerKey,
-  });
-
-  @override
-  State<_CustomerAttachmentsSheet> createState() =>
-      _CustomerAttachmentsSheetState();
-}
-
-class _CustomerAttachmentsSheetState extends State<_CustomerAttachmentsSheet> {
-  bool _loading = true;
-  bool _busy = false;
-  String? _error;
-  List<CustomerAttachment> _items = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final items = await AppDb.instance.listCustomerAttachments(
-        customerKey: widget.customerKey,
-      );
-      if (!mounted) return;
-      setState(() {
-        _items = items;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
-    }
-  }
-
-  Future<void> _addAttachment() async {
-    if (_busy) return;
-    final result = await FilePicker.platform.pickFiles(
-      allowMultiple: false,
-      type: FileType.any,
-    );
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.single;
-    final path = file.path;
-    if (path == null || path.trim().isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('تعذر قراءة مسار الملف')));
-      return;
-    }
-    setState(() => _busy = true);
-    try {
-      await AppDb.instance.addCustomerAttachment(
-        customerKey: widget.customerKey,
-        customerName: widget.customer.name,
-        customerPhone: widget.customer.phone,
-        sourcePath: path,
-        displayName: file.name,
-      );
-      await _load();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _openAttachment(CustomerAttachment att) async {
-    final f = File(att.filePath);
-    if (!await f.exists()) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('الملف غير موجود')));
-      return;
-    }
-    await OpenFilex.open(att.filePath);
-  }
-
-  Future<void> _deleteAttachment(CustomerAttachment att) async {
-    if (_busy) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('حذف المرفق'),
-        content: Text('حذف ${att.fileName}?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('حذف'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    setState(() => _busy = true);
-    try {
-      await AppDb.instance.deleteCustomerAttachment(att.id);
-      await _load();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final sheetHeight = MediaQuery.of(context).size.height * 0.75;
-    return SizedBox(
-      height: sheetHeight,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.max,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'مرفقات العميل',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                ),
-                IconButton(
-                  onPressed: _busy ? null : _addAttachment,
-                  icon: const Icon(Icons.add),
-                  tooltip: 'إضافة ملف',
-                ),
-                IconButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  icon: const Icon(Icons.close),
-                ),
-              ],
-            ),
-            Text('العميل: ${widget.customer.name}'),
-            const SizedBox(height: 8),
-            if (_loading) const LinearProgressIndicator(),
-            if (_error != null) ...[
-              const SizedBox(height: 8),
-              Text(_error!, style: const TextStyle(color: Colors.red)),
-            ],
-            const SizedBox(height: 8),
-            if (!_loading && _items.isEmpty)
-              const Center(child: Text('لا توجد مرفقات بعد')),
-            if (_items.isNotEmpty)
-              Expanded(
-                child: ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: _items.length,
-                  // ignore: unnecessary_underscores
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (ctx, idx) {
-                    final item = _items[idx];
-                    final date =
-                        '${item.createdAt.year}-${item.createdAt.month.toString().padLeft(2, '0')}-${item.createdAt.day.toString().padLeft(2, '0')}';
-                    return ListTile(
-                      leading: const Icon(Icons.insert_drive_file_outlined),
-                      title: Text(item.fileName),
-                      subtitle: Text(date),
-                      onTap: () => _openAttachment(item),
-                      trailing: PopupMenuButton<String>(
-                        onSelected: (v) {
-                          if (v == 'open') {
-                            _openAttachment(item);
-                          } else if (v == 'delete') {
-                            _deleteAttachment(item);
-                          }
-                        },
-                        itemBuilder: (ctx) => const [
-                          PopupMenuItem(value: 'open', child: Text('فتح')),
-                          PopupMenuItem(value: 'delete', child: Text('حذف')),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 enum _LineSide { receivable, payable }
@@ -2878,6 +1110,9 @@ class _CustomerLine {
   final DateTime date;
   final _LineSide side;
   final double amount;
+  final double? displayAmount;
+  final double? originalAmount;
+  final double? settledAmount;
   final String title;
   final String? details;
   final String ref;
@@ -2895,6 +1130,9 @@ class _CustomerLine {
     required this.date,
     required this.side,
     required this.amount,
+    this.displayAmount,
+    this.originalAmount,
+    this.settledAmount,
     required this.title,
     required this.details,
     required this.ref,
@@ -2908,6 +1146,14 @@ class _CustomerLine {
     this.sourceKindLabel,
     this.pendingTxnId,
   });
+
+  double get effectiveDisplayAmount => displayAmount ?? amount;
+  double get effectiveOriginalAmount => originalAmount ?? amount;
+  double get effectiveSettledAmount {
+    if (settledAmount != null) return settledAmount!;
+    final settled = effectiveOriginalAmount - effectiveDisplayAmount;
+    return settled > 0 ? settled : 0;
+  }
 }
 
 class _CustomerBucket {

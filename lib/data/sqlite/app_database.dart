@@ -13,6 +13,22 @@ import '../../models/wallet.dart';
 
 part 'app_database.g.dart';
 
+class PendingOutboxInsert {
+  final String entity;
+  final String entityId;
+  final String action;
+  final String? payload;
+  final DateTime createdAt;
+
+  const PendingOutboxInsert({
+    required this.entity,
+    required this.entityId,
+    required this.action,
+    this.payload,
+    required this.createdAt,
+  });
+}
+
 @DataClassName('DbWallet')
 class Wallets extends Table {
   IntColumn get id => integer()();
@@ -439,6 +455,15 @@ class AppDatabase extends _$AppDatabase {
     return {for (final r in rows) r.key: r.value};
   }
 
+  Future<void> upsertMetaValue({
+    required String key,
+    required String value,
+  }) async {
+    await into(
+      meta,
+    ).insertOnConflictUpdate(MetaCompanion.insert(key: key, value: value));
+  }
+
   Future<void> saveMeta(Map<String, String> items) async {
     await batch((b) {
       b.deleteAll(meta);
@@ -458,6 +483,8 @@ class AppDatabase extends _$AppDatabase {
     required List<DailyClose> dailyCloseItems,
     required List<RecentNumber> recentNumberItems,
     required Map<String, String> metaItems,
+    bool clearSyncOutbox = false,
+    List<PendingOutboxInsert> outboxItems = const [],
   }) async {
     await transaction(() async {
       await batch((b) {
@@ -467,6 +494,9 @@ class AppDatabase extends _$AppDatabase {
         b.deleteAll(dailyCloses);
         b.deleteAll(recentNumbers);
         b.deleteAll(meta);
+        if (clearSyncOutbox) {
+          b.deleteAll(syncOutbox);
+        }
 
         if (walletItems.isNotEmpty) {
           b.insertAll(
@@ -581,6 +611,22 @@ class AppDatabase extends _$AppDatabase {
             meta,
             metaItems.entries.map(
               (e) => MetaCompanion.insert(key: e.key, value: e.value),
+            ),
+          );
+        }
+
+        if (outboxItems.isNotEmpty) {
+          b.insertAll(
+            syncOutbox,
+            outboxItems.map(
+              (e) => SyncOutboxCompanion.insert(
+                entity: e.entity,
+                entityId: e.entityId,
+                action: e.action,
+                payload: Value(e.payload),
+                createdAt: e.createdAt,
+                sentAt: const Value.absent(),
+              ),
             ),
           );
         }

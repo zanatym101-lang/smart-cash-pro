@@ -470,9 +470,9 @@ class ReportCalculator {
 
         case 'pending_settlement_adjust':
           if (t.amount >= 0) {
-            addInflow('تسوية تحصيل معلّق', t.amount);
+            addInflow('تسوية تحصيل آجل', t.amount);
           } else {
-            addOutflow('تسوية تحصيل معلّق', -t.amount);
+            addOutflow('تسوية تحصيل آجل', -t.amount);
           }
           break;
 

@@ -1,14 +1,71 @@
 part of 'app_db.dart';
 
 extension AppDbReports on AppDb {
-  String _calendarDateKey(DateTime d) => _formatDateKey(d);
+  String _businessCloseDateKey(DateTime d) => _businessDateKeyFromDateTime(d);
 
-  DateRange _dayRange(DateTime d) {
-    final start = DateTime(d.year, d.month, d.day, _dayStartHour());
+  DateRange _businessDayRange(DateTime d) {
+    final shifted = _businessShift(d);
+    final businessDate = DateTime(shifted.year, shifted.month, shifted.day);
+    final start = businessDate.add(Duration(hours: _dayStartHour()));
     final end = start
         .add(const Duration(days: 1))
         .subtract(const Duration(milliseconds: 1));
     return DateRange(start: start, end: end);
+  }
+
+  TreasurySnapshot _historicalTreasurySnapshotAt(DateTime cutoff) {
+    final state = AccountingState(
+      walletBalancesQirsh: <String, int>{},
+      drawerBalanceQirsh: 0,
+      fawryBalanceQirsh: 0,
+      ledger: <LedgerEntry>[],
+      transactions: <String, TransactionRecord>{},
+    );
+    final engine = AccountingEngine(state);
+
+    final posted =
+        _txns
+            .where(
+              (t) =>
+                  (_hasStatus(t, 'posted') ||
+                      _pendingAppliesToActualBalance(t)) &&
+                  !t.entryDate.isAfter(cutoff),
+            )
+            .toList()
+          ..sort((a, b) {
+            final c = a.entryDate.compareTo(b.entryDate);
+            if (c != 0) return c;
+            return a.id.compareTo(b.id);
+          });
+
+    for (final t in posted) {
+      final txId = _txId(t.id);
+      final spec = _specFromTxn(t);
+      engine.createPending(txId: txId, spec: spec, payload: t.toJson());
+      engine.approve(txId: txId, spec: spec);
+    }
+
+    int walletsActualQ = 0;
+    for (final w in _wallets) {
+      walletsActualQ += state.getWalletQirsh(w.id.toString());
+    }
+
+    return TreasurySnapshot(
+      drawerBalance: Money.toEgpDouble(state.drawerBalanceQirsh),
+      walletsTotal: Money.toEgpDouble(walletsActualQ),
+      fawryBalance: Money.toEgpDouble(state.fawryBalanceQirsh),
+      drawerActualBalance: Money.toEgpDouble(state.drawerBalanceQirsh),
+      walletsActualTotal: Money.toEgpDouble(walletsActualQ),
+      fawryActualBalance: Money.toEgpDouble(state.fawryBalanceQirsh),
+      pendingCount: 0,
+      pendingInflow: 0,
+      pendingOutflow: 0,
+      claimsReceivableOpen: 0,
+      claimsPayableOpen: 0,
+      profitApprovedTotal: 0,
+      dailyProfit: 0,
+      monthlyProfit: 0,
+    );
   }
 
   Future<List<DailyClose>> listDailyCloses() async {
@@ -23,7 +80,7 @@ extension AppDbReports on AppDb {
     if (!AppSession.isAdmin) {
       throw Exception('هذا الإجراء متاح للأدمن فقط');
     }
-    final key = _calendarDateKey(date);
+    final key = _businessCloseDateKey(date);
     final existing = _dailyCloses.where((c) => c.dateKey == key).toList();
     if (existing.isNotEmpty) {
       throw Exception(
@@ -31,13 +88,13 @@ extension AppDbReports on AppDb {
       );
     }
 
-    final range = _dayRange(date);
+    final range = _businessDayRange(date);
     final report = ReportCalculator.build(
       txns: _txns,
       claims: _claims,
       range: range,
     );
-    final snap = await getTreasurySnapshot();
+    final snap = _historicalTreasurySnapshotAt(range.end);
 
     final close = DailyClose(
       id: _nextCloseId++,
@@ -64,14 +121,17 @@ extension AppDbReports on AppDb {
     );
 
     _dailyCloses.add(close);
-    await appendAudit(type: 'daily_close', dateKey: key);
-    await _save();
-    await enqueueOutbox(
-      entity: 'daily_close',
-      entityId: close.id.toString(),
-      action: 'create',
-      payload: close.toJson(),
+    await _save(
+      outboxItems: [
+        _outboxInsert(
+          entity: 'daily_close',
+          entityId: close.id.toString(),
+          action: 'create',
+          payload: close.toJson(),
+        ),
+      ],
     );
+    await appendAudit(type: 'daily_close', dateKey: key);
     return close;
   }
 
@@ -80,7 +140,7 @@ extension AppDbReports on AppDb {
     if (!AppSession.isAdmin) {
       throw Exception('هذا الإجراء متاح للأدمن فقط');
     }
-    final key = _calendarDateKey(date);
+    final key = _businessCloseDateKey(date);
     final idx = _dailyCloses.indexWhere((c) => c.dateKey == key);
     if (idx < 0) {
       throw Exception('لم يتم إغلاق هذا اليوم');
@@ -97,13 +157,16 @@ extension AppDbReports on AppDb {
       );
     }
     _dailyCloses.removeAt(idx);
-    await appendAudit(type: 'daily_close_reopen', dateKey: key);
-    await _save();
-    await enqueueOutbox(
-      entity: 'daily_close',
-      entityId: close.id.toString(),
-      action: 'delete',
-      payload: close.toJson(),
+    await _save(
+      outboxItems: [
+        _outboxInsert(
+          entity: 'daily_close',
+          entityId: close.id.toString(),
+          action: 'delete',
+          payload: close.toJson(),
+        ),
+      ],
     );
+    await appendAudit(type: 'daily_close_reopen', dateKey: key);
   }
 }

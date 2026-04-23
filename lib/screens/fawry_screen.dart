@@ -106,9 +106,9 @@ class _FawryScreenState extends State<FawryScreen> {
       return;
     }
     if (amountText.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('أدخل قيمة الخدمة')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('أدخل قيمة الخدمة')));
       return;
     }
     final amt = _toDouble(amountText);
@@ -154,7 +154,7 @@ class _FawryScreenState extends State<FawryScreen> {
         Navigator.of(context).pop(true);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم إنشاء خدمة فوري معلّقة بنجاح (ID=$id)')),
+          SnackBar(content: Text('تم إنشاء خدمة فوري آجلة بنجاح (ID=$id)')),
         );
         Navigator.of(
           context,
@@ -177,7 +177,7 @@ class _FawryScreenState extends State<FawryScreen> {
     final total = amt + fee;
     final title = _instantApprove
         ? 'خدمات فوري (اعتماد فوري)'
-        : 'خدمات فوري (طلب معلّق)';
+        : 'خدمات فوري (طلب آجل)';
 
     return Scaffold(
       appBar: AppBar(title: AppTitle(subtitle: title)),
@@ -327,9 +327,7 @@ class _FawryScreenState extends State<FawryScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.send),
-            label: Text(
-              _instantApprove ? 'اعتماد الآن' : 'إرسال كعملية معلّقة',
-            ),
+            label: Text(_instantApprove ? 'اعتماد الآن' : 'إرسال كعملية آجلة'),
           ),
         ],
       ),

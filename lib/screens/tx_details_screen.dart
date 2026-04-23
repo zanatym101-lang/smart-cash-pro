@@ -18,13 +18,12 @@ class TxDetailsScreen extends StatefulWidget {
 }
 
 class _TxDetailsScreenState extends State<TxDetailsScreen> {
-
   Future<void> _copyValue(String value, {String label = 'تم النسخ'}) async {
     await Clipboard.setData(ClipboardData(text: value));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$label: $value')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('$label: $value')));
   }
 
   Widget _copyableInfoRow(String label, String value) {
@@ -41,7 +40,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                 onPressed: () => _copyValue(value, label: 'تم نسخ رقم العملية'),
               ),
             ],
-          )
+          ),
         ],
       ),
     );
@@ -63,7 +62,6 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
       '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} '
       '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
-
   String _walletName(int? id) {
     if (id == null) return '-';
     final w = widget.wallets.where((x) => x.id == id).toList();
@@ -73,7 +71,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
   String _statusLabel(String s) {
     if (s == 'posted') return 'معتمد';
     if (s == 'rolled_back') return 'ملغي (عكس التأثير)';
-    if (s == 'pending') return 'معلّق';
+    if (s == 'pending') return 'آجل';
     return 'غير معروف';
   }
 
@@ -100,9 +98,9 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
       case 'fawry_fund_drawer':
         return 'شحن رصيد فوري';
       case 'pending_settlement':
-        return 'تسوية معلّق';
+        return 'تسوية آجل';
       case 'pending_settlement_adjust':
-        return 'تعديل تسوية معلّق';
+        return 'تعديل تسوية آجل';
       case 'rollback':
         return 'عكس التأثير';
       default:
@@ -377,8 +375,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                 ),
                 _infoRow('تاريخ الإنشاء', created),
                 _copyableInfoRow('رقم العملية', formatTxnReference(_txn.id)),
-                if (_approvedBy != null)
-                  _infoRow('اعتمد بواسطة', _approvedBy!),
+                if (_approvedBy != null) _infoRow('اعتمد بواسطة', _approvedBy!),
                 if (_approvedAt != null)
                   _infoRow('وقت الاعتماد', _dateTime(_approvedAt!)),
                 _infoRow('نوع العملية', _kindLabel(_txn.kind)),
@@ -416,11 +413,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                   delta: impact.walletDelta,
                 ),
                 const Divider(),
-                _impactRow(
-                  context,
-                  label: 'الدرج',
-                  delta: impact.drawerDelta,
-                ),
+                _impactRow(context, label: 'الدرج', delta: impact.drawerDelta),
                 const Divider(),
                 _impactRow(context, label: 'الربح', delta: impact.profitDelta),
               ],

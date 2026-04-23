@@ -21,6 +21,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
   List<Wallet> _wallets = [];
   final Map<int, double> _balances = {};
   final Map<int, double> _actualBalances = {};
+  final Map<int, double> _deferredImpacts = {};
   final Map<int, WalletLimitUsage> _limitUsage = {};
 
   @override
@@ -44,6 +45,20 @@ class _WalletsScreenState extends State<WalletsScreen> {
         wallets.map((w) => AppDb.instance.getWalletBalance(w.id)),
       );
       final usageMap = await AppDb.instance.getWalletLimitUsage();
+      final txns = await AppDb.instance.listTxns(status: 'pending');
+      final deferredImpacts = <int, double>{};
+      for (final t in txns) {
+        if (t.kind == 'transfer' && t.walletFromId != null) {
+          deferredImpacts[t.walletFromId!] =
+              (deferredImpacts[t.walletFromId!] ?? 0) - t.amount;
+        } else if (t.kind == 'receive' && t.walletToId != null) {
+          final delta = t.mode == 'electronic'
+              ? t.amount + t.clientFee
+              : t.amount;
+          deferredImpacts[t.walletToId!] =
+              (deferredImpacts[t.walletToId!] ?? 0) + delta;
+        }
+      }
       if (!mounted) return;
       setState(() {
         _wallets = wallets;
@@ -59,6 +74,9 @@ class _WalletsScreenState extends State<WalletsScreen> {
             for (var i = 0; i < wallets.length; i++)
               wallets[i].id: actualList[i],
           });
+        _deferredImpacts
+          ..clear()
+          ..addAll(deferredImpacts);
         _limitUsage
           ..clear()
           ..addAll(usageMap);
@@ -73,7 +91,8 @@ class _WalletsScreenState extends State<WalletsScreen> {
 
   double get _total => _balances.values.fold(0.0, (a, b) => a + b);
   double get _totalActual => _actualBalances.values.fold(0.0, (a, b) => a + b);
-  double get _totalPendingImpact => _total - _totalActual;
+  double get _totalPendingImpact =>
+      _deferredImpacts.values.fold(0.0, (a, b) => a + b);
 
   Color _providerColor(String provider) {
     switch (provider.toLowerCase()) {
@@ -488,17 +507,12 @@ class _WalletsScreenState extends State<WalletsScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'إجمالي أرصدة المحافظ المتاحة: ${_total.toStringAsFixed(2)}',
+                            'إجمالي أرصدة المحافظ الفعلية: ${_total.toStringAsFixed(2)}',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            'إجمالي فعلي (معتمد): ${_totalActual.toStringAsFixed(2)}',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'تأثير المعلق على المحافظ: ${_totalPendingImpact >= 0 ? '+' : '-'}${_totalPendingImpact.abs().toStringAsFixed(2)}',
+                            'إجمالي الرصيد الآجل داخلها: ${_totalPendingImpact >= 0 ? '+' : '-'}${_totalPendingImpact.abs().toStringAsFixed(2)}',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                           const SizedBox(height: 6),
@@ -519,8 +533,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
             else
               ..._wallets.map((w) {
                 final bal = _balances[w.id] ?? 0.0;
-                final actual = _actualBalances[w.id] ?? 0.0;
-                final pendingImpact = bal - actual;
+                final pendingImpact = _deferredImpacts[w.id] ?? 0.0;
                 final usage = _limitUsage[w.id];
                 final provider = providerFromPhone(w.phone);
                 final providerName = providerDisplayName(provider);
@@ -608,7 +621,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          'المتاح: ${bal.toStringAsFixed(2)}',
+                          'الرصيد الفعلي: ${bal.toStringAsFixed(2)}',
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 22,
@@ -617,14 +630,14 @@ class _WalletsScreenState extends State<WalletsScreen> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'الفعلي (معتمد): ${actual.toStringAsFixed(2)}',
+                          'المعتمد + الآجل داخل نفس الرصيد',
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.85),
                           ),
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'تأثير المعلق: ${pendingImpact >= 0 ? '+' : '-'}${pendingImpact.abs().toStringAsFixed(2)}',
+                          'رصيد آجل: ${pendingImpact >= 0 ? '+' : '-'}${pendingImpact.abs().toStringAsFixed(2)}',
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.85),
                           ),
@@ -657,7 +670,7 @@ class _WalletsScreenState extends State<WalletsScreen> {
             const SizedBox(height: 8),
             if (!_loading && _error == null)
               Text(
-                'المتاح يشمل العمليات المعلقة، بينما الفعلي يشمل المعتمد فقط.',
+                'الرصيد الفعلي يشمل العمليات الآجلة لأنها دخلت أو خرجت فعليًا، ورصيد الآجل يوضح الجزء غير المعتمد بعد.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
           ],
