@@ -105,6 +105,18 @@ extension AppDbAdminLicense on AppDb {
       license['serverAuthDiagLastSource'] = '';
       changed = true;
     }
+    if (!license.containsKey('serverAuthDiagKillSwitchEnabled')) {
+      license['serverAuthDiagKillSwitchEnabled'] = false;
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagCompromiseDetected')) {
+      license['serverAuthDiagCompromiseDetected'] = false;
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagCompromiseAt')) {
+      license['serverAuthDiagCompromiseAt'] = '';
+      changed = true;
+    }
     if (!license.containsKey('serverAuthRefreshToken')) {
       license['serverAuthRefreshToken'] = '';
       changed = true;
@@ -307,6 +319,84 @@ extension AppDbAdminLicense on AppDb {
     return '$scope-$now-$rand';
   }
 
+  bool _isServerKillSwitchEnabled(Map<String, dynamic> license) {
+    return license['serverAuthDiagKillSwitchEnabled'] == true;
+  }
+
+  bool _responseHasServerKillSwitch(LicenseRpcResponse response) {
+    final raw = response.raw;
+    return raw['kill_switch_enabled'] == true ||
+        raw['disable_server_authoritative'] == true ||
+        raw['server_authoritative_enabled'] == false ||
+        response.errorCode == 'kill_switch_enabled';
+  }
+
+  bool _isCompromiseErrorCode(String? code) {
+    final normalized = (code ?? '').trim();
+    return normalized == 'compromise_detected' ||
+        normalized == 'refresh_token_reuse';
+  }
+
+  bool _shouldTryServerSessionRefresh(String? code) {
+    const refreshableCodes = <String>{
+      'access_token_expired',
+      'token_expired',
+      'invalid_token',
+      'session_expired',
+      'refresh_required',
+    };
+    return refreshableCodes.contains((code ?? '').trim());
+  }
+
+  Future<void> _markServerCompromiseDiagnostic({
+    required Map<String, dynamic> license,
+    required String code,
+    required String message,
+  }) async {
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final wasDetected = license['serverAuthDiagCompromiseDetected'] == true;
+    license['serverAuthDiagCompromiseDetected'] = true;
+    license['serverAuthDiagCompromiseAt'] = nowIso;
+    license['serverAuthDiagLastErrorCode'] = code;
+    license['serverAuthDiagLastError'] = message;
+    if (!wasDetected) {
+      try {
+        await appendAudit(
+          type: 'license_compromise_detected',
+          note: code,
+        );
+      } catch (_) {}
+    }
+  }
+
+  void _applyRefreshedServerTokens(
+    Map<String, dynamic> license,
+    LicenseRpcResponse response,
+    String nowIso,
+  ) {
+    final accessToken = (response.raw['access_token'] ?? '').toString().trim();
+    final refreshToken = (response.raw['refresh_token'] ?? '')
+        .toString()
+        .trim();
+    final accessExpiresAt = _parseUtcDate(response.raw['access_expires_at']);
+    final refreshExpiresAt = _parseUtcDate(response.raw['refresh_expires_at']);
+    final graceEndsAt = _parseUtcDate(response.raw['grace_ends_at']);
+
+    if (accessToken.isNotEmpty) {
+      license['cloudToken'] = accessToken;
+      license['cloudTokenExpiresAt'] = accessExpiresAt?.toIso8601String() ?? '';
+    }
+    if (refreshToken.isNotEmpty) {
+      license['serverAuthRefreshToken'] = refreshToken;
+      license['serverAuthRefreshTokenExpiresAt'] =
+          refreshExpiresAt?.toIso8601String() ?? '';
+    }
+    if (graceEndsAt != null) {
+      license['cloudLicenseExpiresAt'] = graceEndsAt.toIso8601String();
+    }
+    license['cloudLastCheckAt'] = nowIso;
+  }
+
   String _serverAuthoritativeActivationErrorMessage({
     required String? code,
     required String fallback,
@@ -400,6 +490,16 @@ extension AppDbAdminLicense on AppDb {
     var error = '';
     var errorCode = '';
 
+    if (_isServerKillSwitchEnabled(license)) {
+      license['serverAuthDiagLastCheckAt'] = nowIso;
+      license['serverAuthDiagLastMode'] = 'kill_switch_legacy';
+      license['serverAuthDiagLastOk'] = false;
+      license['serverAuthDiagLastError'] = 'server_authoritative_disabled';
+      license['serverAuthDiagLastErrorCode'] = 'kill_switch_enabled';
+      license['serverAuthDiagLastSource'] = 'phase_c5_diagnostic';
+      return;
+    }
+
     if (token.isEmpty) {
       source = 'skipped';
       error = 'missing_cloud_token';
@@ -417,26 +517,124 @@ extension AppDbAdminLicense on AppDb {
         );
       }
 
+      Future<LicenseRpcResponse?> callRefreshIfNeeded(String? fromCode) async {
+        final refreshToken = (license['serverAuthRefreshToken'] ?? '')
+            .toString()
+            .trim();
+        if (refreshToken.isEmpty || !_shouldTryServerSessionRefresh(fromCode)) {
+          return null;
+        }
+        source = 'refresh';
+        return service.refreshSession(
+          RefreshSessionRpcRequest(
+            refreshToken: refreshToken,
+            deviceId: deviceCode,
+            idempotencyKey: _newLicenseIdempotencyKey('refresh'),
+          ),
+        );
+      }
+
       try {
         source = 'validate';
         var response = await service.validateLicense(
           ValidateLicenseRpcRequest(accessToken: token, deviceId: deviceCode),
         );
-        if (!response.ok) {
+        if (_responseHasServerKillSwitch(response)) {
+          license['serverAuthDiagKillSwitchEnabled'] = true;
+          source = 'kill_switch_legacy';
+          ok = false;
+          error = 'server_authoritative_disabled';
+          errorCode = 'kill_switch_enabled';
+        } else if (!response.ok) {
           source = 'heartbeat';
           response = await callHeartbeat();
-        }
-        ok = response.ok;
-        error = response.message ?? '';
-        errorCode = response.errorCode ?? '';
-      } on LicenseRpcException catch (e) {
-        source = 'heartbeat';
-        try {
-          final response = await callHeartbeat();
+          if (_responseHasServerKillSwitch(response)) {
+            license['serverAuthDiagKillSwitchEnabled'] = true;
+            source = 'kill_switch_legacy';
+            ok = false;
+            error = 'server_authoritative_disabled';
+            errorCode = 'kill_switch_enabled';
+          } else if (!response.ok) {
+            final refreshed = await callRefreshIfNeeded(response.errorCode);
+            if (refreshed != null) {
+              if (_responseHasServerKillSwitch(refreshed)) {
+                license['serverAuthDiagKillSwitchEnabled'] = true;
+                source = 'kill_switch_legacy';
+                ok = false;
+                error = 'server_authoritative_disabled';
+                errorCode = 'kill_switch_enabled';
+              } else {
+                ok = refreshed.ok;
+                error = refreshed.message ?? '';
+                errorCode = refreshed.errorCode ?? '';
+                if (ok) {
+                  _applyRefreshedServerTokens(license, refreshed, nowIso);
+                }
+              }
+            } else {
+              ok = response.ok;
+              error = response.message ?? '';
+              errorCode = response.errorCode ?? '';
+            }
+          } else {
+            ok = response.ok;
+            error = response.message ?? '';
+            errorCode = response.errorCode ?? '';
+          }
+        } else {
           ok = response.ok;
           error = response.message ?? '';
           errorCode = response.errorCode ?? '';
+        }
+      } on LicenseRpcException catch (e) {
+        if (_isCompromiseErrorCode(e.code)) {
+          await _markServerCompromiseDiagnostic(
+            license: license,
+            code: e.code ?? 'compromise_detected',
+            message: e.message,
+          );
+        }
+        source = 'legacy_fallback';
+        try {
+          final response = await callHeartbeat();
+          if (_responseHasServerKillSwitch(response)) {
+            license['serverAuthDiagKillSwitchEnabled'] = true;
+            source = 'kill_switch_legacy';
+            ok = false;
+            error = 'server_authoritative_disabled';
+            errorCode = 'kill_switch_enabled';
+          } else {
+            ok = response.ok;
+            error = response.message ?? '';
+            errorCode = response.errorCode ?? '';
+            if (!ok) {
+              final refreshed = await callRefreshIfNeeded(response.errorCode);
+              if (refreshed != null) {
+                if (_responseHasServerKillSwitch(refreshed)) {
+                  license['serverAuthDiagKillSwitchEnabled'] = true;
+                  source = 'kill_switch_legacy';
+                  ok = false;
+                  error = 'server_authoritative_disabled';
+                  errorCode = 'kill_switch_enabled';
+                } else {
+                  ok = refreshed.ok;
+                  error = refreshed.message ?? '';
+                  errorCode = refreshed.errorCode ?? '';
+                  if (ok) {
+                    _applyRefreshedServerTokens(license, refreshed, nowIso);
+                  }
+                }
+              }
+            }
+          }
         } on LicenseRpcException catch (heartbeatError) {
+          if (_isCompromiseErrorCode(heartbeatError.code)) {
+            await _markServerCompromiseDiagnostic(
+              license: license,
+              code: heartbeatError.code ?? 'compromise_detected',
+              message: heartbeatError.message,
+            );
+          }
           ok = false;
           error = heartbeatError.message;
           errorCode =
@@ -451,12 +649,20 @@ extension AppDbAdminLicense on AppDb {
       }
     }
 
+    if (_isCompromiseErrorCode(errorCode)) {
+      await _markServerCompromiseDiagnostic(
+        license: license,
+        code: errorCode,
+        message: error,
+      );
+    }
+
     license['serverAuthDiagLastCheckAt'] = nowIso;
     license['serverAuthDiagLastMode'] = source;
     license['serverAuthDiagLastOk'] = ok;
     license['serverAuthDiagLastError'] = error;
     license['serverAuthDiagLastErrorCode'] = errorCode;
-    license['serverAuthDiagLastSource'] = 'phase_b_diagnostic';
+    license['serverAuthDiagLastSource'] = 'phase_c5_diagnostic';
   }
 
   Future<bool> _syncCloudLicense(

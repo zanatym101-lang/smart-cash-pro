@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
@@ -155,14 +157,32 @@ class LicenseRpcService {
   final String supabaseUrl;
   final String anonKey;
   final http.Client _httpClient;
+  final Duration _requestTimeout;
+  final int _maxRetryAttempts;
+  final Duration _baseBackoffDelay;
+  final Duration _maxBackoffDelay;
+  final Future<void> Function(Duration) _sleep;
+  final Random _random;
 
   LicenseRpcService({
     String? supabaseUrl,
     String? anonKey,
     http.Client? httpClient,
+    Duration requestTimeout = const Duration(seconds: 8),
+    int maxRetryAttempts = 3,
+    Duration baseBackoffDelay = const Duration(milliseconds: 250),
+    Duration maxBackoffDelay = const Duration(seconds: 2),
+    Future<void> Function(Duration)? sleep,
+    Random? random,
   }) : supabaseUrl = (supabaseUrl ?? _defaultSupabaseUrl).trim(),
        anonKey = (anonKey ?? _defaultAnonKey).trim(),
-       _httpClient = httpClient ?? http.Client();
+       _httpClient = httpClient ?? http.Client(),
+       _requestTimeout = requestTimeout,
+       _maxRetryAttempts = maxRetryAttempts,
+       _baseBackoffDelay = baseBackoffDelay,
+       _maxBackoffDelay = maxBackoffDelay,
+       _sleep = sleep ?? Future.delayed,
+       _random = random ?? Random();
 
   Future<LicenseRpcResponse> activateLicense(
     ActivateLicenseRpcRequest request,
@@ -173,19 +193,75 @@ class LicenseRpcService {
   Future<LicenseRpcResponse> validateLicense(
     ValidateLicenseRpcRequest request,
   ) {
-    return _callRpc('validate_license', request.toJson());
+    return _callRpcWithRetry(
+      rpcName: 'validate_license',
+      body: request.toJson(),
+    );
   }
 
   Future<LicenseRpcResponse> heartbeatLicense(
     HeartbeatLicenseRpcRequest request,
   ) {
-    return _callRpc('heartbeat_license', request.toJson());
+    return _callRpcWithRetry(
+      rpcName: 'heartbeat_license',
+      body: request.toJson(),
+    );
   }
 
   Future<LicenseRpcResponse> refreshSession(
     RefreshSessionRpcRequest request,
   ) {
-    return _callRpc('refresh_session', request.toJson());
+    return _callRpcWithRetry(
+      rpcName: 'refresh_session',
+      body: request.toJson(),
+    );
+  }
+
+  Future<LicenseRpcResponse> _callRpcWithRetry({
+    required String rpcName,
+    required Map<String, dynamic> body,
+  }) async {
+    final maxAttempts = _maxRetryAttempts <= 0 ? 1 : _maxRetryAttempts;
+    LicenseRpcException? lastError;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await _callRpc(rpcName, body);
+      } on LicenseRpcException catch (e) {
+        lastError = e;
+        final canRetry =
+            e.retriable &&
+            attempt < maxAttempts &&
+            !_isFatalServerCode(e.code);
+        if (!canRetry) rethrow;
+        await _sleep(_jitteredBackoffDelay(attempt));
+      }
+    }
+    throw lastError ??
+        const LicenseRpcException(
+          'License RPC failed',
+          code: 'rpc_failed',
+        );
+  }
+
+  Duration _jitteredBackoffDelay(int attempt) {
+    final safeAttempt = attempt <= 1 ? 1 : attempt;
+    final baseMs =
+        _baseBackoffDelay.inMilliseconds * (1 << (safeAttempt - 1));
+    final cappedMs = min(baseMs, _maxBackoffDelay.inMilliseconds);
+    final jitter = 0.8 + (_random.nextDouble() * 0.4);
+    final withJitter = (cappedMs * jitter).round();
+    return Duration(milliseconds: withJitter.clamp(0, _maxBackoffDelay.inMilliseconds));
+  }
+
+  bool _isFatalServerCode(String? code) {
+    final c = (code ?? '').trim();
+    if (c.isEmpty) return false;
+    const fatal = <String>{
+      'compromise_detected',
+      'refresh_token_reuse',
+      'kill_switch_enabled',
+    };
+    return fatal.contains(c);
   }
 
   Future<LicenseRpcResponse> _callRpc(
@@ -207,13 +283,20 @@ class LicenseRpcService {
     http.Response response;
     try {
       response = await _httpClient.post(
-        uri,
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': anonKey,
-          'Authorization': 'Bearer $anonKey',
-        },
-        body: jsonEncode(body),
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': anonKey,
+              'Authorization': 'Bearer $anonKey',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(_requestTimeout);
+    } on TimeoutException {
+      throw const LicenseRpcException(
+        'License RPC timeout',
+        code: 'timeout',
+        retriable: true,
       );
     } on Exception {
       throw const LicenseRpcException(

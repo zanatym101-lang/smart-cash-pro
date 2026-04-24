@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -84,6 +85,84 @@ void main() {
         isA<LicenseRpcException>()
             .having((e) => e.code, 'code', 'license_not_active')
             .having((e) => e.statusCode, 'statusCode', 400),
+      ),
+    );
+  });
+
+  test('validateLicense applies retry/backoff and succeeds after transient failures', () async {
+    var callCount = 0;
+    final slept = <Duration>[];
+    final client = MockClient((request) async {
+      callCount += 1;
+      if (callCount < 3) {
+        return http.Response(
+          jsonEncode(<String, dynamic>{
+            'error_code': 'server_unavailable',
+            'message': 'temporary failure',
+          }),
+          503,
+          headers: const {'content-type': 'application/json'},
+        );
+      }
+      return http.Response(
+        jsonEncode(<String, dynamic>{'ok': true}),
+        200,
+        headers: const {'content-type': 'application/json'},
+      );
+    });
+
+    final service = LicenseRpcService(
+      supabaseUrl: 'https://example.supabase.co',
+      anonKey: 'anon-key',
+      httpClient: client,
+      maxRetryAttempts: 3,
+      baseBackoffDelay: const Duration(milliseconds: 100),
+      maxBackoffDelay: const Duration(milliseconds: 500),
+      sleep: (delay) async => slept.add(delay),
+      random: Random(1),
+    );
+
+    final result = await service.validateLicense(
+      const ValidateLicenseRpcRequest(
+        accessToken: 'access-token',
+        deviceId: 'device-1',
+      ),
+    );
+
+    expect(result.ok, isTrue);
+    expect(callCount, 3);
+    expect(slept.length, 2);
+    expect(slept.first.inMilliseconds, greaterThan(0));
+    expect(slept.last.inMilliseconds, greaterThan(slept.first.inMilliseconds));
+  });
+
+  test('refreshSession retries are limited and throw on persistent timeout', () async {
+    final client = MockClient((request) async {
+      throw http.ClientException('offline');
+    });
+
+    final service = LicenseRpcService(
+      supabaseUrl: 'https://example.supabase.co',
+      anonKey: 'anon-key',
+      httpClient: client,
+      maxRetryAttempts: 2,
+      sleep: (_) async {},
+    );
+
+    await expectLater(
+      service.refreshSession(
+        const RefreshSessionRpcRequest(
+          refreshToken: 'refresh',
+          deviceId: 'device-1',
+          idempotencyKey: 'idem-1',
+        ),
+      ),
+      throwsA(
+        isA<LicenseRpcException>().having(
+          (e) => e.code,
+          'code',
+          'network_error',
+        ),
       ),
     );
   });
