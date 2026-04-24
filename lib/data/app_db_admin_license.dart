@@ -11,6 +11,9 @@ extension AppDbAdminLicense on AppDb {
   static const bool _allowLegacyLocalActivation =
       bool.fromEnvironment('FLUTTER_TEST', defaultValue: false) ||
       !bool.fromEnvironment('dart.vm.product');
+  static bool? debugForceServerAuthoritativeLicenseForTests;
+  static LicenseRpcService Function()?
+  debugServerAuthoritativeLicenseServiceFactoryForTests;
 
   ({Map<String, dynamic> license, bool changed}) _ensureLicense(
     Map<String, dynamic> m,
@@ -76,6 +79,38 @@ extension AppDbAdminLicense on AppDb {
     }
     if (!license.containsKey('cloudActivatedAt')) {
       license['cloudActivatedAt'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagLastCheckAt')) {
+      license['serverAuthDiagLastCheckAt'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagLastMode')) {
+      license['serverAuthDiagLastMode'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagLastOk')) {
+      license['serverAuthDiagLastOk'] = false;
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagLastError')) {
+      license['serverAuthDiagLastError'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagLastErrorCode')) {
+      license['serverAuthDiagLastErrorCode'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthDiagLastSource')) {
+      license['serverAuthDiagLastSource'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthRefreshToken')) {
+      license['serverAuthRefreshToken'] = '';
+      changed = true;
+    }
+    if (!license.containsKey('serverAuthRefreshTokenExpiresAt')) {
+      license['serverAuthRefreshTokenExpiresAt'] = '';
       changed = true;
     }
 
@@ -208,6 +243,8 @@ extension AppDbAdminLicense on AppDb {
     license['cloudLastCheckAt'] = '';
     license['cloudLastError'] = '';
     license['cloudActivatedAt'] = '';
+    license['serverAuthRefreshToken'] = '';
+    license['serverAuthRefreshTokenExpiresAt'] = '';
     license['activationCode'] = '';
   }
 
@@ -250,6 +287,176 @@ extension AppDbAdminLicense on AppDb {
     };
     if (code == null || code.trim().isEmpty) return true;
     return !blocked.contains(code.trim());
+  }
+
+  bool _isServerAuthoritativeLicenseEnabled() {
+    final forced = debugForceServerAuthoritativeLicenseForTests;
+    if (forced != null) return forced;
+    return useServerAuthoritativeLicense;
+  }
+
+  LicenseRpcService _serverAuthoritativeLicenseService() {
+    final factory = debugServerAuthoritativeLicenseServiceFactoryForTests;
+    if (factory != null) return factory();
+    return LicenseRpcService();
+  }
+
+  String _newLicenseIdempotencyKey(String scope) {
+    final now = DateTime.now().toUtc().microsecondsSinceEpoch;
+    final rand = Random().nextInt(1 << 30);
+    return '$scope-$now-$rand';
+  }
+
+  String _serverAuthoritativeActivationErrorMessage({
+    required String? code,
+    required String fallback,
+  }) {
+    switch ((code ?? '').trim()) {
+      case 'invalid_activation_code':
+        return 'كود التفعيل غير صحيح';
+      case 'license_not_active':
+        return 'الترخيص غير نشط حاليًا';
+      case 'license_expired':
+        return 'انتهت صلاحية الترخيص';
+      case 'device_limit_exceeded':
+        return 'تم الوصول للحد الأقصى للأجهزة لهذا الترخيص';
+      case 'device_revoked':
+        return 'هذا الجهاز موقوف لهذا الترخيص';
+      case 'missing_supabase_config':
+        return 'إعدادات خادم التفعيل غير مكتملة';
+      case 'network_error':
+        return 'تعذر الاتصال بخادم التفعيل';
+      default:
+        return fallback;
+    }
+  }
+
+  Future<bool> _activateViaServerAuthoritativeRpc({
+    required Map<String, dynamic> license,
+    required String normalizedCode,
+    required String deviceCode,
+    required String deviceFingerprintHash,
+  }) async {
+    final service = _serverAuthoritativeLicenseService();
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final result = await service.activateLicense(
+      ActivateLicenseRpcRequest(
+        activationCode: normalizedCode,
+        deviceId: deviceCode,
+        deviceFingerprintHash: deviceFingerprintHash,
+        appVersion: _licenseCloudAppVersion,
+        platform: Platform.operatingSystem,
+        idempotencyKey: _newLicenseIdempotencyKey('activate'),
+      ),
+    );
+
+    if (!result.ok) {
+      if (result.errorCode == 'invalid_activation_code') return false;
+      throw Exception(
+        _serverAuthoritativeActivationErrorMessage(
+          code: result.errorCode,
+          fallback: result.message ?? 'فشل التفعيل عبر الخادم',
+        ),
+      );
+    }
+
+    final accessToken = (result.raw['access_token'] ?? '').toString().trim();
+    final refreshToken = (result.raw['refresh_token'] ?? '').toString().trim();
+    if (accessToken.isEmpty || refreshToken.isEmpty) {
+      throw Exception('استجابة خادم التفعيل غير مكتملة');
+    }
+
+    final accessExpiresAt = _parseUtcDate(result.raw['access_expires_at']);
+    final refreshExpiresAt = _parseUtcDate(result.raw['refresh_expires_at']);
+    final graceEndsAt = _parseUtcDate(result.raw['grace_ends_at']);
+
+    license['cloudToken'] = accessToken;
+    license['cloudTokenExpiresAt'] = accessExpiresAt?.toIso8601String() ?? '';
+    if (graceEndsAt != null) {
+      license['cloudLicenseExpiresAt'] = graceEndsAt.toIso8601String();
+    }
+    license['serverAuthRefreshToken'] = refreshToken;
+    license['serverAuthRefreshTokenExpiresAt'] =
+        refreshExpiresAt?.toIso8601String() ?? '';
+    license['cloudDeviceId'] = deviceCode;
+    license['cloudActivatedAt'] = nowIso;
+    license['cloudLastCheckAt'] = nowIso;
+    license['cloudLastError'] = '';
+    license['activationCode'] = normalizedCode;
+
+    return true;
+  }
+
+  Future<void> _runServerAuthoritativeLicenseDiagnostics({
+    required Map<String, dynamic> license,
+    required String deviceCode,
+  }) async {
+    if (!_isServerAuthoritativeLicenseEnabled()) return;
+
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final token = (license['cloudToken'] ?? '').toString().trim();
+    var source = 'none';
+    var ok = false;
+    var error = '';
+    var errorCode = '';
+
+    if (token.isEmpty) {
+      source = 'skipped';
+      error = 'missing_cloud_token';
+      errorCode = 'missing_token';
+    } else {
+      final service = _serverAuthoritativeLicenseService();
+
+      Future<LicenseRpcResponse> callHeartbeat() {
+        return service.heartbeatLicense(
+          HeartbeatLicenseRpcRequest(
+            accessToken: token,
+            deviceId: deviceCode,
+            appVersion: _licenseCloudAppVersion,
+          ),
+        );
+      }
+
+      try {
+        source = 'validate';
+        var response = await service.validateLicense(
+          ValidateLicenseRpcRequest(accessToken: token, deviceId: deviceCode),
+        );
+        if (!response.ok) {
+          source = 'heartbeat';
+          response = await callHeartbeat();
+        }
+        ok = response.ok;
+        error = response.message ?? '';
+        errorCode = response.errorCode ?? '';
+      } on LicenseRpcException catch (e) {
+        source = 'heartbeat';
+        try {
+          final response = await callHeartbeat();
+          ok = response.ok;
+          error = response.message ?? '';
+          errorCode = response.errorCode ?? '';
+        } on LicenseRpcException catch (heartbeatError) {
+          ok = false;
+          error = heartbeatError.message;
+          errorCode =
+              heartbeatError.code ??
+              e.code ??
+              'server_authoritative_license_error';
+        }
+      } catch (e) {
+        ok = false;
+        error = e.toString();
+        errorCode = 'server_authoritative_license_error';
+      }
+    }
+
+    license['serverAuthDiagLastCheckAt'] = nowIso;
+    license['serverAuthDiagLastMode'] = source;
+    license['serverAuthDiagLastOk'] = ok;
+    license['serverAuthDiagLastError'] = error;
+    license['serverAuthDiagLastErrorCode'] = errorCode;
+    license['serverAuthDiagLastSource'] = 'phase_b_diagnostic';
   }
 
   Future<bool> _syncCloudLicense(
@@ -340,6 +547,11 @@ extension AppDbAdminLicense on AppDb {
       }
     }
 
+    await _runServerAuthoritativeLicenseDiagnostics(
+      license: license,
+      deviceCode: deviceCode,
+    );
+
     final installDate =
         DateTime.tryParse((license['installDate'] ?? '').toString()) ??
         DateTime.now();
@@ -394,6 +606,7 @@ extension AppDbAdminLicense on AppDb {
     final normalizedCode = code.trim().toUpperCase();
     if (normalizedCode.isEmpty) return false;
     final deviceCode = await _deviceCode();
+    final useServerAuthoritative = _isServerAuthoritativeLicenseEnabled();
     final expectedLegacyCode = generateActivationCodeForDeviceCode(deviceCode);
     if (_allowLegacyLocalActivation &&
         _normalizeCode(normalizedCode) == _normalizeCode(expectedLegacyCode)) {
@@ -401,6 +614,30 @@ extension AppDbAdminLicense on AppDb {
       m['license'] = license;
       await _writeSettingsMap(m);
       return true;
+    }
+    if (useServerAuthoritative) {
+      try {
+        final deviceFingerprintHash = _hashHex(await _deviceFingerprint());
+        final activated = await _activateViaServerAuthoritativeRpc(
+          license: license,
+          normalizedCode: normalizedCode,
+          deviceCode: deviceCode,
+          deviceFingerprintHash: deviceFingerprintHash,
+        );
+        m['license'] = license;
+        await _writeSettingsMap(m);
+        return activated;
+      } on LicenseRpcException catch (e) {
+        if (e.code == 'invalid_activation_code') {
+          return false;
+        }
+        throw Exception(
+          _serverAuthoritativeActivationErrorMessage(
+            code: e.code,
+            fallback: e.message,
+          ),
+        );
+      }
     }
     try {
       final activation = await LicenseCloudService.activate(
@@ -474,5 +711,53 @@ extension AppDbAdminLicense on AppDb {
     m['license'] = license;
     await _writeSettingsMap(m);
     return true;
+  }
+
+  Future<void> runServerAuthoritativeLicenseDiagnosticsForTesting({
+    required Map<String, dynamic> license,
+    required String deviceCode,
+  }) async {
+    await _runServerAuthoritativeLicenseDiagnostics(
+      license: license,
+      deviceCode: deviceCode,
+    );
+  }
+
+  Future<bool> activateWithCodeForTesting({
+    required Map<String, dynamic> license,
+    required String code,
+    required String deviceCode,
+    required String deviceFingerprintHash,
+  }) async {
+    final normalizedCode = code.trim().toUpperCase();
+    if (normalizedCode.isEmpty) return false;
+    final expectedLegacyCode = generateActivationCodeForDeviceCode(deviceCode);
+    if (_allowLegacyLocalActivation &&
+        _normalizeCode(normalizedCode) == _normalizeCode(expectedLegacyCode)) {
+      _applyLegacyLocalActivation(license, normalizedCode);
+      return true;
+    }
+    if (_isServerAuthoritativeLicenseEnabled()) {
+      try {
+        return await _activateViaServerAuthoritativeRpc(
+          license: license,
+          normalizedCode: normalizedCode,
+          deviceCode: deviceCode,
+          deviceFingerprintHash: deviceFingerprintHash,
+        );
+      } on LicenseRpcException catch (e) {
+        if (e.code == 'invalid_activation_code') {
+          return false;
+        }
+        throw Exception(
+          _serverAuthoritativeActivationErrorMessage(
+            code: e.code,
+            fallback: e.message,
+          ),
+        );
+      }
+    }
+    // Testing helper intentionally avoids network in legacy cloud mode.
+    return false;
   }
 }

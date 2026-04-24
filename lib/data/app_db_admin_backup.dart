@@ -222,23 +222,77 @@ extension AppDbAdminBackup on AppDb {
     'adminPinGuard',
   };
 
+  static const Set<String> _sensitiveLicenseSettingsKeys = <String>{
+    'activationCode',
+    'cloudToken',
+    'cloudTokenExpiresAt',
+    'cloudLicenseExpiresAt',
+    'cloudDeviceId',
+    'cloudLastCheckAt',
+    'cloudLastError',
+    'cloudActivatedAt',
+    'serverAuthRefreshToken',
+    'serverAuthRefreshTokenExpiresAt',
+  };
+
+  Map<String, dynamic> _sanitizeLicenseSettings(Map<String, dynamic> settings) {
+    final copy = Map<String, dynamic>.from(settings);
+    final rawLicense = copy['license'];
+    if (rawLicense is Map) {
+      final license = Map<String, dynamic>.from(
+        rawLicense.map((k, v) => MapEntry(k.toString(), v)),
+      );
+      final keys = List<String>.from(license.keys);
+      for (final key in keys) {
+        if (_sensitiveLicenseSettingsKeys.contains(key) ||
+            key.startsWith('serverAuthDiag')) {
+          license.remove(key);
+        }
+      }
+      copy['license'] = license;
+    }
+    return copy;
+  }
+
   Map<String, dynamic> _backupableSettingsMap(Map<String, dynamic> settings) {
     final copy = Map<String, dynamic>.from(settings);
     for (final key in _localOnlySettingsKeys) {
       copy.remove(key);
     }
-    return copy;
+    return _sanitizeLicenseSettings(copy);
   }
 
   Map<String, dynamic> _mergeRestoredSettingsWithLocal({
     required Map<String, dynamic> restored,
     required Map<String, dynamic> current,
   }) {
-    final merged = Map<String, dynamic>.from(restored);
+    final merged = _sanitizeLicenseSettings(restored);
     for (final key in _localOnlySettingsKeys) {
       if (current.containsKey(key)) {
         merged[key] = current[key];
       }
+    }
+
+    final currentLicenseRaw = current['license'];
+    final mergedLicenseRaw = merged['license'];
+    if (currentLicenseRaw is Map) {
+      final currentLicense = Map<String, dynamic>.from(
+        currentLicenseRaw.map((k, v) => MapEntry(k.toString(), v)),
+      );
+      final mergedLicense = mergedLicenseRaw is Map
+          ? Map<String, dynamic>.from(
+              mergedLicenseRaw.map((k, v) => MapEntry(k.toString(), v)),
+            )
+          : <String, dynamic>{};
+
+      for (final entry in currentLicense.entries) {
+        final key = entry.key;
+        if (_sensitiveLicenseSettingsKeys.contains(key) ||
+            key.startsWith('serverAuthDiag')) {
+          mergedLicense[key] = entry.value;
+        }
+      }
+      merged['license'] = mergedLicense;
     }
     return merged;
   }
