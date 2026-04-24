@@ -1095,6 +1095,42 @@ void main() {
   );
 
   test(
+    'admin PIN remains blocked during lockout then works after lockout expiry',
+    () async {
+      final db = AppDb.instance;
+      final adminSecurity = AdminSecurityService.instance;
+
+      await adminSecurity.setAdminPin('2468');
+
+      for (var i = 0; i < 5; i++) {
+        expect(await adminSecurity.verifyAdminPin('0000'), isFalse);
+      }
+
+      var status = await adminSecurity.getAdminPinStatus();
+      expect(status.locked, isTrue);
+      expect(await adminSecurity.verifyAdminPin('2468'), isFalse);
+
+      final settings = await db.readRawSettingsMap();
+      final guard = settings['adminPinGuard'];
+      final guardMap = guard is Map
+          ? Map<String, dynamic>.from(
+              guard.map((k, v) => MapEntry(k.toString(), v)),
+            )
+          : <String, dynamic>{};
+      guardMap['failedAttempts'] = 5;
+      guardMap['lockedUntil'] = DateTime.now()
+          .subtract(const Duration(minutes: 1))
+          .toIso8601String();
+      settings['adminPinGuard'] = guardMap;
+      await db.writeRawSettingsMap(settings);
+
+      status = await adminSecurity.getAdminPinStatus();
+      expect(status.locked, isFalse);
+      expect(await adminSecurity.verifyAdminPin('2468'), isTrue);
+    },
+  );
+
+  test(
     'json restore fails when checksum sidecar exists and is mismatched',
     () async {
       final db = AppDb.instance;
@@ -1114,6 +1150,78 @@ void main() {
 
       await db.resetDatabaseEmpty();
       expect(() => db.restoreJsonBackupFromPath(backupPath), throwsException);
+    },
+  );
+
+  test(
+    'failed json restore keeps current state unchanged and integrity stays ok',
+    () async {
+      final db = AppDb.instance;
+
+      final walletId = await db.addWallet(
+        name: 'Restore Guard Wallet',
+        phone: '01193939393',
+        openingBalance: 120,
+      );
+      await db.addExternalFunding(
+        walletId: walletId,
+        amount: 30,
+        note: 'baseline_before_failed_restore',
+      );
+
+      final badPath =
+          '${supportDir.path}${Platform.pathSeparator}invalid_restore_input.json';
+      await File(badPath).writeAsString('not-a-json-payload', flush: true);
+
+      expect(() => db.restoreJsonBackupFromPath(badPath), throwsException);
+
+      final wallets = await db.listWallets();
+      expect(
+        wallets.any((w) => w.name == 'Restore Guard Wallet' && w.id == walletId),
+        isTrue,
+      );
+      expect(await db.getWalletBalance(walletId), closeTo(150, 0.0001));
+
+      final integrity = await db.runIntegrityCheck(force: true);
+      expect(integrity.ok, isTrue);
+    },
+  );
+
+  test(
+    'restore from missing path keeps current state unchanged and integrity stays ok',
+    () async {
+      final db = AppDb.instance;
+
+      final walletId = await db.addWallet(
+        name: 'Missing Path Guard Wallet',
+        phone: '01194949494',
+        openingBalance: 140,
+      );
+      await db.addExternalFunding(
+        walletId: walletId,
+        amount: 20,
+        note: 'baseline_before_missing_path_restore',
+      );
+
+      final missingPath =
+          '${supportDir.path}${Platform.pathSeparator}missing_restore_input.json';
+      if (File(missingPath).existsSync()) {
+        File(missingPath).deleteSync();
+      }
+
+      expect(() => db.restoreJsonBackupFromPath(missingPath), throwsException);
+
+      final wallets = await db.listWallets();
+      expect(
+        wallets.any(
+          (w) => w.name == 'Missing Path Guard Wallet' && w.id == walletId,
+        ),
+        isTrue,
+      );
+      expect(await db.getWalletBalance(walletId), closeTo(160, 0.0001));
+
+      final integrity = await db.runIntegrityCheck(force: true);
+      expect(integrity.ok, isTrue);
     },
   );
 

@@ -765,6 +765,167 @@ void main() {
     expect(posted.any((t) => t.id == txId), isTrue);
   });
 
+  testWidgets(
+    'pending bulk approve ignores items that are no longer pending',
+    (tester) async {
+      final db = AppDb.instance;
+      final walletId = (await tester.runAsync(
+        () => db.addWallet(
+          name: 'Bulk Pending Wallet',
+          phone: '01056565656',
+          openingBalance: 2000,
+        ),
+      ))!;
+
+      final txIdA = (await tester.runAsync(
+        () => db.addTransfer(
+          walletId: walletId,
+          amount: 100,
+          clientFee: 4,
+          networkFee: 1,
+          transferType: 'type1',
+          isPending: true,
+          party: 'Bulk A',
+        ),
+      ))!;
+      final txIdB = (await tester.runAsync(
+        () => db.addTransfer(
+          walletId: walletId,
+          amount: 110,
+          clientFee: 5,
+          networkFee: 1,
+          transferType: 'type1',
+          isPending: true,
+          party: 'Bulk B',
+        ),
+      ))!;
+      final txIdC = (await tester.runAsync(
+        () => db.addTransfer(
+          walletId: walletId,
+          amount: 120,
+          clientFee: 6,
+          networkFee: 1,
+          transferType: 'type1',
+          isPending: true,
+          party: 'Bulk C',
+        ),
+      ))!;
+
+      final selectedTxnIds = <int>{txIdA, txIdB, txIdC};
+
+      await tester.runAsync(() async {
+        await db.cancelPending(txIdA);
+        final currentPending = await db.listTxns(status: 'pending');
+        final currentPendingIds = currentPending.map((t) => t.id).toSet();
+        final actionableIds = selectedTxnIds
+            .where((id) => currentPendingIds.contains(id))
+            .toList();
+        for (final id in actionableIds) {
+          await db.confirmPending(id);
+        }
+      });
+
+      final allTxns = (await tester.runAsync(() => db.listTxns()))!;
+      final byId = {for (final t in allTxns) t.id: t};
+      expect(byId[txIdA]?.status, 'canceled');
+      expect(byId[txIdB]?.status, 'posted');
+      expect(byId[txIdC]?.status, 'posted');
+      expect(allTxns.where((t) => t.status == 'pending').length, 0);
+
+      final audit = (await tester.runAsync(() => db.listAudit(limit: 200)))!;
+      final aConfirms = audit.where(
+        (e) =>
+            e['type'] == 'pending_confirm' &&
+            ((e['txnId'] as num?)?.toInt() == txIdA),
+      );
+      expect(aConfirms.length, 0);
+    },
+  );
+
+  testWidgets(
+    'pending bulk cancel ignores items that are no longer pending',
+    (tester) async {
+      final db = AppDb.instance;
+      final walletId = (await tester.runAsync(
+        () => db.addWallet(
+          name: 'Bulk Cancel Wallet',
+          phone: '01057575757',
+          openingBalance: 2200,
+        ),
+      ))!;
+
+      final txIdA = (await tester.runAsync(
+        () => db.addTransfer(
+          walletId: walletId,
+          amount: 100,
+          clientFee: 4,
+          networkFee: 1,
+          transferType: 'type1',
+          isPending: true,
+          party: 'Cancel A',
+        ),
+      ))!;
+      final txIdB = (await tester.runAsync(
+        () => db.addTransfer(
+          walletId: walletId,
+          amount: 130,
+          clientFee: 5,
+          networkFee: 1,
+          transferType: 'type1',
+          isPending: true,
+          party: 'Cancel B',
+        ),
+      ))!;
+      final txIdC = (await tester.runAsync(
+        () => db.addTransfer(
+          walletId: walletId,
+          amount: 140,
+          clientFee: 6,
+          networkFee: 1,
+          transferType: 'type1',
+          isPending: true,
+          party: 'Cancel C',
+        ),
+      ))!;
+
+      final selectedTxnIds = <int>{txIdA, txIdB, txIdC};
+      var aCancelCountBeforeBulk = 0;
+
+      await tester.runAsync(() async {
+        await db.cancelPending(txIdA);
+        final auditBeforeBulk = await db.listAudit(limit: 200);
+        aCancelCountBeforeBulk = auditBeforeBulk.where(
+          (e) =>
+              e['type'] == 'pending_cancel' &&
+              ((e['txnId'] as num?)?.toInt() == txIdA),
+        ).length;
+        final currentPending = await db.listTxns(status: 'pending');
+        final currentPendingIds = currentPending.map((t) => t.id).toSet();
+        final actionableIds = selectedTxnIds
+            .where((id) => currentPendingIds.contains(id))
+            .toList();
+        for (final id in actionableIds) {
+          await db.cancelPending(id);
+        }
+      });
+
+      final allTxns = (await tester.runAsync(() => db.listTxns()))!;
+      final byId = {for (final t in allTxns) t.id: t};
+      expect(byId[txIdA]?.status, 'canceled');
+      expect(byId[txIdB]?.status, 'canceled');
+      expect(byId[txIdC]?.status, 'canceled');
+      expect(allTxns.where((t) => t.status == 'pending').length, 0);
+
+      final audit = (await tester.runAsync(() => db.listAudit(limit: 200)))!;
+      final aCancels = audit.where(
+        (e) =>
+            e['type'] == 'pending_cancel' &&
+            ((e['txnId'] as num?)?.toInt() == txIdA),
+      );
+      expect(aCancels.length, aCancelCountBeforeBulk);
+    },
+  );
+
   testWidgets('ledger screen smoke opens details (ignore known overflow)', (
     tester,
   ) async {
