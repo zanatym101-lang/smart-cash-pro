@@ -725,12 +725,10 @@ extension AppDbAdminLicense on AppDb {
     }
   }
 
-  Future<LicenseInfo> getLicenseInfo() async {
-    final m = await _readSettingsMap();
-    final ensured = _ensureLicense(m);
-    final license = ensured.license;
-    final deviceCode = await _deviceCode();
-    final before = jsonEncode(license);
+  Future<bool> _legacyLicenseActivationDecision(
+    Map<String, dynamic> license,
+    String deviceCode,
+  ) async {
     final isLegacyActivated =
         _allowLegacyLocalActivation &&
         _isLegacyActivationValid(license, deviceCode);
@@ -753,10 +751,335 @@ extension AppDbAdminLicense on AppDb {
       }
     }
 
-    await _runServerAuthoritativeLicenseDiagnostics(
-      license: license,
-      deviceCode: deviceCode,
-    );
+    return isActivated;
+  }
+
+  String _normalizeServerDecisionErrorCode(String? code) {
+    switch ((code ?? '').trim()) {
+      case 'license_not_active':
+      case 'license_revoked':
+        return 'license_revoked';
+      case 'license_expired':
+        return 'license_expired';
+      case 'device_not_active':
+      case 'device_revoked':
+        return 'device_revoked';
+      case 'session_revoked':
+      case 'session_expired':
+      case 'invalid_access_token':
+      case 'invalid_refresh_token':
+        return 'session_revoked';
+      case 'refresh_token_reused':
+      case 'compromise_detected':
+        return 'compromise_detected';
+      default:
+        return (code ?? '').trim();
+    }
+  }
+
+  bool _isServerTerminalNotLicensedCode(String? code) {
+    const blocked = <String>{
+      'license_not_active',
+      'license_revoked',
+      'license_expired',
+      'device_not_active',
+      'device_revoked',
+      'session_revoked',
+      'session_expired',
+      'invalid_access_token',
+      'invalid_refresh_token',
+      'compromise_detected',
+      'refresh_token_reused',
+    };
+    return blocked.contains((code ?? '').trim());
+  }
+
+  bool _isServerOutageCode(String? code) {
+    const outage = <String>{
+      'network_error',
+      'timeout',
+      'server_unavailable',
+      'server_authoritative_license_error',
+      'invalid_response',
+    };
+    return outage.contains((code ?? '').trim());
+  }
+
+  bool _isWithinServerGraceWindow(Map<String, dynamic> license) {
+    final graceEndsAt = _parseUtcDate(license['cloudLicenseExpiresAt']);
+    if (graceEndsAt == null) return false;
+    return graceEndsAt.isAfter(DateTime.now().toUtc());
+  }
+
+  void _setServerDecisionDiagnostic({
+    required Map<String, dynamic> license,
+    required String source,
+    required bool ok,
+    required String errorCode,
+    required String error,
+    String diagSource = 'phase_d0_decision',
+  }) {
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    license['serverAuthDiagLastCheckAt'] = nowIso;
+    license['serverAuthDiagLastMode'] = source;
+    license['serverAuthDiagLastOk'] = ok;
+    license['serverAuthDiagLastError'] = error;
+    license['serverAuthDiagLastErrorCode'] =
+        _normalizeServerDecisionErrorCode(errorCode);
+    license['serverAuthDiagLastSource'] = diagSource;
+    license['cloudLastCheckAt'] = nowIso;
+    if (error.isNotEmpty) {
+      license['cloudLastError'] = error;
+    } else {
+      license['cloudLastError'] = '';
+    }
+  }
+
+  Future<bool> _serverAuthoritativeLicenseDecision(
+    Map<String, dynamic> license,
+    String deviceCode,
+  ) async {
+    if (_isServerKillSwitchEnabled(license)) {
+      final fallback = await _legacyLicenseActivationDecision(license, deviceCode);
+      _setServerDecisionDiagnostic(
+        license: license,
+        source: 'kill_switch_legacy',
+        ok: fallback,
+        errorCode: 'kill_switch_enabled',
+        error: 'server_authoritative_disabled',
+      );
+      return fallback;
+    }
+
+    final token = (license['cloudToken'] ?? '').toString().trim();
+    if (token.isEmpty) {
+      _setServerDecisionDiagnostic(
+        license: license,
+        source: 'missing_token',
+        ok: false,
+        errorCode: 'missing_token',
+        error: 'missing_cloud_token',
+      );
+      return false;
+    }
+
+    final service = _serverAuthoritativeLicenseService();
+
+    Future<LicenseRpcResponse?> refreshIfNeeded(String? fromCode) async {
+      final refreshToken = (license['serverAuthRefreshToken'] ?? '')
+          .toString()
+          .trim();
+      if (refreshToken.isEmpty || !_shouldTryServerSessionRefresh(fromCode)) {
+        return null;
+      }
+      return service.refreshSession(
+        RefreshSessionRpcRequest(
+          refreshToken: refreshToken,
+          deviceId: deviceCode,
+          idempotencyKey: _newLicenseIdempotencyKey('refresh'),
+        ),
+      );
+    }
+
+    Future<bool> applySuccess({
+      required LicenseRpcResponse response,
+      required String source,
+    }) async {
+      final nowIso = DateTime.now().toUtc().toIso8601String();
+      _applyRefreshedServerTokens(license, response, nowIso);
+      _setServerDecisionDiagnostic(
+        license: license,
+        source: source,
+        ok: true,
+        errorCode: '',
+        error: '',
+      );
+      return true;
+    }
+
+    try {
+      final validate = await service.validateLicense(
+        ValidateLicenseRpcRequest(accessToken: token, deviceId: deviceCode),
+      );
+      if (_responseHasServerKillSwitch(validate)) {
+        license['serverAuthDiagKillSwitchEnabled'] = true;
+        final fallback = await _legacyLicenseActivationDecision(license, deviceCode);
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'kill_switch_legacy',
+          ok: fallback,
+          errorCode: 'kill_switch_enabled',
+          error: 'server_authoritative_disabled',
+        );
+        return fallback;
+      }
+      if (validate.ok) {
+        return applySuccess(response: validate, source: 'validate');
+      }
+      if (_isServerTerminalNotLicensedCode(validate.errorCode)) {
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'validate_terminal',
+          ok: false,
+          errorCode: validate.errorCode ?? 'server_denied',
+          error: validate.message ?? 'server denied license',
+        );
+        return false;
+      }
+
+      final heartbeat = await service.heartbeatLicense(
+        HeartbeatLicenseRpcRequest(
+          accessToken: token,
+          deviceId: deviceCode,
+          appVersion: _licenseCloudAppVersion,
+        ),
+      );
+      if (_responseHasServerKillSwitch(heartbeat)) {
+        license['serverAuthDiagKillSwitchEnabled'] = true;
+        final fallback = await _legacyLicenseActivationDecision(license, deviceCode);
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'kill_switch_legacy',
+          ok: fallback,
+          errorCode: 'kill_switch_enabled',
+          error: 'server_authoritative_disabled',
+        );
+        return fallback;
+      }
+      if (heartbeat.ok) {
+        return applySuccess(response: heartbeat, source: 'heartbeat');
+      }
+      if (_isServerTerminalNotLicensedCode(heartbeat.errorCode)) {
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'heartbeat_terminal',
+          ok: false,
+          errorCode: heartbeat.errorCode ?? 'server_denied',
+          error: heartbeat.message ?? 'server denied license',
+        );
+        return false;
+      }
+
+      final refreshed = await refreshIfNeeded(heartbeat.errorCode);
+      if (refreshed != null) {
+        if (refreshed.ok) {
+          return applySuccess(response: refreshed, source: 'refresh');
+        }
+        if (_isServerTerminalNotLicensedCode(refreshed.errorCode)) {
+          final code = refreshed.errorCode ?? 'server_denied';
+          if (_isCompromiseErrorCode(code)) {
+            await _markServerCompromiseDiagnostic(
+              license: license,
+              code: code,
+              message: refreshed.message ?? 'compromise_detected',
+            );
+          }
+          _setServerDecisionDiagnostic(
+            license: license,
+            source: 'refresh_terminal',
+            ok: false,
+            errorCode: code,
+            error: refreshed.message ?? 'server denied license',
+          );
+          return false;
+        }
+      }
+
+      _setServerDecisionDiagnostic(
+        license: license,
+        source: 'server_denied',
+        ok: false,
+        errorCode: refreshed?.errorCode ?? heartbeat.errorCode ?? validate.errorCode ?? 'server_denied',
+        error: refreshed?.message ?? heartbeat.message ?? validate.message ?? 'server denied license',
+      );
+      return false;
+    } on LicenseRpcException catch (e) {
+      final code = e.code ?? 'server_authoritative_license_error';
+      if (_isCompromiseErrorCode(code)) {
+        await _markServerCompromiseDiagnostic(
+          license: license,
+          code: _normalizeServerDecisionErrorCode(code),
+          message: e.message,
+        );
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'compromise_detected',
+          ok: false,
+          errorCode: code,
+          error: e.message,
+        );
+        return false;
+      }
+      if (code == 'kill_switch_enabled') {
+        license['serverAuthDiagKillSwitchEnabled'] = true;
+        final fallback = await _legacyLicenseActivationDecision(license, deviceCode);
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'kill_switch_legacy',
+          ok: fallback,
+          errorCode: 'kill_switch_enabled',
+          error: 'server_authoritative_disabled',
+        );
+        return fallback;
+      }
+      if (_isServerOutageCode(code) && _isWithinServerGraceWindow(license)) {
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'outage_grace',
+          ok: true,
+          errorCode: code,
+          error: e.message,
+        );
+        return true;
+      }
+      _setServerDecisionDiagnostic(
+        license: license,
+        source: 'server_error',
+        ok: false,
+        errorCode: code,
+        error: e.message,
+      );
+      return false;
+    } catch (e) {
+      final message = e.toString();
+      if (_isWithinServerGraceWindow(license)) {
+        _setServerDecisionDiagnostic(
+          license: license,
+          source: 'outage_grace',
+          ok: true,
+          errorCode: 'server_authoritative_license_error',
+          error: message,
+        );
+        return true;
+      }
+      _setServerDecisionDiagnostic(
+        license: license,
+        source: 'server_error',
+        ok: false,
+        errorCode: 'server_authoritative_license_error',
+        error: message,
+      );
+      return false;
+    }
+  }
+
+  Future<LicenseInfo> getLicenseInfo() async {
+    final m = await _readSettingsMap();
+    final ensured = _ensureLicense(m);
+    final license = ensured.license;
+    final deviceCode = await _deviceCode();
+    final before = jsonEncode(license);
+    final useServerDecision = _isServerAuthoritativeLicenseEnabled();
+    final isActivated = useServerDecision
+        ? await _serverAuthoritativeLicenseDecision(license, deviceCode)
+        : await _legacyLicenseActivationDecision(license, deviceCode);
+
+    if (!useServerDecision) {
+      await _runServerAuthoritativeLicenseDiagnostics(
+        license: license,
+        deviceCode: deviceCode,
+      );
+    }
 
     final installDate =
         DateTime.tryParse((license['installDate'] ?? '').toString()) ??
