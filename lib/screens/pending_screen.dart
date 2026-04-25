@@ -156,11 +156,11 @@ class _PendingScreenState extends State<PendingScreen> {
     // تمويل محفظة • إلى: Orange
     switch (t.kind) {
       case 'transfer':
-        return 'تحويل (${t.mode}) • من: ${_walletName(t.walletFromId)}';
+        return 'تحويل آجل (${t.mode}) • من: ${_walletName(t.walletFromId)}';
       case 'external_funding':
       case 'deposit':
       case 'receive':
-        return 'استلام • إلى: ${_walletName(t.walletToId)}';
+        return 'استلام آجل • إلى: ${_walletName(t.walletToId)}';
       case 'drawer_deposit':
       case 'drawer_fund':
         return 'تمويل درج';
