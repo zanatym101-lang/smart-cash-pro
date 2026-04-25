@@ -165,11 +165,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
       String pendingLabel(Txn t) {
         switch (t.kind) {
           case 'transfer':
-            return 'تحويل معلّق';
+            return 'تحويل آجل';
           case 'receive':
-            return 'استلام معلّق';
+            return 'استلام آجل';
           case 'fawry_credit':
-            return 'فوري آجل معلّق';
+            return 'فوري آجل';
           default:
             return t.kind;
         }
@@ -334,7 +334,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   date: t.entryDate,
                   side: _LineSide.receivable,
                   amount: due,
-                  title: 'تحويل معلّق',
+                  title: 'تحويل آجل',
                   details: _detailsForTransfer(t),
                   ref: 'Txn#${t.id}',
                   lineType: _CustomerLineType.txn,
@@ -358,7 +358,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   date: t.entryDate,
                   side: _LineSide.payable,
                   amount: due,
-                  title: 'استلام معلّق',
+                  title: 'استلام آجل',
                   details: _detailsForReceive(t),
                   ref: 'Txn#${t.id}',
                   lineType: _CustomerLineType.txn,
@@ -382,7 +382,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   date: t.entryDate,
                   side: _LineSide.receivable,
                   amount: due,
-                  title: 'فوري آجل معلّق',
+                  title: 'فوري آجل',
                   details: _detailsForFawry(t),
                   ref: 'Txn#${t.id}',
                   lineType: _CustomerLineType.txn,
@@ -623,9 +623,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
   String _kindLabel(Txn t) {
     switch (t.kind) {
       case 'transfer':
-        return 'تحويل';
+        return t.status == 'pending' ? 'تحويل آجل' : 'تحويل';
       case 'receive':
-        return 'استلام';
+        return t.status == 'pending' ? 'استلام آجل' : 'استلام';
       case 'fawry_cash':
         return 'فوري نقدي';
       case 'fawry_credit':
@@ -1893,7 +1893,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             ),
             ListTile(
               leading: const Icon(Icons.swap_horiz),
-              title: const Text('تحويل معلّق'),
+              title: const Text('تحويل آجل'),
               onTap: () => Navigator.of(ctx).pop('transfer_pending'),
             ),
             ListTile(
@@ -1903,7 +1903,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             ),
             ListTile(
               leading: const Icon(Icons.call_received),
-              title: const Text('استلام معلّق'),
+              title: const Text('استلام آجل'),
               onTap: () => Navigator.of(ctx).pop('receive_pending'),
             ),
             ListTile(
@@ -2104,14 +2104,14 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       return (line.remainingAfter ?? 0) > 0 ? 'سداد جزئي' : 'سداد كامل';
     }
     if (line.txnKind == 'transfer') {
-      return line.txnStatus == 'pending' ? 'تحويل معلّق' : 'تحويل';
+      return line.txnStatus == 'pending' ? 'تحويل آجل' : 'تحويل';
     }
     if (line.txnKind == 'receive') {
-      return line.txnStatus == 'pending' ? 'استلام معلّق' : 'استلام';
+      return line.txnStatus == 'pending' ? 'استلام آجل' : 'استلام';
     }
     if (line.txnKind == 'fawry_cash') return 'فوري نقدي';
     if (line.txnKind == 'fawry_credit') {
-      return line.txnStatus == 'pending' ? 'فوري آجل معلّق' : 'فوري آجل';
+      return 'فوري آجل';
     }
     return line.title;
   }

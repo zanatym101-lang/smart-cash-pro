@@ -1568,7 +1568,7 @@ void main() {
   });
 
   test(
-    'confirm pending with prior settlement persists confirm update and adjust outbox entries',
+    'confirm pending with prior settlement persists confirm update without extra adjust entry',
     () async {
       final db = AppDb.instance;
 
@@ -1590,11 +1590,8 @@ void main() {
 
       await db.confirmPending(txnId);
 
-      final adjustTxn = (await db.listTxns(
-        kind: 'pending_settlement_adjust',
-        status: 'posted',
-      )).single;
       final outbox = await db.listOutbox(limit: 20);
+      final adjustTxns = await db.listTxns(kind: 'pending_settlement_adjust');
       expect(
         outbox.any(
           (e) =>
@@ -1604,15 +1601,7 @@ void main() {
         ),
         isTrue,
       );
-      expect(
-        outbox.any(
-          (e) =>
-              e.entity == 'txn' &&
-              e.entityId == adjustTxn.id.toString() &&
-              e.action == 'create',
-        ),
-        isTrue,
-      );
+      expect(adjustTxns, isEmpty);
     },
   );
 

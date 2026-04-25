@@ -42,13 +42,13 @@ extension AppDbTransactionsSettlement on AppDb {
     final isReceivable = src.kind == 'transfer' || src.kind == 'fawry_credit';
     final kind = isReceivable ? 'claim_collect' : 'claim_pay';
     final actionLabel = isReceivable
-        ? 'تحصيل مستحق (معلّق)'
-        : 'سداد مستحق (معلّق)';
+        ? 'تحصيل مستحق (آجل)'
+        : 'سداد مستحق (آجل)';
     final typeLabel = src.kind == 'transfer'
-        ? 'تحويل معلّق'
+        ? 'تحويل آجل'
         : src.kind == 'receive'
-        ? 'استلام معلّق'
-        : 'فوري آجل معلّق';
+        ? 'استلام آجل'
+        : 'فوري آجل';
 
     final settlementNote = note?.trim();
     final noteText =

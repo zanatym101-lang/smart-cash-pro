@@ -60,7 +60,8 @@ extension AppDbTransactionsApprove on AppDb {
       }
 
       final settled = _pendingSettledAmount(pendingTxn.id);
-      if (settled > 0 &&
+      if (!appliedOnCreate &&
+          settled > 0 &&
           (pendingTxn.kind == 'transfer' || pendingTxn.kind == 'receive')) {
         final adjustAmount = pendingTxn.kind == 'receive' ? settled : -settled;
         final nowAdjust = DateTime.now();
