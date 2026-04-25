@@ -64,13 +64,13 @@ class HelpScreen extends StatelessWidget {
                   title: Text('استلام'),
                   subtitle: Text('يزيد المحفظة ويؤثر على الدرج حسب النوع.'),
                 ),
-                ListTile(
+                /* ListTile(
                   leading: Icon(Icons.bolt),
                   title: Text('خدمات فوري'),
                   subtitle: Text(
                     'نقدي أو آجل مع ربح واضح، والآجل يفتح مستحقات.',
                   ),
-                ),
+                ), */
                 ListTile(
                   leading: Icon(Icons.request_quote),
                   title: Text('المستحقات'),
