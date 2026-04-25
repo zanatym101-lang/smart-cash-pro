@@ -20,7 +20,6 @@ import 'ledger_screen.dart';
 import 'expenses_screen.dart';
 import 'admin_settings_screen.dart';
 import 'claims_screen.dart';
-import 'fawry_screen.dart';
 import 'reports_screen.dart';
 import 'help_screen.dart';
 import 'quick_actions_order_screen.dart';
@@ -855,7 +854,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _load();
         },
       ),
-      QuickActionItem(
+      /* QuickActionItem(
         id: 'fawry',
         title: 'خدمات فوري',
         icon: Icons.flash_on,
@@ -867,6 +866,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _load();
         },
       ),
+      ), */
       QuickActionItem(
         id: 'wallets',
         title: 'المحافظ',

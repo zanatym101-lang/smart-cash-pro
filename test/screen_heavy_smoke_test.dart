@@ -19,7 +19,6 @@ import 'package:king_wallet_accounting/screens/drive_backup_screen.dart';
 import 'package:king_wallet_accounting/screens/expenses_screen.dart';
 import 'package:king_wallet_accounting/screens/admin_settings_screen.dart';
 import 'package:king_wallet_accounting/screens/reports_screen.dart';
-import 'package:king_wallet_accounting/screens/fawry_screen.dart';
 import 'package:king_wallet_accounting/screens/quick_actions_order_screen.dart';
 import 'package:king_wallet_accounting/screens/pending_screen.dart';
 import 'package:king_wallet_accounting/screens/sync_outbox_screen.dart';
@@ -127,6 +126,7 @@ void main() {
     expect(find.byIcon(Icons.people_alt_outlined), findsWidgets);
     expect(find.byIcon(Icons.account_balance), findsWidgets);
     expect(find.byIcon(Icons.request_quote), findsWidgets);
+    expect(find.text('خدمات فوري'), findsNothing);
     expect(find.text('1000.00'), findsWidgets);
   });
 
@@ -686,41 +686,6 @@ void main() {
     await pumpFrames(tester, count: 12);
     await pumpUntilFound(tester, find.byType(SyncOutboxScreen));
   });
-
-  testWidgets(
-    'fawry credit user flow creates pending and opens pending screen',
-    (tester) async {
-      await tester.binding.setSurfaceSize(const Size(1080, 2200));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
-
-      AppSession.enterUser();
-      await tester.pumpWidget(
-        const MaterialApp(
-          home: FawryScreen(
-            initialParty: 'Fawry Client',
-            initialPhone: '01077777777',
-            startCredit: true,
-          ),
-        ),
-      );
-      await pumpUntilFound(tester, find.byType(TextField));
-
-      final fields = find.byType(TextField);
-      await tester.enterText(fields.at(0), 'Electricity');
-      await tester.enterText(fields.at(2), 'Fawry Client');
-      await tester.enterText(fields.at(4), '1000');
-      await tester.enterText(fields.at(5), '10');
-      await tester.tap(find.byIcon(Icons.send).first);
-      await pumpFrames(tester, count: 14);
-
-      await pumpUntilFound(tester, find.byType(PendingScreen));
-      final fawryTxns = (await tester.runAsync(
-        () => AppDb.instance.listTxns(kind: 'fawry_credit'),
-      ))!;
-      expect(fawryTxns.isNotEmpty, isTrue);
-      expect(fawryTxns.first.status, 'pending');
-    },
-  );
 
   testWidgets('pending screen approve flow posts transaction', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1080, 2200));
