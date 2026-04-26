@@ -67,6 +67,32 @@ extension AppDbTransactions on AppDb {
     return 0;
   }
 
+  bool _hasDeferredSettlementLink(int txnId) {
+    for (final t in _txns) {
+      if (t.kind != 'claim_collect' && t.kind != 'claim_pay') continue;
+      if (t.status != 'posted' && t.status != 'rolled_back') continue;
+      if (_extractPendingSettlementRef(t.note) == txnId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _hasDeferredOpenClaim(int txnId) {
+    for (final c in _claims) {
+      if (c.sourceTxnId == txnId) return true;
+    }
+    return false;
+  }
+
+  bool _shouldAffectDrawerForTxn(Txn t) {
+    if (_txnKind(t) != 'transfer' && _txnKind(t) != 'receive') return true;
+    if (_hasStatus(t, 'pending')) return false;
+    if (_hasDeferredOpenClaim(t.id)) return false;
+    if (_hasDeferredSettlementLink(t.id)) return false;
+    return true;
+  }
+
   void _requireTxnAdmin() {
     if (!AppSession.isAdmin) {
       throw Exception('هذه العملية متاحة للأدمن فقط.');

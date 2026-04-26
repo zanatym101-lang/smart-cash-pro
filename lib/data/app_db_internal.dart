@@ -785,6 +785,7 @@ extension _AppDbInternal on AppDb {
         nfQirsh: nfQ,
         cfQirsh: cfQ,
         mode: mode,
+        affectDrawer: _shouldAffectDrawerForTxn(t),
       );
     }
 
@@ -805,6 +806,7 @@ extension _AppDbInternal on AppDb {
         amountQirsh: amtQ,
         cfQirsh: cfQ,
         mode: rm,
+        affectDrawer: _shouldAffectDrawerForTxn(t),
       );
     }
     if (kind == 'claim_collect') {

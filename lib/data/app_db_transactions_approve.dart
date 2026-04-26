@@ -11,6 +11,7 @@ extension AppDbTransactionsApprove on AppDb {
     _confirmingPendingTxnIds.add(txnId);
 
     try {
+      final outboxItems = <PendingOutboxInsert>[];
       final idx = _txns.indexWhere((t) => t.id == txnId);
       if (idx < 0) {
         throw Exception('المعاملة غير موجودة.');
@@ -112,15 +113,79 @@ extension AppDbTransactionsApprove on AppDb {
         }
       }
 
+      if (pendingTxn.kind == 'transfer' || pendingTxn.kind == 'receive') {
+        final due = pendingTxn.kind == 'transfer'
+            ? _pendingTransferDueForTxn(pendingTxn)
+            : _pendingReceiveDueForTxn(pendingTxn);
+        final remaining = (due - settled).clamp(0, 1e18).toDouble();
+        final existing = _claims.indexWhere(
+          (c) => c.sourceTxnId == pendingTxn.id,
+        );
+        if (remaining > 0) {
+          final party = (pendingTxn.party ?? '').trim().isNotEmpty
+              ? pendingTxn.party!.trim()
+              : 'آجل ${pendingTxn.kind == 'transfer' ? 'تحويل' : 'استلام'} #${pendingTxn.id}';
+          if (existing == -1) {
+            final claim = Claim(
+              id: _nextClaimId++,
+              type: pendingTxn.kind == 'transfer' ? 'receivable' : 'payable',
+              party: party,
+              amount: remaining,
+              note: pendingTxn.note,
+              entryDate: pendingTxn.entryDate,
+              status: 'open',
+              sourceTxnId: pendingTxn.id,
+            );
+            _claims.add(claim);
+            outboxItems.add(
+              _outboxInsert(
+                entity: 'claim',
+                entityId: claim.id.toString(),
+                action: 'create',
+                payload: claim.toJson(),
+              ),
+            );
+          } else if (_claims[existing].status == 'open') {
+            _claims[existing] = _claims[existing].copyWith(
+              amount: remaining,
+              entryDate: pendingTxn.entryDate,
+            );
+            outboxItems.add(
+              _outboxInsert(
+                entity: 'claim',
+                entityId: _claims[existing].id.toString(),
+                action: 'update',
+                payload: _claims[existing].toJson(),
+              ),
+            );
+          }
+        } else if (existing != -1 && _claims[existing].status == 'open') {
+          _claims[existing] = _claims[existing].copyWith(
+            status: 'closed',
+            settledDate: now,
+          );
+          outboxItems.add(
+            _outboxInsert(
+              entity: 'claim',
+              entityId: _claims[existing].id.toString(),
+              action: 'update',
+              payload: _claims[existing].toJson(),
+            ),
+          );
+        }
+      }
+
       final posted = pendingTxn.copyWith(status: 'posted');
       _txns[idx] = posted;
-      await _save();
-      await enqueueOutbox(
-        entity: 'txn',
-        entityId: posted.id.toString(),
-        action: 'update',
-        payload: posted.toJson(),
+      outboxItems.add(
+        _outboxInsert(
+          entity: 'txn',
+          entityId: posted.id.toString(),
+          action: 'update',
+          payload: posted.toJson(),
+        ),
       );
+      await _save(outboxItems: outboxItems);
       await appendAudit(
         type: 'pending_confirm',
         txnId: posted.id,

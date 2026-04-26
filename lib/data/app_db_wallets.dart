@@ -492,6 +492,24 @@ extension AppDbWallets on AppDb {
       }
     }
 
+    double pendingReceivableOpen = 0;
+    double pendingPayableOpen = 0;
+    for (final t in _txns) {
+      if (!_hasStatus(t, 'pending')) continue;
+      final kind = _txnKind(t);
+      if (kind == 'transfer') {
+        final due = (_pendingTransferDueForTxn(t) - _pendingSettledAmount(t.id))
+            .clamp(0, 1e18)
+            .toDouble();
+        pendingReceivableOpen += due;
+      } else if (kind == 'receive') {
+        final due = (_pendingReceiveDueForTxn(t) - _pendingSettledAmount(t.id))
+            .clamp(0, 1e18)
+            .toDouble();
+        pendingPayableOpen += due;
+      }
+    }
+
     return TreasurySnapshot(
       drawerBalance: drawerBalance,
       walletsTotal: walletsTotal,
@@ -504,6 +522,8 @@ extension AppDbWallets on AppDb {
       pendingOutflow: pendingOutflow,
       claimsReceivableOpen: claimsReceivableOpen,
       claimsPayableOpen: claimsPayableOpen,
+      pendingReceivableOpen: pendingReceivableOpen,
+      pendingPayableOpen: pendingPayableOpen,
       profitApprovedTotal: profitApprovedTotal,
       dailyProfit: dailyProfit,
       monthlyProfit: monthlyProfit,

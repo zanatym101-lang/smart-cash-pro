@@ -82,6 +82,8 @@ void main() {
       pendingOutflow: 40,
       claimsReceivableOpen: 80,
       claimsPayableOpen: 30,
+      pendingReceivableOpen: 0,
+      pendingPayableOpen: 0,
       profitApprovedTotal: 35,
       dailyProfit: 35,
       monthlyProfit: 140,

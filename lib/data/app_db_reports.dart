@@ -62,6 +62,8 @@ extension AppDbReports on AppDb {
       pendingOutflow: 0,
       claimsReceivableOpen: 0,
       claimsPayableOpen: 0,
+      pendingReceivableOpen: 0,
+      pendingPayableOpen: 0,
       profitApprovedTotal: 0,
       dailyProfit: 0,
       monthlyProfit: 0,
