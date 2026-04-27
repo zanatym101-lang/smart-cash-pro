@@ -333,6 +333,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   date: t.entryDate,
                   side: _LineSide.receivable,
                   amount: due,
+                  displayAmount: dueBase,
                   title: 'تحويل آجل',
                   details: _detailsForTransfer(t),
                   ref: 'Txn#${t.id}',
@@ -357,6 +358,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   date: t.entryDate,
                   side: _LineSide.payable,
                   amount: due,
+                  displayAmount: dueBase,
                   title: 'استلام آجل',
                   details: _detailsForReceive(t),
                   ref: 'Txn#${t.id}',
@@ -381,6 +383,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   date: t.entryDate,
                   side: _LineSide.receivable,
                   amount: due,
+                  displayAmount: dueBase,
                   title: 'فوري آجل',
                   details: _detailsForFawry(t),
                   ref: 'Txn#${t.id}',
@@ -653,6 +656,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
       default:
         return t.amount;
     }
+  }
+
+  double _lineDisplayAmount(_CustomerLine line) {
+    return line.displayAmount ?? line.amount;
   }
 
   _LineSide _txnSide(Txn t) {
@@ -1150,7 +1157,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
               Text('العنوان: ${line.title}'),
               Text('التاريخ: $date'),
               Text('النوع: $sideLabel'),
-              Text('المبلغ: ${line.amount.toStringAsFixed(2)}'),
+              Text('المبلغ: ${_lineDisplayAmount(line).toStringAsFixed(2)}'),
               Text('المرجع: ${line.ref}'),
               if (statusLabel != null) Text('الحالة: $statusLabel'),
               if (line.details != null && line.details!.trim().isNotEmpty)
@@ -1437,6 +1444,10 @@ class _CustomerSheetState extends State<_CustomerSheet> {
   void Function(_CustomerLine line) get onShowDetails => widget.onShowDetails;
   Set<int> get busyIds => widget.busyIds;
   Future<void> Function() get onRefresh => widget.onRefresh;
+
+  double _lineDisplayAmount(_CustomerLine line) {
+    return line.displayAmount ?? line.amount;
+  }
 
   String? _extractServiceLine(String? details) {
     if (details == null) return null;
@@ -1976,7 +1987,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
         final service = _extractServiceLine(line.details);
         final parts = <String>[];
         if (service != null) parts.add(service);
-        parts.add('الإجمالي: ${line.amount.toStringAsFixed(2)}');
+        parts.add('الإجمالي: ${_lineDisplayAmount(line).toStringAsFixed(2)}');
         return parts.join(' | ');
       case 'claim_collect':
       case 'claim_pay':
@@ -2317,7 +2328,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                         return _CustomerLineRowPresentation(
                           date: date,
                           amountText:
-                              '$amountSign${line.amount.toStringAsFixed(2)}',
+                              '$amountSign${_lineDisplayAmount(line).toStringAsFixed(2)}',
                           amountBg: amountBg,
                           amountColor: amountColor,
                           chipLabel: chipLabel,
@@ -2960,6 +2971,7 @@ class _CustomerLine {
   final DateTime date;
   final _LineSide side;
   final double amount;
+  final double? displayAmount;
   final String title;
   final String? details;
   final String ref;
@@ -2977,6 +2989,7 @@ class _CustomerLine {
     required this.date,
     required this.side,
     required this.amount,
+    this.displayAmount,
     required this.title,
     required this.details,
     required this.ref,
