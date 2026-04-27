@@ -411,6 +411,13 @@ class _TransferScreenState extends State<TransferScreen> {
       return;
     }
 
+    if (review.isPending && partyName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يجب اختيار العميل في العمليات الآجلة')),
+      );
+      return;
+    }
+
     if (_viaPhone) {
       if (!AppSession.isAdmin) {
         ScaffoldMessenger.of(context).showSnackBar(

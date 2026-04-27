@@ -422,6 +422,13 @@ class _ReceiveScreenState extends State<ReceiveScreen> {
     );
     if (review == null || !mounted) return;
 
+    if (review.isPending && (partyName == null || partyName.trim().isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يجب اختيار العميل في العمليات الآجلة')),
+      );
+      return;
+    }
+
     if (!review.isPending) {
       final phone = wallet.first.phone.trim();
       if (phone.isEmpty) {
