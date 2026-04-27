@@ -10,7 +10,6 @@ import '../models/claim.dart';
 import '../models/customer_attachment.dart';
 import '../widgets/app_title.dart';
 import 'customer_report_screen.dart';
-import 'fawry_screen.dart';
 import 'receive_screen.dart';
 import 'transfer_screen.dart';
 
@@ -1096,32 +1095,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
           );
           _load();
         },
-        onFawryCredit: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) => FawryScreen(
-                initialParty: c.name,
-                initialPhone: c.phone,
-                startCredit: true,
-              ),
-            ),
-          );
-          _load();
-        },
-        onFawryCash: () async {
-          Navigator.of(ctx).pop();
-          await Navigator.of(context).push<bool>(
-            MaterialPageRoute(
-              builder: (_) => FawryScreen(
-                initialParty: c.name,
-                initialPhone: c.phone,
-                startCredit: false,
-              ),
-            ),
-          );
-          _load();
-        },
         onReport: () async {
           Navigator.of(ctx).pop();
           await Navigator.of(context).push<void>(
@@ -1415,8 +1388,6 @@ class _CustomerSheet extends StatefulWidget {
   final VoidCallback onReceive;
   final VoidCallback onTransferPending;
   final VoidCallback onReceivePending;
-  final VoidCallback onFawryCash;
-  final VoidCallback onFawryCredit;
   final VoidCallback onReport;
   final Future<void> Function(_CustomerLine line, _LineAction action)
   onLineAction;
@@ -1430,8 +1401,6 @@ class _CustomerSheet extends StatefulWidget {
     required this.onReceive,
     required this.onTransferPending,
     required this.onReceivePending,
-    required this.onFawryCash,
-    required this.onFawryCredit,
     required this.onReport,
     required this.onLineAction,
     required this.onShowDetails,
@@ -1462,8 +1431,6 @@ class _CustomerSheetState extends State<_CustomerSheet> {
   VoidCallback get onReceive => widget.onReceive;
   VoidCallback get onTransferPending => widget.onTransferPending;
   VoidCallback get onReceivePending => widget.onReceivePending;
-  VoidCallback get onFawryCash => widget.onFawryCash;
-  VoidCallback get onFawryCredit => widget.onFawryCredit;
   VoidCallback get onReport => widget.onReport;
   Future<void> Function(_CustomerLine line, _LineAction action)
   get onLineAction => widget.onLineAction;
@@ -1906,7 +1873,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
               title: const Text('استلام آجل'),
               onTap: () => Navigator.of(ctx).pop('receive_pending'),
             ),
-            ListTile(
+            /* ListTile(
               leading: const Icon(Icons.flash_on),
               title: const Text('فوري نقدي'),
               onTap: () => Navigator.of(ctx).pop('fawry_cash'),
@@ -1915,7 +1882,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
               leading: const Icon(Icons.flash_on),
               title: const Text('فوري آجل'),
               onTap: () => Navigator.of(ctx).pop('fawry_credit'),
-            ),
+            ), */
             ListTile(
               leading: const Icon(Icons.account_balance_wallet_outlined),
               title: const Text('مستحق لنا'),
@@ -1945,12 +1912,6 @@ class _CustomerSheetState extends State<_CustomerSheet> {
         return;
       case 'receive_pending':
         onReceivePending();
-        return;
-      case 'fawry_cash':
-        onFawryCash();
-        return;
-      case 'fawry_credit':
-        onFawryCredit();
         return;
       case 'claim_receivable':
         await _addClaimForCustomer('receivable');

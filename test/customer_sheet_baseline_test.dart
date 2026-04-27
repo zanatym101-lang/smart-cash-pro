@@ -221,4 +221,22 @@ void main() {
       findsNothing,
     );
   });
+
+  testWidgets('customer add-operation menu hides fawry creation options', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1080, 2200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await openCustomerSheet(tester);
+
+    await tester.tap(
+      sheetScope(find.byIcon(Icons.add_circle_outline)).first,
+      warnIfMissed: false,
+    );
+    await pumpFrames(tester, count: 8);
+
+    expect(find.text('فوري نقدي'), findsNothing);
+    expect(find.text('فوري آجل'), findsNothing);
+  });
 }

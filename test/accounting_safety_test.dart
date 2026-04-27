@@ -54,7 +54,7 @@ void main() {
   });
 
   test(
-    'deferred transfer affects actual balance immediately and approval does not double-impact',
+    'deferred transfer keeps cash unchanged until collection and approval does not cash-impact',
     () async {
       final db = AppDb.instance;
 
@@ -87,8 +87,10 @@ void main() {
       );
 
       final beforeConfirm = await db.getTreasurySnapshot();
-      expect(beforeConfirm.drawerActualBalance, closeTo(110, 0.0001));
-      expect(beforeConfirm.drawerBalance, closeTo(110, 0.0001));
+      expect(beforeConfirm.drawerActualBalance, closeTo(0, 0.0001));
+      expect(beforeConfirm.drawerBalance, closeTo(0, 0.0001));
+      expect(beforeConfirm.availableLiquidityNow, closeTo(898, 0.0001));
+      expect(beforeConfirm.realCapitalApproved, closeTo(1008, 0.0001));
 
       await db.confirmPending(txnId);
 
@@ -99,8 +101,10 @@ void main() {
       );
 
       final afterConfirm = await db.getTreasurySnapshot();
-      expect(afterConfirm.drawerActualBalance, closeTo(110, 0.0001));
-      expect(afterConfirm.drawerBalance, closeTo(110, 0.0001));
+      expect(afterConfirm.drawerActualBalance, closeTo(0, 0.0001));
+      expect(afterConfirm.drawerBalance, closeTo(0, 0.0001));
+      expect(afterConfirm.availableLiquidityNow, closeTo(898, 0.0001));
+      expect(afterConfirm.realCapitalApproved, closeTo(1008, 0.0001));
 
       expect(() => db.confirmPending(txnId), throwsException);
     },
@@ -202,7 +206,7 @@ void main() {
   );
 
   test(
-    'deferred receive affects actual balance immediately and posts once after confirm',
+    'deferred receive keeps cash unchanged until settlement and posts once after confirm',
     () async {
       final db = AppDb.instance;
 
@@ -228,8 +232,10 @@ void main() {
       );
 
       final beforeConfirm = await db.getTreasurySnapshot();
-      expect(beforeConfirm.drawerActualBalance, closeTo(-90, 0.0001));
-      expect(beforeConfirm.drawerBalance, closeTo(-90, 0.0001));
+      expect(beforeConfirm.drawerActualBalance, closeTo(0, 0.0001));
+      expect(beforeConfirm.drawerBalance, closeTo(0, 0.0001));
+      expect(beforeConfirm.availableLiquidityNow, closeTo(600, 0.0001));
+      expect(beforeConfirm.realCapitalApproved, closeTo(500, 0.0001));
 
       await db.confirmPending(txnId);
 
@@ -240,8 +246,10 @@ void main() {
       );
 
       final afterConfirm = await db.getTreasurySnapshot();
-      expect(afterConfirm.drawerActualBalance, closeTo(-90, 0.0001));
-      expect(afterConfirm.drawerBalance, closeTo(-90, 0.0001));
+      expect(afterConfirm.drawerActualBalance, closeTo(0, 0.0001));
+      expect(afterConfirm.drawerBalance, closeTo(0, 0.0001));
+      expect(afterConfirm.availableLiquidityNow, closeTo(600, 0.0001));
+      expect(afterConfirm.realCapitalApproved, closeTo(500, 0.0001));
       expect(afterConfirm.dailyProfit, closeTo(10, 0.0001));
     },
   );
@@ -335,7 +343,7 @@ void main() {
       );
       expect(await db.getWalletBalance(walletId), closeTo(398, 0.0001));
       var snap = await db.getTreasurySnapshot();
-      expect(snap.drawerActualBalance, closeTo(110, 0.0001));
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
 
       await db.cancelPending(transferId);
       expect(await db.getWalletBalance(walletId), closeTo(500, 0.0001));
@@ -352,7 +360,7 @@ void main() {
       );
       expect(await db.getWalletBalance(walletId), closeTo(580, 0.0001));
       snap = await db.getTreasurySnapshot();
-      expect(snap.drawerActualBalance, closeTo(-75, 0.0001));
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
 
       await db.cancelPending(receiveId);
       expect(await db.getWalletBalance(walletId), closeTo(500, 0.0001));
@@ -474,7 +482,7 @@ void main() {
 
       expect(await db.getWalletBalance(walletId), closeTo(400, 0.0001));
       final snap = await db.getTreasurySnapshot();
-      expect(snap.drawerActualBalance, closeTo(110, 0.0001));
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
     },
   );
 
@@ -814,21 +822,23 @@ void main() {
 
       final snap = await db.getTreasurySnapshot();
 
-      expect(snap.drawerActualBalance, closeTo(555, 0.0001));
+      expect(snap.drawerActualBalance, closeTo(490, 0.0001));
       expect(snap.walletsActualTotal, closeTo(950, 0.0001));
       expect(snap.fawryActualBalance, closeTo(-500, 0.0001));
       expect(snap.profitApprovedTotal, closeTo(10, 0.0001));
-      expect(snap.actualTreasuryApproved, closeTo(1005, 0.0001));
+      expect(snap.actualTreasuryApproved, closeTo(940, 0.0001));
 
       expect(snap.claimsReceivableOpen, closeTo(300, 0.0001));
       expect(snap.claimsPayableOpen, closeTo(80, 0.0001));
-      expect(snap.claimsNet, closeTo(220, 0.0001));
-      expect(snap.realCapitalApproved, closeTo(1225, 0.0001));
+      expect(snap.pendingReceivableOpen, closeTo(110, 0.0001));
+      expect(snap.pendingPayableOpen, closeTo(50, 0.0001));
+      expect(snap.claimsNet, closeTo(280, 0.0001));
+      expect(snap.realCapitalApproved, closeTo(1220, 0.0001));
 
       expect(snap.pendingInflow, closeTo(50, 0.0001));
       expect(snap.pendingOutflow, closeTo(100, 0.0001));
       expect(snap.pendingNet, closeTo(-50, 0.0001));
-      expect(snap.availableLiquidityNow, closeTo(1005, 0.0001));
+      expect(snap.availableLiquidityNow, closeTo(940, 0.0001));
     },
   );
 
@@ -874,7 +884,7 @@ void main() {
   );
 
   test(
-    'combined pending transfer and receive affect liquidity now and post once on confirm',
+    'combined pending transfer and receive keep liquidity cash-only and post once on confirm',
     () async {
       final db = AppDb.instance;
 
@@ -909,11 +919,12 @@ void main() {
       );
 
       var snap = await db.getTreasurySnapshot();
-      expect(snap.drawerActualBalance, closeTo(74, 0.0001));
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
       expect(snap.profitApprovedTotal, closeTo(0, 0.0001));
       expect(snap.pendingInflow, closeTo(40, 0.0001));
       expect(snap.pendingOutflow, closeTo(102, 0.0001));
-      expect(snap.availableLiquidityNow, closeTo(1012, 0.0001));
+      expect(snap.availableLiquidityNow, closeTo(938, 0.0001));
+      expect(snap.realCapitalApproved, closeTo(1008, 0.0001));
 
       await db.confirmPending(transferPendingId);
 
@@ -923,10 +934,13 @@ void main() {
         await db.getWalletAvailableBalance(walletId),
         closeTo(938, 0.0001),
       );
-      expect(snap.drawerActualBalance, closeTo(74, 0.0001));
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
       expect(snap.profitApprovedTotal, closeTo(10, 0.0001));
       expect(snap.pendingInflow, closeTo(40, 0.0001));
       expect(snap.pendingOutflow, closeTo(0, 0.0001));
+      expect(snap.claimsReceivableOpen, closeTo(110, 0.0001));
+      expect(snap.claimsPayableOpen, closeTo(0, 0.0001));
+      expect(snap.realCapitalApproved, closeTo(1008, 0.0001));
 
       await db.confirmPending(receivePendingId);
 
@@ -936,12 +950,15 @@ void main() {
         await db.getWalletAvailableBalance(walletId),
         closeTo(938, 0.0001),
       );
-      expect(snap.drawerActualBalance, closeTo(74, 0.0001));
+      expect(snap.drawerActualBalance, closeTo(0, 0.0001));
       expect(snap.profitApprovedTotal, closeTo(14, 0.0001));
       expect(snap.pendingInflow, closeTo(0, 0.0001));
       expect(snap.pendingOutflow, closeTo(0, 0.0001));
-      expect(snap.actualTreasuryApproved, closeTo(1012, 0.0001));
-      expect(snap.availableLiquidityNow, closeTo(1012, 0.0001));
+      expect(snap.claimsReceivableOpen, closeTo(110, 0.0001));
+      expect(snap.claimsPayableOpen, closeTo(40, 0.0001));
+      expect(snap.actualTreasuryApproved, closeTo(938, 0.0001));
+      expect(snap.availableLiquidityNow, closeTo(938, 0.0001));
+      expect(snap.realCapitalApproved, closeTo(1008, 0.0001));
     },
   );
 

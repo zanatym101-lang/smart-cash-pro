@@ -12,6 +12,7 @@ class TransferTxSpec extends TxSpec {
   final int nfQirsh;
   final int cfQirsh;
   final CommissionMode mode;
+  final bool affectDrawer;
 
   TransferTxSpec({
     required this.fromWalletId,
@@ -19,6 +20,7 @@ class TransferTxSpec extends TxSpec {
     required this.nfQirsh,
     required this.cfQirsh,
     required this.mode,
+    this.affectDrawer = true,
   });
 
   @override
@@ -46,20 +48,21 @@ class TransferTxSpec extends TxSpec {
       ),
     );
 
-    // Drawer:
-    final drawerDelta = (mode == CommissionMode.cash)
-        ? (amountQirsh + cfQirsh)
-        : (amountQirsh + cfQirsh + nfQirsh);
+    if (affectDrawer) {
+      final drawerDelta = (mode == CommissionMode.cash)
+          ? (amountQirsh + cfQirsh)
+          : (amountQirsh + cfQirsh + nfQirsh);
 
-    entries.add(
-      LedgerEntry(
-        accountKey: "drawer",
-        deltaQirsh: drawerDelta,
-        ts: now,
-        txId: txId,
-        meta: {"kind": "drawer_in_from_transfer", "mode": mode.name},
-      ),
-    );
+      entries.add(
+        LedgerEntry(
+          accountKey: "drawer",
+          deltaQirsh: drawerDelta,
+          ts: now,
+          txId: txId,
+          meta: {"kind": "drawer_in_from_transfer", "mode": mode.name},
+        ),
+      );
+    }
 
     return entries;
   }
@@ -279,12 +282,14 @@ class ReceiveTxSpec extends TxSpec {
   final int amountQirsh;
   final int cfQirsh;
   final ReceiveMode mode;
+  final bool affectDrawer;
 
   ReceiveTxSpec({
     required this.walletId,
     required this.amountQirsh,
     required this.cfQirsh,
     required this.mode,
+    this.affectDrawer = true,
   });
 
   @override
@@ -305,17 +310,19 @@ class ReceiveTxSpec extends TxSpec {
           meta: {"kind": "receive_cash", "cfQirsh": cfQirsh},
         ),
       );
-      entries.add(
-        LedgerEntry(
-          accountKey: "drawer",
-          // Customer pays commission cash at receive time:
-          // drawer net = +cf - amount = -(amount - cf)
-          deltaQirsh: -(amountQirsh - cfQirsh),
-          ts: now,
-          txId: txId,
-          meta: {"kind": "receive_cash", "cfQirsh": cfQirsh},
-        ),
-      );
+      if (affectDrawer) {
+        entries.add(
+          LedgerEntry(
+            accountKey: "drawer",
+            // Customer pays commission cash at receive time:
+            // drawer net = +cf - amount = -(amount - cf)
+            deltaQirsh: -(amountQirsh - cfQirsh),
+            ts: now,
+            txId: txId,
+            meta: {"kind": "receive_cash", "cfQirsh": cfQirsh},
+          ),
+        );
+      }
     } else if (mode == ReceiveMode.deductFromAmount) {
       entries.add(
         LedgerEntry(
@@ -326,15 +333,17 @@ class ReceiveTxSpec extends TxSpec {
           meta: {"kind": "receive_deduct", "cfQirsh": cfQirsh},
         ),
       );
-      entries.add(
-        LedgerEntry(
-          accountKey: "drawer",
-          deltaQirsh: -(amountQirsh - cfQirsh),
-          ts: now,
-          txId: txId,
-          meta: {"kind": "receive_deduct"},
-        ),
-      );
+      if (affectDrawer) {
+        entries.add(
+          LedgerEntry(
+            accountKey: "drawer",
+            deltaQirsh: -(amountQirsh - cfQirsh),
+            ts: now,
+            txId: txId,
+            meta: {"kind": "receive_deduct"},
+          ),
+        );
+      }
     } else {
       entries.add(
         LedgerEntry(

@@ -60,6 +60,8 @@ class TreasurySnapshot {
   final double pendingOutflow; // Pending transfer impact on wallets
   final double claimsReceivableOpen; // Open "mabalegh lana"
   final double claimsPayableOpen; // Open "mabalegh alayna"
+  final double pendingReceivableOpen; // Open deferred receivables before confirm
+  final double pendingPayableOpen; // Open deferred payables before confirm
   final double profitApprovedTotal; // Posted-only cumulative profit
 
   // Profits (EGP) derived from posted txns
@@ -78,6 +80,8 @@ class TreasurySnapshot {
     required this.pendingOutflow,
     required this.claimsReceivableOpen,
     required this.claimsPayableOpen,
+    this.pendingReceivableOpen = 0,
+    this.pendingPayableOpen = 0,
     required this.profitApprovedTotal,
     required this.dailyProfit,
     required this.monthlyProfit,
@@ -86,7 +90,9 @@ class TreasurySnapshot {
   double get pendingNet => pendingInflow - pendingOutflow;
   double get pendingTotal => pendingInflow + pendingOutflow;
 
-  double get claimsNet => claimsReceivableOpen - claimsPayableOpen;
+  double get claimsNet =>
+      (claimsReceivableOpen + pendingReceivableOpen) -
+      (claimsPayableOpen + pendingPayableOpen);
 
   // Confirmed treasury: actual cash drawer + actual wallets + actual fawry float.
   // Profit is reported separately and must not be added again to avoid double counting.
@@ -97,7 +103,8 @@ class TreasurySnapshot {
   // pendingNet remains informational so the UI can show the deferred portion.
   double get availableLiquidityNow => actualTreasuryApproved;
 
-  // Approved real capital = confirmed treasury +/- open claims.
+  // Approved real capital = confirmed treasury +/- open claims
+  // including still-pending deferred transfer/receive obligations.
   double get realCapitalApproved => actualTreasuryApproved + claimsNet;
 
   // Backward-compatible projected helper used by some reports.
