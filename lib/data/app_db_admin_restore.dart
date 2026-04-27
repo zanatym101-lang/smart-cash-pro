@@ -116,12 +116,21 @@ extension AppDbAdminRestore on AppDb {
     }
     await _verifyBackupChecksumIfPresent(path);
     final settingsSnapshot = await _readBackupSettingsSidecar(path);
+    await _closeSqlite();
     final sourceDb = AppDatabase(
       customPath: src.path,
       hardenRuntimePragmas: false,
     );
+    late final ({
+      List<Wallet> wallets,
+      List<Txn> txns,
+      List<Claim> claims,
+      List<DailyClose> dailyCloses,
+      List<RecentNumber> recentNumbers,
+      Map<String, String> meta,
+    }) snapshot;
     try {
-      final snapshot = (
+      snapshot = (
         wallets: await sourceDb.loadWallets(),
         txns: await sourceDb.loadTxns(),
         claims: await sourceDb.loadClaims(),
@@ -129,21 +138,20 @@ extension AppDbAdminRestore on AppDb {
         recentNumbers: await sourceDb.loadRecentNumbers(),
         meta: await sourceDb.loadMeta(),
       );
-
-      await _reopenSqlite();
-      final db = await _ensureSqliteInitialized();
-      await db.saveSnapshot(
-        walletItems: snapshot.wallets,
-        txnItems: snapshot.txns,
-        claimItems: snapshot.claims,
-        dailyCloseItems: snapshot.dailyCloses,
-        recentNumberItems: snapshot.recentNumbers,
-        metaItems: snapshot.meta,
-        clearSyncOutbox: true,
-      );
     } finally {
       await sourceDb.close();
     }
+
+    final db = await _ensureSqliteInitialized();
+    await db.saveSnapshot(
+      walletItems: snapshot.wallets,
+      txnItems: snapshot.txns,
+      claimItems: snapshot.claims,
+      dailyCloseItems: snapshot.dailyCloses,
+      recentNumberItems: snapshot.recentNumbers,
+      metaItems: snapshot.meta,
+      clearSyncOutbox: true,
+    );
 
     await _restoreSettingsFromBackup(settingsSnapshot);
     _loaded = false;

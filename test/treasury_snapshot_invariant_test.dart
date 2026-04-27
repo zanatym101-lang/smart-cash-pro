@@ -92,4 +92,60 @@ void main() {
       );
     },
   );
+
+  test(
+    'treasury snapshot treats pending KPIs as informational and keeps liquidity cash-only',
+    () async {
+      final db = AppDb.instance;
+
+      await db.drawerDeposit(amount: 500, note: 'seed drawer');
+      final walletId = await db.addWallet(
+        name: 'Cash Only Wallet',
+        phone: '01000000456',
+        openingBalance: 500,
+      );
+
+      await db.addTransfer(
+        walletId: walletId,
+        amount: 100,
+        clientFee: 10,
+        networkFee: 0,
+        transferType: 'type1',
+        isPending: true,
+        party: 'Pending Receivable',
+      );
+      await db.addReceive(
+        walletId: walletId,
+        amount: 40,
+        commission: 4,
+        receiveType: 'cash',
+        isPending: true,
+        party: 'Pending Payable',
+      );
+
+      final snap = await db.getTreasurySnapshot();
+
+      expect(snap.actualTreasuryApproved, closeTo(940, 0.0001));
+      expect(snap.availableLiquidityNow, closeTo(940, 0.0001));
+      expect(
+        snap.availableLiquidityNow,
+        isNot(closeTo(snap.actualTreasuryApproved + snap.pendingNet, 0.0001)),
+      );
+      expect(snap.pendingInflow, closeTo(40, 0.0001));
+      expect(snap.pendingOutflow, closeTo(100, 0.0001));
+      expect(snap.pendingReceivableOpen, closeTo(110, 0.0001));
+      expect(snap.pendingPayableOpen, closeTo(40, 0.0001));
+      expect(
+        snap.realCapitalApproved,
+        closeTo(
+          snap.actualTreasuryApproved +
+              snap.claimsReceivableOpen +
+              snap.pendingReceivableOpen -
+              snap.claimsPayableOpen -
+              snap.pendingPayableOpen,
+          0.0001,
+        ),
+      );
+    },
+  );
 }

@@ -64,13 +64,6 @@ class HelpScreen extends StatelessWidget {
                   title: Text('استلام'),
                   subtitle: Text('يزيد المحفظة ويؤثر على الدرج حسب النوع.'),
                 ),
-                /* ListTile(
-                  leading: Icon(Icons.bolt),
-                  title: Text('خدمات فوري'),
-                  subtitle: Text(
-                    'نقدي أو آجل مع ربح واضح، والآجل يفتح مستحقات.',
-                  ),
-                ), */
                 ListTile(
                   leading: Icon(Icons.request_quote),
                   title: Text('المستحقات'),
@@ -86,7 +79,9 @@ class HelpScreen extends StatelessWidget {
                 ListTile(
                   leading: Icon(Icons.account_balance),
                   title: Text('الخزنة'),
-                  subtitle: Text('يعرض الدرج والمحافظ وإجمالي السيولة.'),
+                  subtitle: Text(
+                    'يعرض النقد الفعلي المتاح، مع مؤشرات الآجل كمتابعة منفصلة.',
+                  ),
                 ),
               ],
             ),

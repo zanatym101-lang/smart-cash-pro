@@ -88,6 +88,13 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     return int.tryParse(m.group(1) ?? '');
   }
 
+  int? _extractPendingSettlementRef(String? note) {
+    if (note == null || note.trim().isEmpty) return null;
+    final match = RegExp(r'pending_txn:(\d+)').firstMatch(note);
+    if (match == null) return null;
+    return int.tryParse(match.group(1) ?? '');
+  }
+
   DateTime _businessShift(DateTime d) {
     if (_dayStartHour <= 0) return d;
     return d.subtract(Duration(hours: _dayStartHour));
@@ -294,7 +301,7 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     if (t.kind == 'claim_collect' || t.kind == 'claim_pay') {
       final bool isReceivable = linkedClaim != null
           ? linkedClaim.type == 'receivable'
-          : _isReceivableByText(t.note);
+          : t.kind == 'claim_collect';
       title = isReceivable ? 'تحصيل مستحق' : 'سداد مستحق';
       delta = isReceivable ? -t.amount.abs() : t.amount.abs();
     } else if (t.kind == 'transfer' && t.status == 'pending') {
@@ -372,6 +379,37 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
 
     double pendingReceivable = 0;
     double pendingPayable = 0;
+    final pendingSettled = <int, double>{};
+    final customerPendingIds = customerTxns
+        .where(
+          (t) =>
+              t.status == 'pending' &&
+              (t.kind == 'transfer' ||
+                  t.kind == 'receive' ||
+                  t.kind == 'fawry_credit'),
+        )
+        .map((t) => t.id)
+        .toSet();
+    final linkedPendingSettlements = _allTxns
+        .where(
+          (t) =>
+              t.status == 'posted' &&
+              (t.kind == 'claim_collect' || t.kind == 'claim_pay') &&
+              customerPendingIds.contains(_extractPendingSettlementRef(t.note)),
+        )
+        .toList()
+      ..sort((a, b) {
+        final byDate = a.entryDate.compareTo(b.entryDate);
+        if (byDate != 0) return byDate;
+        return a.id.compareTo(b.id);
+      });
+
+    for (final t in linkedPendingSettlements) {
+      final pendingTxnId = _extractPendingSettlementRef(t.note);
+      if (pendingTxnId == null) continue;
+      pendingSettled[pendingTxnId] =
+          (pendingSettled[pendingTxnId] ?? 0) + t.amount;
+    }
 
     for (final t in txnsInRange) {
       if (t.kind == 'transfer') transferCount++;
@@ -388,13 +426,19 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
         pendingVolume += volume;
 
         if (t.kind == 'transfer') {
-          final due = _transferDue(t);
+          final due = (_transferDue(t) - (pendingSettled[t.id] ?? 0))
+              .clamp(0, 1e18)
+              .toDouble();
           if (due > 0) pendingReceivable += due;
         } else if (t.kind == 'receive') {
-          final due = _receiveDue(t);
+          final due = (_receiveDue(t) - (pendingSettled[t.id] ?? 0))
+              .clamp(0, 1e18)
+              .toDouble();
           if (due > 0) pendingPayable += due;
         } else if (t.kind == 'fawry_credit') {
-          final due = t.amount + t.clientFee;
+          final due = (t.amount + t.clientFee - (pendingSettled[t.id] ?? 0))
+              .clamp(0, 1e18)
+              .toDouble();
           if (due > 0) pendingReceivable += due;
         }
       }
@@ -415,6 +459,10 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
       ),
     ];
     for (final t in customerTxns) {
+      final event = _statementEventFromTxn(t, claimsById);
+      if (event != null) statementEvents.add(event);
+    }
+    for (final t in linkedPendingSettlements) {
       final event = _statementEventFromTxn(t, claimsById);
       if (event != null) statementEvents.add(event);
     }

@@ -47,6 +47,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _dayStartHour = 0;
   double _customersReceivable = 0;
   double _customersPayable = 0;
+  double _pendingOpenReceivable = 0;
+  double _pendingOpenPayable = 0;
   double _expensesTotalAll = 0;
   double _expensesTotalToday = 0;
   double _expensesTotalMonth = 0;
@@ -111,9 +113,59 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return 0;
   }
 
+  int? _extractPendingSettlementRef(String? note) {
+    if (note == null || note.trim().isEmpty) return null;
+    final m = RegExp(r'pending_txn:(\d+)').firstMatch(note);
+    if (m == null) return null;
+    return int.tryParse(m.group(1) ?? '');
+  }
+
+  Map<int, double> _pendingSettledByTxn(List<Txn> txns) {
+    final settled = <int, double>{};
+    for (final t in txns) {
+      if (t.status != 'posted') continue;
+      if (t.kind != 'claim_collect' && t.kind != 'claim_pay') continue;
+      final pendingTxnId = _extractPendingSettlementRef(t.note);
+      if (pendingTxnId == null) continue;
+      settled[pendingTxnId] = (settled[pendingTxnId] ?? 0) + t.amount;
+    }
+    return settled;
+  }
+
+  ({double receivable, double payable}) _pendingOpenTotals({
+    required List<Txn> txns,
+    required Map<int, double> settledByPending,
+  }) {
+    double receivable = 0;
+    double payable = 0;
+
+    for (final t in txns) {
+      if (t.status != 'pending') continue;
+      if (t.kind == 'transfer') {
+        final due = (_pendingTransferDue(t) - (settledByPending[t.id] ?? 0))
+            .clamp(0, 1e18)
+            .toDouble();
+        if (due > 0) receivable += due;
+      } else if (t.kind == 'receive') {
+        final due = (_pendingReceiveDue(t) - (settledByPending[t.id] ?? 0))
+            .clamp(0, 1e18)
+            .toDouble();
+        if (due > 0) payable += due;
+      } else if (t.kind == 'fawry_credit') {
+        final due = (t.amount + t.clientFee - (settledByPending[t.id] ?? 0))
+            .clamp(0, 1e18)
+            .toDouble();
+        if (due > 0) receivable += due;
+      }
+    }
+
+    return (receivable: receivable, payable: payable);
+  }
+
   ({double receivable, double payable}) _customerTotals({
     required List<Txn> txns,
     required List<Claim> claims,
+    required Map<int, double> settledByPending,
   }) {
     double receivable = 0;
     double payable = 0;
@@ -132,13 +184,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (t.status != 'pending') continue;
       if ((t.party ?? '').trim().isEmpty) continue;
       if (t.kind == 'transfer') {
-        final due = _pendingTransferDue(t);
+        final due = (_pendingTransferDue(t) - (settledByPending[t.id] ?? 0))
+            .clamp(0, 1e18)
+            .toDouble();
         if (due > 0) receivable += due;
       } else if (t.kind == 'receive') {
-        final due = _pendingReceiveDue(t);
+        final due = (_pendingReceiveDue(t) - (settledByPending[t.id] ?? 0))
+            .clamp(0, 1e18)
+            .toDouble();
         if (due > 0) payable += due;
       } else if (t.kind == 'fawry_credit') {
-        final due = t.amount + t.clientFee;
+        final due = (t.amount + t.clientFee - (settledByPending[t.id] ?? 0))
+            .clamp(0, 1e18)
+            .toDouble();
         if (due > 0) receivable += due;
       }
     }
@@ -188,7 +246,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final settings = results[4] as AppSettings;
       final txns = results[5] as List<Txn>;
       final claims = results[6] as List<Claim>;
-      final customerTotals = _customerTotals(txns: txns, claims: claims);
+      final settledByPending = _pendingSettledByTxn(txns);
+      final customerTotals = _customerTotals(
+        txns: txns,
+        claims: claims,
+        settledByPending: settledByPending,
+      );
+      final pendingOpenTotals = _pendingOpenTotals(
+        txns: txns,
+        settledByPending: settledByPending,
+      );
       _dayStartHour = settings.dayStartHour;
       final todayRange = _todayRange();
       final monthRange = _monthRange();
@@ -223,6 +290,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _todayReport = todayReport;
         _customersReceivable = customerTotals.receivable;
         _customersPayable = customerTotals.payable;
+        _pendingOpenReceivable = pendingOpenTotals.receivable;
+        _pendingOpenPayable = pendingOpenTotals.payable;
         _expensesTotalAll = expensesAll;
         _expensesTotalToday = expensesToday;
         _expensesTotalMonth = expensesMonth;
@@ -279,6 +348,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _pendingSummaryTile(TreasurySnapshot snap) {
     final hasOverdue = _pendingOverdueCount > 0;
+    final pendingOpenTotal = _pendingOpenReceivable + _pendingOpenPayable;
     return Card(
       child: ListTile(
         leading: Icon(
@@ -289,7 +359,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('إجمالي القيمة: ${snap.pendingTotal.toStringAsFixed(2)}'),
+            Text('إجمالي القيمة: ${pendingOpenTotal.toStringAsFixed(2)}'),
             const SizedBox(height: 6),
             Wrap(
               spacing: 8,
@@ -355,7 +425,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final availableNow = snap.availableLiquidityNow;
     final actualTreasuryApproved = snap.actualTreasuryApproved;
     final realCapitalApproved = snap.realCapitalApproved;
-    final pendingDiff = snap.pendingNet;
+    final pendingIn = _pendingOpenPayable;
+    final pendingOut = _pendingOpenReceivable;
+    final pendingTotal = pendingIn + pendingOut;
+    final pendingDiff = pendingOut - pendingIn;
     final pendingDiffAbs = pendingDiff.abs();
     final pendingDiffLabel = pendingDiff >= 0 ? 'لنا' : 'علينا';
     final isTrial = license != null && !license.isActivated;
@@ -442,14 +515,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 16),
           Text(
             focusPending
-                ? 'إجمالي المبالغ الآجلة'
+                ? 'إجمالي المتبقي المفتوح في الآجل'
                 : 'إجمالي السيولة المتاحة الآن',
             style: const TextStyle(color: Colors.white70, fontSize: 14),
           ),
           const SizedBox(height: 6),
           Text(
             focusPending
-                ? snap.pendingTotal.toStringAsFixed(2)
+                ? pendingTotal.toStringAsFixed(2)
                 : availableNow.toStringAsFixed(2),
             style: const TextStyle(
               color: Colors.white,
@@ -486,18 +559,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const Divider(color: Colors.white24, height: 8),
               _darkRow('الدرج (فعلي)', snap.drawerActualBalance),
               _darkRow('المحافظ (فعلي)', snap.walletsActualTotal),
-              _darkRow('فوري (فعلي)', snap.fawryActualBalance),
               const SizedBox(height: 6),
               _darkRow('رأس المال الحقيقي (معتمد)', realCapitalApproved),
             ],
           ] else ...[
-            _darkRow('داخل الآجل', snap.pendingInflow),
-            _darkRow('خارج الآجل', snap.pendingOutflow),
+            _darkRow('داخل الآجل', pendingIn),
+            _darkRow('خارج الآجل', pendingOut),
             const SizedBox(height: 6),
             _darkRow('الفرق ($pendingDiffLabel)', pendingDiffAbs),
             const SizedBox(height: 6),
             const Text(
-              '\u0627\u0644\u0633\u064a\u0648\u0644\u0629 \u0627\u0644\u0645\u062a\u0627\u062d\u0629 = \u0627\u0644\u062e\u0632\u0646\u0629 \u0627\u0644\u0641\u0639\u0644\u064a\u0629 + \u0627\u0633\u062a\u0644\u0627\u0645 \u0645\u0639\u0644\u0642 - \u062a\u062d\u0648\u064a\u0644 \u0645\u0639\u0644\u0642',
+              'المعروض هنا هو المتبقي المفتوح بعد أي تحصيل أو سداد جزئي.',
               style: TextStyle(color: Colors.white70),
             ),
           ],
