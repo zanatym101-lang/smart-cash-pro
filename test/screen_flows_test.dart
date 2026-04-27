@@ -36,6 +36,9 @@ void main() {
     'miguelruivo.flutter.plugins.filepicker',
   );
   const localAuthChannel = MethodChannel('plugins.flutter.io/local_auth');
+  const packageInfoChannel = MethodChannel(
+    'dev.fluttercommunity.plus/package_info',
+  );
   final supportDir = Directory.systemTemp.createTempSync('kw_screen_flows_');
 
   Future<void> resetAndActivate() async {
@@ -176,6 +179,20 @@ void main() {
           if (call.method == 'stopAuthentication') return true;
           return false;
         });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(packageInfoChannel, (call) async {
+          if (call.method == 'getAll') {
+            return <String, dynamic>{
+              'appName': 'Smart Cash Pro',
+              'packageName': 'com.smartcashpro.app',
+              'version': '1.8.1',
+              'buildNumber': '19',
+              'buildSignature': '',
+              'installerStore': '',
+            };
+          }
+          return null;
+        });
   });
 
   setUp(() async {
@@ -197,6 +214,8 @@ void main() {
         .setMockMethodCallHandler(filePickerChannel, null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(localAuthChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(packageInfoChannel, null);
     try {
       if (supportDir.existsSync()) {
         supportDir.deleteSync(recursive: true);

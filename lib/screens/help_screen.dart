@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../widgets/app_title.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'privacy_policy_screen.dart';
@@ -178,13 +179,15 @@ class HelpScreen extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
-                children: const [
+                children: [
                   Text(
                     'Munzer Company Soft',
                     style: TextStyle(fontWeight: FontWeight.w700),
                   ),
-                  SizedBox(height: 4),
-                  Text('كوبي رايت © 2026 جميع الحقوق محفوظة'),
+                  const SizedBox(height: 4),
+                  const Text('كوبي رايت © 2026 جميع الحقوق محفوظة'),
+                  const SizedBox(height: 8),
+                  const _AppVersionText(),
                 ],
               ),
             ),
@@ -211,6 +214,34 @@ class HelpScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _AppVersionText extends StatelessWidget {
+  const _AppVersionText();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<PackageInfo>(
+      future: PackageInfo.fromPlatform(),
+      builder: (context, snapshot) {
+        if (snapshot.hasData) {
+          final info = snapshot.data!;
+          return Text(
+            'الإصدار ${info.version} (${info.buildNumber})',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: Colors.black54),
+          );
+        }
+        return Text(
+          'الإصدار -',
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: Colors.black54),
+        );
+      },
     );
   }
 }
