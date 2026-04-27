@@ -77,6 +77,7 @@ void main() {
         networkFee: 2,
         transferType: 'type1',
         isPending: true,
+        party: 'Pending Transfer Customer',
         note: 'pending transfer',
       );
 
@@ -205,6 +206,101 @@ void main() {
     },
   );
 
+  test('pending transfer requires customer name', () async {
+    final db = AppDb.instance;
+
+    final walletId = await db.addWallet(
+      name: 'Pending Customer Wallet',
+      phone: '01112345000',
+      openingBalance: 500,
+    );
+
+    expect(
+      () => db.addTransfer(
+        walletId: walletId,
+        amount: 100,
+        clientFee: 5,
+        networkFee: 0,
+        transferType: 'type1',
+        isPending: true,
+      ),
+      throwsA(
+        isA<Exception>().having(
+          (e) => e.toString(),
+          'message',
+          contains('يجب اختيار العميل في العمليات الآجلة'),
+        ),
+      ),
+    );
+  });
+
+  test('pending receive requires customer name', () async {
+    final db = AppDb.instance;
+
+    final walletId = await db.addWallet(
+      name: 'Pending Supplier Wallet',
+      phone: '01212345000',
+      openingBalance: 500,
+    );
+
+    expect(
+      () => db.addReceive(
+        walletId: walletId,
+        amount: 100,
+        commission: 5,
+        receiveType: 'cash',
+        isPending: true,
+      ),
+      throwsA(
+        isA<Exception>().having(
+          (e) => e.toString(),
+          'message',
+          contains('يجب اختيار العميل في العمليات الآجلة'),
+        ),
+      ),
+    );
+  });
+
+  test('posted transfer and receive still allow empty customer name', () async {
+    final db = AppDb.instance;
+
+    final transferWalletId = await db.addWallet(
+      name: 'Posted Transfer Wallet',
+      phone: '01011110000',
+      openingBalance: 1000,
+    );
+    final receiveWalletId = await db.addWallet(
+      name: 'Posted Receive Wallet',
+      phone: '01511110000',
+      openingBalance: 100,
+    );
+
+    final transferId = await db.addTransfer(
+      walletId: transferWalletId,
+      amount: 100,
+      clientFee: 5,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: false,
+    );
+    final receiveId = await db.addReceive(
+      walletId: receiveWalletId,
+      amount: 50,
+      commission: 3,
+      receiveType: 'cash',
+      isPending: false,
+    );
+
+    final txns = await db.listTxns();
+    final transfer = txns.firstWhere((t) => t.id == transferId);
+    final receive = txns.firstWhere((t) => t.id == receiveId);
+
+    expect(transfer.status, 'posted');
+    expect(receive.status, 'posted');
+    expect(transfer.party, isNull);
+    expect(receive.party, isNull);
+  });
+
   test(
     'deferred receive keeps cash unchanged until settlement and posts once after confirm',
     () async {
@@ -222,6 +318,7 @@ void main() {
         commission: 10,
         receiveType: 'cash',
         isPending: true,
+        party: 'Pending Receive Customer',
         note: 'pending receive',
       );
 
@@ -271,6 +368,7 @@ void main() {
         commission: 0,
         receiveType: 'cash',
         isPending: true,
+        party: 'Pending Receive Balance Customer',
         note: 'pending receive',
       );
 
@@ -303,6 +401,7 @@ void main() {
         commission: 0,
         receiveType: 'cash',
         isPending: true,
+        party: 'Pending Receive Source Customer',
         note: 'pending receive for pending transfer',
       );
 
@@ -313,6 +412,7 @@ void main() {
         networkFee: 0,
         transferType: 'type1',
         isPending: true,
+        party: 'Pending Transfer Source Customer',
         note: 'pending transfer against pending receive',
       );
 
@@ -339,6 +439,7 @@ void main() {
         networkFee: 2,
         transferType: 'type1',
         isPending: true,
+        party: 'Cancel Deferred Transfer Customer',
         note: 'cancel deferred transfer',
       );
       expect(await db.getWalletBalance(walletId), closeTo(398, 0.0001));
@@ -356,6 +457,7 @@ void main() {
         commission: 5,
         receiveType: 'cash',
         isPending: true,
+        party: 'Cancel Deferred Receive Customer',
         note: 'cancel deferred receive',
       );
       expect(await db.getWalletBalance(walletId), closeTo(580, 0.0001));
@@ -455,6 +557,7 @@ void main() {
         networkFee: 0,
         transferType: 'type1',
         isPending: true,
+        party: 'Before Close Pending Customer',
         note: 'before close pending',
       );
 
@@ -802,23 +905,25 @@ void main() {
         isPending: false,
       );
 
-      await db.addTransfer(
-        walletId: walletId,
-        amount: 100,
-        clientFee: 10,
-        networkFee: 0,
-        transferType: 'type1',
-        isPending: true,
-        note: 'pending out',
-      );
-      await db.addReceive(
-        walletId: walletId,
-        amount: 50,
-        commission: 5,
-        receiveType: 'cash',
-        isPending: true,
-        note: 'pending in',
-      );
+    await db.addTransfer(
+      walletId: walletId,
+      amount: 100,
+      clientFee: 10,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: true,
+      party: 'Treasury Pending Receivable',
+      note: 'pending out',
+    );
+    await db.addReceive(
+      walletId: walletId,
+      amount: 50,
+      commission: 5,
+      receiveType: 'cash',
+      isPending: true,
+      party: 'Treasury Pending Payable',
+      note: 'pending in',
+    );
 
       final snap = await db.getTreasurySnapshot();
 
@@ -901,6 +1006,7 @@ void main() {
         networkFee: 2,
         transferType: 'type1',
         isPending: true,
+        party: 'Combo Pending Transfer Customer',
         note: 'combo pending transfer',
       );
       final receivePendingId = await db.addReceive(
@@ -909,6 +1015,7 @@ void main() {
         commission: 4,
         receiveType: 'cash',
         isPending: true,
+        party: 'Combo Pending Receive Customer',
         note: 'combo pending receive',
       );
 
@@ -1601,6 +1708,7 @@ void main() {
         networkFee: 0,
         transferType: 'type1',
         isPending: true,
+        party: 'Confirm Pending Settlement Customer',
       );
       await db.addPendingSettlementForTxn(pendingTxnId: txnId, amount: 20);
       await db.clearOutbox();

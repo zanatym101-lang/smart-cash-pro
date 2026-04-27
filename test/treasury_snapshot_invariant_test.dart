@@ -71,6 +71,7 @@ void main() {
         networkFee: 2,
         transferType: 'type1',
         isPending: true,
+        party: 'Invariant Pending Receivable',
       );
       await db.addReceive(
         walletId: walletId,
@@ -78,6 +79,7 @@ void main() {
         commission: 4,
         receiveType: 'cash',
         isPending: true,
+        party: 'Invariant Pending Payable',
       );
 
       final snap = await db.getTreasurySnapshot();

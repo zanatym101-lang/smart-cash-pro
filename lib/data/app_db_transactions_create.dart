@@ -148,6 +148,10 @@ extension AppDbTransactionsCreate on AppDb {
     final effectivePending = AppSession.isAdmin ? isPending : true;
     final status = effectivePending ? 'pending' : 'posted';
     final storedMode = transferType == 'type2' ? 'type2_v2' : transferType;
+    final partyName = party?.trim();
+    if (effectivePending && (partyName == null || partyName.isEmpty)) {
+      throw Exception('يجب اختيار العميل في العمليات الآجلة.');
+    }
 
     // Stored amount = wallet spend.
     final walletSpend = transferType == 'type2'
@@ -165,7 +169,7 @@ extension AppDbTransactionsCreate on AppDb {
       networkFee: networkFee,
       mode: storedMode,
       note: note,
-      party: party?.trim().isEmpty ?? true ? null : party?.trim(),
+      party: partyName?.isEmpty ?? true ? null : partyName,
       createdBy: _actorName(),
       createdRole: _actorRole(),
       createdAt: now,
@@ -242,6 +246,10 @@ extension AppDbTransactionsCreate on AppDb {
 
     final effectivePending = AppSession.isAdmin ? isPending : true;
     final status = effectivePending ? 'pending' : 'posted';
+    final partyName = party?.trim();
+    if (effectivePending && (partyName == null || partyName.isEmpty)) {
+      throw Exception('يجب اختيار العميل في العمليات الآجلة.');
+    }
 
     final now = DateTime.now();
     final entryDate = _nextOpenDate(now);
@@ -257,7 +265,7 @@ extension AppDbTransactionsCreate on AppDb {
       networkFee: 0,
       mode: receiveType,
       note: note,
-      party: party?.trim().isEmpty ?? true ? null : party?.trim(),
+      party: partyName?.isEmpty ?? true ? null : partyName,
       createdBy: _actorName(),
       createdRole: _actorRole(),
       createdAt: now,
