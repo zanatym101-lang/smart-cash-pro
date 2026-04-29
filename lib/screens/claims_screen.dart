@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../data/app_db.dart';
 import '../models/claim.dart';
+import '../models/transaction.dart';
 import '../utils/contact_picker.dart';
 import '../utils/phone_provider.dart';
 import '../widgets/app_title.dart';
@@ -13,10 +14,25 @@ class ClaimsScreen extends StatefulWidget {
   State<ClaimsScreen> createState() => _ClaimsScreenState();
 }
 
+class _ClaimTimelineItem {
+  final DateTime date;
+  final int order;
+  final String label;
+  final double amount;
+
+  const _ClaimTimelineItem({
+    required this.date,
+    required this.order,
+    required this.label,
+    required this.amount,
+  });
+}
+
 class _ClaimsScreenState extends State<ClaimsScreen> {
   bool _loading = true;
   String? _error;
   List<Claim> _claims = [];
+  List<Txn> _txns = [];
   final Set<int> _busyClaimIds = {};
   final _searchCtrl = TextEditingController();
   String _query = '';
@@ -40,6 +56,7 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
     });
     try {
       _claims = await AppDb.instance.listClaims();
+      _txns = await AppDb.instance.listTxns();
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -57,6 +74,119 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
   }
 
   String _fmtMoney(double v) => v.toStringAsFixed(2);
+
+  int? _extractPendingSettlementRef(String? note) {
+    if (note == null || note.trim().isEmpty) return null;
+    final m = RegExp(r'pending_txn:(\d+)').firstMatch(note);
+    if (m == null) return null;
+    return int.tryParse(m.group(1) ?? '');
+  }
+
+  int? _extractClaimIdFromNote(String? note) {
+    if (note == null || note.trim().isEmpty) return null;
+    final m = RegExp(r'claim_id:(\d+)').firstMatch(note);
+    if (m == null) return null;
+    return int.tryParse(m.group(1) ?? '');
+  }
+
+  double _sourceTxnAmount(Txn t) {
+    if (t.kind == 'transfer') {
+      if (t.mode == 'type2_v2') return t.amount + t.clientFee;
+      final base = t.amount - t.networkFee;
+      if (t.mode == 'type1') return base + t.clientFee;
+      return base;
+    }
+    if (t.kind == 'receive') {
+      if (t.mode == 'cash') return t.amount;
+      if (t.mode == 'deduct') {
+        return (t.amount - t.clientFee).clamp(0, 1e18).toDouble();
+      }
+      return t.amount;
+    }
+    if (t.kind == 'fawry_credit') return t.amount + t.clientFee;
+    return t.amount;
+  }
+
+  String _sourceTxnLabel(Txn t) {
+    switch (t.kind) {
+      case 'transfer':
+        return 'تحويل آجل';
+      case 'receive':
+        return 'استلام آجل';
+      case 'fawry_credit':
+        return 'فوري آجل';
+      default:
+        return 'عملية أصلية';
+    }
+  }
+
+  String _settlementLabel(Txn t) {
+    return t.kind == 'claim_collect' ? 'تحصيل مستحق' : 'سداد مستحق';
+  }
+
+  List<_ClaimTimelineItem> _timelineForClaim(Claim c) {
+    final items = <_ClaimTimelineItem>[];
+    final sourceTxnId = c.sourceTxnId;
+    if (sourceTxnId == null) return const [];
+
+    final sourceTxn = _txns.cast<Txn?>().firstWhere(
+      (t) => t?.id == sourceTxnId,
+      orElse: () => null,
+    );
+    if (sourceTxn == null) return const [];
+
+    if (sourceTxn.kind == 'transfer' ||
+        sourceTxn.kind == 'receive' ||
+        sourceTxn.kind == 'fawry_credit') {
+      items.add(
+        _ClaimTimelineItem(
+          date: sourceTxn.entryDate,
+          order: sourceTxn.id,
+          label: _sourceTxnLabel(sourceTxn),
+          amount: _sourceTxnAmount(sourceTxn),
+        ),
+      );
+    }
+
+    final settlements = _txns
+        .where(
+          (t) =>
+              t.status == 'posted' &&
+              (t.kind == 'claim_collect' || t.kind == 'claim_pay') &&
+              (_extractPendingSettlementRef(t.note) == sourceTxnId ||
+                  _extractClaimIdFromNote(t.note) == c.id),
+        )
+        .toList()
+      ..sort((a, b) {
+        final byDate = a.entryDate.compareTo(b.entryDate);
+        if (byDate != 0) return byDate;
+        return a.id.compareTo(b.id);
+      });
+
+    for (final t in settlements) {
+      items.add(
+        _ClaimTimelineItem(
+          date: t.entryDate,
+          order: t.id,
+          label: _settlementLabel(t),
+          amount: t.amount,
+        ),
+      );
+    }
+
+    if (items.isEmpty) return const [];
+
+    items.add(
+      _ClaimTimelineItem(
+        date: c.entryDate,
+        order: c.id,
+        label: c.status == 'open' ? 'مستحق مفتوح' : 'مستحق مغلق',
+        amount: c.amount,
+      ),
+    );
+
+    return items;
+  }
 
   bool _matchesQuery(Claim c) {
     final q = _query.trim().toLowerCase();
@@ -575,6 +705,7 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
 
   Widget _claimCard(Claim c, String actionLabel) {
     final busy = _busyClaimIds.contains(c.id);
+    final timeline = _timelineForClaim(c);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -600,6 +731,33 @@ class _ClaimsScreenState extends State<ClaimsScreen> {
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 6),
+                  if (timeline.isNotEmpty)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ...timeline.map(
+                          (item) => Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${item.label} • ${_fmtMoney(item.amount)}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  _fmtDate(item.date),
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                      ],
+                    ),
                   Text(
                     'المتبقي: ${_fmtMoney(c.amount)}\nتاريخ: ${_fmtDate(c.entryDate)}${_noteLine(c.note)}',
                   ),
