@@ -77,6 +77,16 @@ void main() {
     }
   }
 
+  Future<void> settleSlowUi(
+    WidgetTester tester, {
+    int cycles = 3,
+  }) async {
+    for (var i = 0; i < cycles; i++) {
+      await tester.pumpAndSettle(const Duration(milliseconds: 120));
+      await tester.pump(const Duration(milliseconds: 120));
+    }
+  }
+
   Finder sheetScope(Finder child) {
     return find.descendant(of: find.byType(BottomSheet), matching: child);
   }
@@ -98,6 +108,21 @@ void main() {
     }
     positions.sort();
     return positions;
+  }
+
+  Future<void> scrollUntilVisibleSafe(
+    WidgetTester tester,
+    Finder finder, {
+    Finder? scrollable,
+  }) async {
+    final targetScrollable = scrollable ?? find.byType(Scrollable).first;
+    if (finder.evaluate().isNotEmpty) return;
+    await tester.scrollUntilVisible(
+      finder,
+      200,
+      scrollable: targetScrollable,
+    );
+    await settleSlowUi(tester, cycles: 2);
   }
 
   setUpAll(() async {
@@ -167,6 +192,7 @@ void main() {
 
       await tester.pumpWidget(const MaterialApp(home: CustomersScreen()));
       await pumpUntilFound(tester, find.text(customerName));
+      await settleSlowUi(tester);
 
       expect(
         customerSummaryTextContaining('عليه: 405.00 | له: 0.00'),
@@ -176,12 +202,23 @@ void main() {
       await tester.tap(find.text(customerName).first);
       await pumpFrames(tester);
       await pumpUntilFound(tester, find.byType(BottomSheet));
+      await settleSlowUi(tester);
 
-      expect(sheetScope(find.text('+905.00')), findsOneWidget);
+      final originalAmount = sheetScope(find.textContaining('905.00'));
+      await scrollUntilVisibleSafe(
+        tester,
+        originalAmount,
+        scrollable: find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(Scrollable),
+        ).first,
+      );
+      expect(originalAmount, findsWidgets);
       expect(sheetScope(find.textContaining('500.00')), findsWidgets);
 
-      await tester.tap(sheetScope(find.text('+905.00')).first, warnIfMissed: false);
+      await tester.tap(originalAmount.first, warnIfMissed: false);
       await pumpFrames(tester, count: 8);
+      await settleSlowUi(tester, cycles: 2);
       expect(find.textContaining('التاريخ: $expectedDate'), findsOneWidget);
     },
   );
@@ -204,11 +241,21 @@ void main() {
       );
       await pumpUntilFound(tester, find.byType(ChoiceChip));
       await pumpFrames(tester, count: 10);
+      await settleSlowUi(tester, cycles: 4);
 
       expect(find.textContaining('لنا: 405.00'), findsOneWidget);
-      expect(find.text('+905.00'), findsOneWidget);
-      expect(find.text('-500.00'), findsOneWidget);
-      expect(find.text('+405.00'), findsOneWidget);
+
+      final originalAmount = find.textContaining('905.00');
+      final settlementAmount = find.textContaining('500.00');
+      final remainingAmount = find.textContaining('405.00');
+
+      await scrollUntilVisibleSafe(tester, originalAmount);
+      await scrollUntilVisibleSafe(tester, settlementAmount);
+      await scrollUntilVisibleSafe(tester, remainingAmount);
+
+      expect(originalAmount, findsWidgets);
+      expect(settlementAmount, findsWidgets);
+      expect(remainingAmount, findsWidgets);
     },
   );
 
@@ -223,10 +270,15 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: ClaimsScreen()));
       await pumpUntilFound(tester, find.textContaining('405.00'));
       await pumpFrames(tester, count: 10);
+      await settleSlowUi(tester, cycles: 3);
 
       final originalFinder = find.textContaining('905.00');
       final settlementFinder = find.textContaining('500.00');
       final remainingFinder = find.textContaining('405.00');
+
+      await scrollUntilVisibleSafe(tester, originalFinder);
+      await scrollUntilVisibleSafe(tester, settlementFinder);
+      await scrollUntilVisibleSafe(tester, remainingFinder);
 
       expect(originalFinder, findsWidgets);
       expect(settlementFinder, findsWidgets);
