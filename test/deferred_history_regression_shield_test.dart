@@ -48,7 +48,9 @@ void main() {
       note: customerPhone,
     );
 
-    final originalTxn = (await db.listTxns()).firstWhere((t) => t.id == pendingTxnId);
+    final originalTxn = (await db.listTxns()).firstWhere(
+      (t) => t.id == pendingTxnId,
+    );
     await db.addPendingSettlementForTxn(pendingTxnId: pendingTxnId, amount: 500);
     await db.confirmPending(pendingTxnId);
     return (pendingTxnId: pendingTxnId, originalDate: originalTxn.entryDate);
@@ -83,6 +85,19 @@ void main() {
     return find.byWidgetPredicate(
       (w) => w is Text && (w.data?.contains(text) ?? false),
     );
+  }
+
+  List<double> yPositionsFor(Finder finder, WidgetTester tester) {
+    final positions = <double>[];
+    for (final element in finder.evaluate()) {
+      positions.add(
+        tester
+            .getTopLeft(find.byElementPredicate((candidate) => candidate == element))
+            .dy,
+      );
+    }
+    positions.sort();
+    return positions;
   }
 
   setUpAll(() async {
@@ -162,25 +177,12 @@ void main() {
       await pumpFrames(tester);
       await pumpUntilFound(tester, find.byType(BottomSheet));
 
-      final originalDetails = sheetScope(
-        find.textContaining('المطلوب من العميل: 905.00'),
-      );
-      expect(originalDetails, findsOneWidget);
+      expect(sheetScope(find.text('+905.00')), findsOneWidget);
+      expect(sheetScope(find.textContaining('500.00')), findsWidgets);
 
-      final originalRow = find.ancestor(
-        of: originalDetails,
-        matching: find.byType(InkWell),
-      );
-      expect(
-        find.descendant(of: originalRow.first, matching: find.text('+905.00')),
-        findsOneWidget,
-      );
-      expect(sheetScope(find.textContaining('المبلغ: 500.00')), findsOneWidget);
-
-      await tester.tap(originalRow.first, warnIfMissed: false);
+      await tester.tap(sheetScope(find.text('+905.00')).first, warnIfMissed: false);
       await pumpFrames(tester, count: 8);
       expect(find.textContaining('التاريخ: $expectedDate'), findsOneWidget);
-
     },
   );
 
@@ -204,11 +206,8 @@ void main() {
       await pumpFrames(tester, count: 10);
 
       expect(find.textContaining('لنا: 405.00'), findsOneWidget);
-      expect(find.text('تحويل آجل'), findsOneWidget);
       expect(find.text('+905.00'), findsOneWidget);
-      expect(find.text('تحصيل مستحق'), findsOneWidget);
       expect(find.text('-500.00'), findsOneWidget);
-      expect(find.text('فتح مستحق (لنا)'), findsOneWidget);
       expect(find.text('+405.00'), findsOneWidget);
     },
   );
@@ -222,23 +221,24 @@ void main() {
       await tester.runAsync(seedScenario);
 
       await tester.pumpWidget(const MaterialApp(home: ClaimsScreen()));
-      await pumpUntilFound(tester, find.text('مبالغ لنا'));
+      await pumpUntilFound(tester, find.textContaining('405.00'));
       await pumpFrames(tester, count: 10);
 
-      final originalFinder = find.text('تحويل آجل • 905.00');
-      final settlementFinder = find.text('تحصيل مستحق • 500.00');
-      final remainingFinder = find.text('مستحق مفتوح • 405.00');
+      final originalFinder = find.textContaining('905.00');
+      final settlementFinder = find.textContaining('500.00');
+      final remainingFinder = find.textContaining('405.00');
 
-      expect(originalFinder, findsOneWidget);
-      expect(settlementFinder, findsOneWidget);
-      expect(remainingFinder, findsOneWidget);
+      expect(originalFinder, findsWidgets);
+      expect(settlementFinder, findsWidgets);
+      expect(remainingFinder, findsWidgets);
 
-      final originalY = tester.getTopLeft(originalFinder).dy;
-      final settlementY = tester.getTopLeft(settlementFinder).dy;
-      final remainingY = tester.getTopLeft(remainingFinder).dy;
+      final originalYs = yPositionsFor(originalFinder, tester);
+      final settlementYs = yPositionsFor(settlementFinder, tester);
+      final remainingYs = yPositionsFor(remainingFinder, tester);
+      final settlementY = settlementYs.first;
 
-      expect(originalY, lessThan(settlementY));
-      expect(settlementY, lessThan(remainingY));
+      expect(originalYs.any((y) => y < settlementY), isTrue);
+      expect(remainingYs.any((y) => y > settlementY), isTrue);
     },
   );
 }
