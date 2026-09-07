@@ -58,6 +58,7 @@ extension AppDbClaims on AppDb {
     required String type, // receivable | payable
     required String party,
     required double amount,
+    double fee = 0,
     String? note,
     String? phone,
     DateTime? entryDate,
@@ -101,10 +102,10 @@ extension AppDbClaims on AppDb {
       sourceTxnId: sourceTxnId,
     );
 
-    _claims.add(claim);
-
     Txn? openTxn;
     if (applyDrawerEffect) {
+      final drawerAmount =
+          (t == 'receivable' && fee > 0) ? (amount - fee) : amount;
       openTxn = Txn(
         id: _nextTxnId++,
         kind: t == 'receivable'
@@ -112,8 +113,8 @@ extension AppDbClaims on AppDb {
             : 'claim_open_payable',
         status: 'posted',
         entryDate: effectiveDate,
-        amount: amount,
-        clientFee: 0,
+        amount: drawerAmount,
+        clientFee: fee,
         networkFee: 0,
         mode: t,
         note:
@@ -129,12 +130,17 @@ extension AppDbClaims on AppDb {
       _txns.add(openTxn);
     }
 
+    final finalClaim = (openTxn != null && sourceTxnId == null && fee > 0)
+        ? claim.copyWith(sourceTxnId: openTxn.id)
+        : claim;
+    _claims.add(finalClaim);
+
     final outboxItems = <PendingOutboxInsert>[
       _outboxInsert(
         entity: 'claim',
-        entityId: claim.id.toString(),
+        entityId: finalClaim.id.toString(),
         action: 'create',
-        payload: claim.toJson(),
+        payload: finalClaim.toJson(),
       ),
     ];
     if (openTxn != null) {
@@ -152,19 +158,19 @@ extension AppDbClaims on AppDb {
       await appendAudit(
         type: 'claim_open_post',
         txnId: openTxn.id,
-        claimId: claim.id,
+        claimId: finalClaim.id,
         amount: amount,
-        note: '${claim.type}:${claim.party}',
+        note: '${finalClaim.type}:${finalClaim.party}',
       );
     }
     await appendAudit(
       type: 'claim_add',
-      claimId: claim.id,
+      claimId: finalClaim.id,
       amount: amount,
-      note: '${claim.type}:${claim.party}',
+      note: '${finalClaim.type}:${finalClaim.party}',
     );
     await _incrementOperationUsed();
-    return claim.id;
+    return finalClaim.id;
   }
 
   Future<List<Claim>> listClaims({String? type, String? status}) async {

@@ -9,7 +9,7 @@ class HelpScreen extends StatelessWidget {
 
   Future<void> _openWhatsApp(BuildContext context) async {
     final uri = Uri.parse(
-      'https://wa.me/201223361572?text=مرحبا%20،%20أرغب%20في%20التواصل%20بخصوص%20التطبيق',
+      'https://wa.me/201007700313?text=مرحبا%20،%20أرغب%20في%20التواصل%20بخصوص%20التطبيق',
     );
     final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!ok && context.mounted) {

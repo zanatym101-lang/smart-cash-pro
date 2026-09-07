@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 
@@ -13,7 +14,7 @@ class PickedContact {
 }
 
 Future<PickedContact?> pickContact(BuildContext context) async {
-  if (!Platform.isAndroid && !Platform.isIOS) {
+  if (kIsWeb || (!Platform.isAndroid && !Platform.isIOS)) {
     if (!context.mounted) return null;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('اختيار الأسماء متاح على الهاتف فقط')),

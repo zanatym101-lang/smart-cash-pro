@@ -159,9 +159,26 @@ extension AppDbAdminLicense on AppDb {
     return sha256.convert(bytes).toString().toUpperCase();
   }
 
+  String _platformLabel() {
+    if (kIsWeb) return 'web';
+    if (Platform.isAndroid) return 'android';
+    if (Platform.isIOS) return 'ios';
+    if (Platform.isWindows) return 'windows';
+    if (Platform.isMacOS) return 'macos';
+    if (Platform.isLinux) return 'linux';
+    return 'unknown';
+  }
+
   Future<String> _deviceFingerprint() async {
     final info = DeviceInfoPlugin();
     try {
+      if (kIsWeb) {
+        final w = await info.webBrowserInfo;
+        final browser = w.browserName.toString();
+        final platform = (w.platform ?? '').trim();
+        final userAgent = (w.userAgent ?? '').trim();
+        return 'web|$browser|$platform|$userAgent';
+      }
       if (Platform.isAndroid) {
         final a = await info.androidInfo;
         return 'android|${a.fingerprint}|${a.id}';
@@ -183,7 +200,7 @@ extension AppDbAdminLicense on AppDb {
         return 'linux|${l.machineId ?? l.id}';
       }
     } catch (_) {}
-    return 'unknown|${Platform.operatingSystem}';
+    return 'unknown|${_platformLabel()}';
   }
 
   Future<String> _deviceCode() async {
@@ -435,7 +452,7 @@ extension AppDbAdminLicense on AppDb {
         deviceId: deviceCode,
         deviceFingerprintHash: deviceFingerprintHash,
         appVersion: _licenseCloudAppVersion,
-        platform: Platform.operatingSystem,
+        platform: _platformLabel(),
         idempotencyKey: _newLicenseIdempotencyKey('activate'),
       ),
     );
@@ -1063,11 +1080,39 @@ extension AppDbAdminLicense on AppDb {
     }
   }
 
+  bool _isOwnerOrDevBuild() {
+    const isDevBuild = bool.fromEnvironment('SHOW_LEGACY_CODE_GENERATOR', defaultValue: false);
+    if (isDevBuild) return true;
+    try {
+      if (Firebase.apps.isNotEmpty) {
+        final email = FirebaseAuth.instance.currentUser?.email?.toLowerCase().trim();
+        if (email == 'zanatym101@gmail.com') return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   Future<LicenseInfo> getLicenseInfo() async {
+    final deviceCode = await _deviceCode();
+    if (_isOwnerOrDevBuild()) {
+      return LicenseInfo(
+        isActivated: true,
+        deviceCode: deviceCode,
+        trialDays: 99999,
+        daysUsed: 0,
+        daysLeft: 99999,
+        maxOperations: 999999,
+        operationsUsed: 0,
+        operationsLeft: 999999,
+        maxWallets: 999,
+        maxReports: 999999,
+        reportsUsed: 0,
+        reportsLeft: 999999,
+      );
+    }
     final m = await _readSettingsMap();
     final ensured = _ensureLicense(m);
     final license = ensured.license;
-    final deviceCode = await _deviceCode();
     final before = jsonEncode(license);
     final useServerDecision = _isServerAuthoritativeLicenseEnabled();
     final isActivated = useServerDecision
@@ -1191,16 +1236,39 @@ extension AppDbAdminLicense on AppDb {
     }
   }
 
-  Future<void> _ensureOperationAllowed() async {
+  Future<bool> tryAutoActivateFromCloud() async {
+    final m = await _readSettingsMap();
+    final ensured = _ensureLicense(m);
+    final license = ensured.license;
+    final deviceCode = await _deviceCode();
+
+    try {
+      final activation = await LicenseCloudService.tryAutoActivateAssignedLicense(
+        deviceId: deviceCode,
+        appVersion: _licenseCloudAppVersion,
+      );
+      if (activation != null) {
+        _applyCloudLicense(
+          license: license,
+          result: activation,
+          deviceCode: deviceCode,
+          activationCode: (license['activationCode']?.toString().isNotEmpty == true)
+              ? license['activationCode'].toString()
+              : 'AUTO_CLOUD',
+        );
+        m['license'] = license;
+        await _writeSettingsMap(m);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+    Future<void> _ensureOperationAllowed() async {
     final info = await getLicenseInfo();
     if (info.isActivated) return;
     if (info.daysLeft <= 0) {
-      throw Exception('انتهت الفترة التجريبية');
-    }
-    if (info.operationsLeft <= 0) {
-      throw Exception(
-        'تم تجاوز الحد التجريبي للعمليات (${info.maxOperations})',
-      );
+      throw Exception('انتهت الفترة التجريبية للبرنامج، يرجى تفعيل النسخة الكاملة.');
     }
   }
 
@@ -1230,7 +1298,7 @@ extension AppDbAdminLicense on AppDb {
     final info = await getLicenseInfo();
     if (info.isActivated) return true;
     if (info.daysLeft <= 0) return false;
-    if (info.reportsLeft <= 0) return false;
+    
 
     final m = await _readSettingsMap();
     final ensured = _ensureLicense(m);
@@ -1289,4 +1357,40 @@ extension AppDbAdminLicense on AppDb {
     // Testing helper intentionally avoids network in legacy cloud mode.
     return false;
   }
+  Future<void> extendByAd({int days = 3}) async {
+    final useServerAuthoritative = _isServerAuthoritativeLicenseEnabled();
+    if (useServerAuthoritative) {
+      // For future if we move everything to the other DB
+    } else {
+      await LicenseCloudService.extendByAd(days: days);
+      
+      // Update local settings so it reflects immediately
+      final m = await _readSettingsMap();
+      final ensured = _ensureLicense(m);
+      final license = ensured.license;
+      
+      final currentDays =
+          int.tryParse((license['trialDays'] ?? '7').toString()) ?? 7;
+      license['trialDays'] = currentDays + days;
+      
+      final currentStr = license['licenseExpiresAt'] as String?;
+      DateTime newExpiry;
+      if (currentStr != null) {
+        final current = DateTime.tryParse(currentStr);
+        if (current != null && current.isAfter(DateTime.now())) {
+          newExpiry = current.add(Duration(days: days));
+        } else {
+          newExpiry = DateTime.now().add(Duration(days: days));
+        }
+      } else {
+        newExpiry = DateTime.now().add(Duration(days: days));
+      }
+      
+      license['licenseExpiresAt'] = newExpiry.toIso8601String();
+      license['cloudLicenseExpiresAt'] = newExpiry.toIso8601String();
+      m['license'] = license;
+      await _writeSettingsMap(m);
+    }
+  }
+
 }

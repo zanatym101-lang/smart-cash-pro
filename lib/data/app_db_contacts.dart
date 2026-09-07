@@ -35,4 +35,67 @@ extension AppDbContacts on AppDb {
 
     await _save();
   }
+
+  Future<List<CustomerMatchCandidate>> listCustomerCandidates() async {
+    final txns = await listTxns();
+    final claims = await listClaims();
+    final byKey = <String, CustomerMatchCandidate>{};
+
+    String normalizePhone(String input) {
+      final buffer = StringBuffer();
+      for (final rune in input.runes) {
+        final ch = String.fromCharCode(rune);
+        final code = ch.codeUnitAt(0);
+        if (code >= 48 && code <= 57) {
+          buffer.write(ch);
+        }
+      }
+      return buffer.toString();
+    }
+
+    String? extractPhone(String? input) {
+      if (input == null) return null;
+      for (final match in RegExp(r'\+?\d[\d\s().-]{8,}\d').allMatches(input)) {
+        final normalized = normalizePhone(match.group(0) ?? '');
+        if (normalized.length >= 10 && normalized.length <= 15) {
+          return normalized;
+        }
+      }
+      return null;
+    }
+
+    void add({
+      required String name,
+      String? phone,
+    }) {
+      final trimmedName = name.trim();
+      if (trimmedName.isEmpty) return;
+      final normalizedPhone = normalizePhone(phone ?? '');
+      final key = normalizedPhone.isNotEmpty
+          ? 'p:$normalizedPhone'
+          : 'n:${trimmedName.toLowerCase()}';
+      
+      if (!byKey.containsKey(key)) {
+        byKey[key] = CustomerMatchCandidate(
+          customerName: trimmedName,
+          phone: normalizedPhone.isEmpty ? null : normalizedPhone,
+        );
+      }
+    }
+
+    for (final txn in txns) {
+      add(
+        name: txn.party ?? '',
+        phone: extractPhone(txn.note) ?? extractPhone(txn.reference),
+      );
+    }
+    for (final claim in claims) {
+      add(
+        name: claim.party,
+        phone: extractPhone(claim.note),
+      );
+    }
+
+    return byKey.values.toList(growable: false);
+  }
 }

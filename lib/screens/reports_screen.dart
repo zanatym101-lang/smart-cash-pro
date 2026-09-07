@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:printing/printing.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
@@ -14,6 +16,7 @@ import '../models/claim.dart';
 import '../models/daily_close.dart';
 import '../models/transaction.dart';
 import '../models/license_info.dart';
+import '../models/wallet.dart';
 
 part 'reports_date_range_helpers.dart';
 part 'reports_export_section.dart';
@@ -39,6 +42,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
   List<Txn> _txns = [];
   List<Claim> _claims = [];
   List<DailyClose> _closes = [];
+  List<Wallet> _wallets = [];
   TreasurySnapshot? _treasury;
   ReportData? _report;
   SmartInsights? _smart;
@@ -67,6 +71,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       _claims = await AppDb.instance.listClaims();
       _closes = await AppDb.instance.listDailyCloses();
       _closes.sort((a, b) => b.dateKey.compareTo(a.dateKey));
+      _wallets = await AppDb.instance.listWallets();
       _treasury = await AppDb.instance.getTreasurySnapshot();
       _report = ReportCalculator.build(
         txns: _txns,
@@ -125,7 +130,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     final license = _license;
 
     return DefaultTabController(
-      length: 9,
+      length: 8,
       child: Scaffold(
         appBar: AppBar(
           title: const AppTitle(subtitle: 'التقارير'),
@@ -170,7 +175,6 @@ class _ReportsScreenState extends State<ReportsScreen> {
               Tab(text: 'حركة الدرج'),
               Tab(text: 'ملخص العمليات'),
               Tab(text: 'المستحقات'),
-              Tab(text: 'الخزنة'),
               Tab(text: 'مطابقة الأرصدة'),
               Tab(text: 'إغلاق اليوم'),
               Tab(text: 'الملخص التنفيذي'),
@@ -188,11 +192,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     child: TabBarView(
                       children: [
                         _profitTab(report),
-                        _smartTab(_smart),
+                        _smartTab(_smart, treasury),
                         _cashflowTab(report),
                         _opsTab(report),
                         _claimsTab(report),
-                        _treasuryTab(treasury),
                         _reconciliationTab(report),
                         _dailyCloseTab(),
                         _executiveTab(report, treasury),

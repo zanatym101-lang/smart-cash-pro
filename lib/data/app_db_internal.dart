@@ -655,14 +655,14 @@ extension _AppDbInternal on AppDb {
         continue;
       }
 
-      if (_hasStatus(t, 'posted')) {
+      if (_hasStatus(t, 'posted') && !t.isReversed && !_hasStatus(t, 'reversed') && !_hasStatus(t, 'reverse_entry')) {
         // Use engine path to ensure validation is respected.
         _engine.createPending(txId: txId, spec: spec, payload: t.toJson());
         _engine.approve(txId: txId, spec: spec);
         continue;
       }
 
-      // canceled/rejected -> ignore for balances
+      // canceled/rejected/reversed/reverse_entry -> ignore for balances
     }
   }
 
@@ -729,6 +729,25 @@ extension _AppDbInternal on AppDb {
     for (final w in _wallets) {
       final q = projected.walletsQirsh[w.id.toString()] ?? 0;
       if (q < 0) {
+        if (candidate.walletFromId == w.id && candidate.kind == 'transfer') {
+          final currentAvailableQirsh =
+              _projectedBalances().walletsQirsh[w.id.toString()] ?? 0;
+          final availableBalance = Money.toEgpDouble(currentAvailableQirsh);
+          final fee = candidate.networkFee;
+          final isType2 =
+              candidate.mode == 'type2' || candidate.mode == 'type2_v2';
+          final requestedAmount = isType2
+              ? (candidate.amount - candidate.networkFee)
+              : (candidate.amount - candidate.networkFee);
+          final totalDeduction = candidate.amount;
+          final reqStr = requestedAmount.toStringAsFixed(2);
+          final feeStr = fee.toStringAsFixed(2);
+          final totalStr = totalDeduction.toStringAsFixed(2);
+          final availStr = availableBalance.toStringAsFixed(2);
+          throw Exception(
+            'عفواً، رصيد المحفظة غير كافٍ. المطلوب خصمه (المبلغ: $reqStr + الرسوم: $feeStr = إجمالي: $totalStr ج.م) أكبر من الرصيد المتاح ($availStr ج.م)',
+          );
+        }
         throw Exception(
           'لا يمكن تنفيذ العملية: رصيد المحفظة ${w.name} سيصبح سالبًا',
         );

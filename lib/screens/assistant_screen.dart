@@ -604,7 +604,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         return 'آجل';
       case 'canceled':
         return 'ملغي';
-      case 'rolled_back':
+      case 'reversed': return 'معكوس'; case 'reverse_entry': return 'قيد عكسي'; case 'rolled_back':
         return 'معكوس';
       default:
         return status;

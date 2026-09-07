@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
 import '../models/wallet.dart';
 import '../utils/phone_provider.dart';
 import '../widgets/app_title.dart';
 import 'wallet_funding_screen.dart';
+import 'wallet_ledger/wallet_ledger_screen.dart';
+import '../models/transaction.dart';
 
 class WalletsScreen extends StatefulWidget {
   const WalletsScreen({super.key});
@@ -197,8 +201,8 @@ class _WalletsScreenState extends State<WalletsScreen> {
                 final openingBalanceText = openingBalanceCtrl.text.trim();
                 final openingBalance = wallet == null
                     ? (openingBalanceText.isEmpty
-                        ? 0.0
-                        : (double.tryParse(openingBalanceText) ?? -1.0))
+                          ? 0.0
+                          : (double.tryParse(openingBalanceText) ?? -1.0))
                     : 0.0;
 
                 if (name.isEmpty) {
@@ -261,14 +265,17 @@ class _WalletsScreenState extends State<WalletsScreen> {
     if (data == null) return;
 
     try {
-      await AppDb.instance.addWallet(
-        name: data.name,
-        phone: data.phone,
-        openingBalance: data.openingBalance,
-        dailyLimit: data.dailyLimit,
-        monthlyLimit: data.monthlyLimit,
-        lowBalanceThreshold: data.lowBalanceThreshold,
-        allowNegative: false,
+      await CleanWriteGateway.appDbBridge().execute(
+        WalletAdjustmentIntent(
+          adjustmentType: WalletAdjustmentType.createWallet,
+          name: data.name,
+          phone: data.phone,
+          openingBalance: data.openingBalance,
+          dailyLimit: data.dailyLimit,
+          monthlyLimit: data.monthlyLimit,
+          lowBalanceThreshold: data.lowBalanceThreshold,
+          allowNegative: false,
+        ),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -288,13 +295,16 @@ class _WalletsScreenState extends State<WalletsScreen> {
     if (data == null) return;
 
     try {
-      await AppDb.instance.updateWallet(
-        walletId: w.id,
-        name: data.name,
-        phone: data.phone,
-        dailyLimit: data.dailyLimit,
-        monthlyLimit: data.monthlyLimit,
-        lowBalanceThreshold: data.lowBalanceThreshold,
+      await CleanWriteGateway.appDbBridge().execute(
+        WalletAdjustmentIntent(
+          adjustmentType: WalletAdjustmentType.updateWallet,
+          walletId: w.id,
+          name: data.name,
+          phone: data.phone,
+          dailyLimit: data.dailyLimit,
+          monthlyLimit: data.monthlyLimit,
+          lowBalanceThreshold: data.lowBalanceThreshold,
+        ),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -343,11 +353,14 @@ class _WalletsScreenState extends State<WalletsScreen> {
     if (ok != true) return;
 
     try {
-      if (monthly) {
-        await AppDb.instance.resetWalletMonthlyUsage(wallet.id);
-      } else {
-        await AppDb.instance.resetWalletDailyUsage(wallet.id);
-      }
+      await CleanWriteGateway.appDbBridge().execute(
+        WalletAdjustmentIntent(
+          adjustmentType: monthly
+              ? WalletAdjustmentType.resetMonthlyUsage
+              : WalletAdjustmentType.resetDailyUsage,
+          walletId: wallet.id,
+        ),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('تم تصفير الاستهلاك $scopeText بنجاح')),
@@ -389,11 +402,13 @@ class _WalletsScreenState extends State<WalletsScreen> {
     if (ok != true) return;
 
     try {
-      if (monthly) {
-        await AppDb.instance.resetAllWalletMonthlyUsage();
-      } else {
-        await AppDb.instance.resetAllWalletDailyUsage();
-      }
+      await CleanWriteGateway.appDbBridge().execute(
+        WalletAdjustmentIntent(
+          adjustmentType: monthly
+              ? WalletAdjustmentType.resetAllMonthlyUsage
+              : WalletAdjustmentType.resetAllDailyUsage,
+        ),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('تم التصفير الجماعي $scopeText بنجاح')),
@@ -405,6 +420,175 @@ class _WalletsScreenState extends State<WalletsScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text('فشل التصفير الجماعي: $e')));
     }
+  }
+
+  Future<void> _showMiniStatement(BuildContext context, int walletId, String walletName) async {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) {
+        return FutureBuilder(
+          future: AppDb.instance.listTxns(), // Needs optimizing for large DB, but fine for now
+          builder: (ctx, snapshot) {
+            if (!snapshot.hasData) {
+              return const SizedBox(height: 200, child: Center(child: CircularProgressIndicator()));
+            }
+            final txns = snapshot.data as List<Txn>;
+            final walletTxns = txns.where((t) => t.walletFromId == walletId || t.walletToId == walletId).toList();
+            walletTxns.sort((a, b) => b.entryDate.compareTo(a.entryDate));
+            final latest = walletTxns.take(5).toList();
+
+            return Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('أحدث العمليات: $walletName', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 12),
+                  if (latest.isEmpty) const Text('لا توجد عمليات مسجلة.'),
+                  ...latest.map((t) {
+                    final isOut = t.walletFromId == walletId;
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
+                        backgroundColor: isOut ? Colors.red.withValues(alpha: 0.1) : Colors.green.withValues(alpha: 0.1),
+                        child: Icon(
+                          isOut ? Icons.arrow_upward : Icons.arrow_downward,
+                          color: isOut ? Colors.red : Colors.green,
+                        ),
+                      ),
+                      title: Text(t.party ?? (isOut ? 'سحب/صرف' : 'إيداع/تمويل')),
+                      subtitle: Text('${t.entryDate.year}-${t.entryDate.month}-${t.entryDate.day}'),
+                      trailing: Text(
+                        '${isOut ? "-" : "+"}${t.amount.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          color: isOut ? Colors.red : Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    );
+                  }),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _reconcileWallet(Wallet w) async {
+    if (!AppSession.isAdmin) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('عفوا، أنت لست أدمن')));
+      return;
+    }
+    final actBalance = _actualBalances[w.id] ?? 0.0;
+    final ctrl = TextEditingController(text: actBalance.toStringAsFixed(2));
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('مطابقة رصيد: ${w.name}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('الرصيد الفعلي الحالي في التطبيق: $actBalance'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'الرصيد الفعلي في خط الموبايل',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('إلغاء')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('حفظ وتسوية'),
+          ),
+        ],
+      ),
+    );
+
+    if (res == true) {
+      final actual = double.tryParse(ctrl.text);
+      if (actual != null && actual != actBalance) {
+        setState(() { _loading = true; });
+        try {
+          await AppDb.instance.reconcileWalletBalance(
+            walletId: w.id,
+            actualBalance: actual,
+          );
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تمت تسوية الرصيد بنجاح')));
+        } catch (e) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('خطأ: $e')));
+        } finally {
+          _load();
+        }
+      }
+    }
+  }
+
+  Widget _buildLiquidityChart() {
+    double totalWallets = _actualBalances.values.fold(0.0, (a, b) => a + b);
+    if (totalWallets <= 0) return const SizedBox.shrink();
+    
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('توزيع السيولة النقدية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Row(
+                children: _wallets.map((w) {
+                  final bal = _actualBalances[w.id] ?? 0.0;
+                  if (bal <= 0) return const SizedBox.shrink();
+                  return Expanded(
+                    flex: (bal).toInt(),
+                    child: Tooltip(
+                      message: '${w.name}: ${bal.toStringAsFixed(0)}',
+                      child: Container(
+                        height: 20,
+                        color: Colors.primaries[w.id % Colors.primaries.length],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: _wallets.map((w) {
+                final bal = _actualBalances[w.id] ?? 0.0;
+                if (bal <= 0) return const SizedBox.shrink();
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(width: 10, height: 10, color: Colors.primaries[w.id % Colors.primaries.length]),
+                    const SizedBox(width: 4),
+                    Text('${w.name} (${((bal/totalWallets)*100).toStringAsFixed(1)}%)', style: const TextStyle(fontSize: 12)),
+                  ],
+                );
+              }).toList(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -464,6 +648,11 @@ class _WalletsScreenState extends State<WalletsScreen> {
         child: ListView(
           padding: const EdgeInsets.all(12),
           children: [
+            if (!_loading && _wallets.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: _buildLiquidityChart(),
+              ),
             _WalletSummaryCardPresentation(
               loading: _loading,
               errorText: _error,
@@ -489,6 +678,13 @@ class _WalletsScreenState extends State<WalletsScreen> {
                 final provider = providerFromPhone(w.phone);
                 final providerName = providerDisplayName(provider);
                 final color = _providerColor(provider);
+                final double dLimit = usage?.dailyLimit ?? w.dailyLimit;
+                final double mLimit = usage?.monthlyLimit ?? w.monthlyLimit;
+                final double dUsed = usage?.dailyUsed ?? 0.0;
+                final double mUsed = usage?.monthlyUsed ?? 0.0;
+                final double dRatio = dLimit > 0 ? (dUsed / dLimit).clamp(0.0, 1.0) : 0.0;
+                final double mRatio = mLimit > 0 ? (mUsed / mLimit).clamp(0.0, 1.0) : 0.0;
+
                 return _WalletCardPresentation(
                   walletName: w.name,
                   providerName: providerName,
@@ -497,17 +693,26 @@ class _WalletsScreenState extends State<WalletsScreen> {
                   actualText: actual.toStringAsFixed(2),
                   pendingImpactText:
                       '${pendingImpact >= 0 ? '+' : '-'}${pendingImpact.abs().toStringAsFixed(2)}',
-                  dailyUsageText:
-                      '${usage?.dailyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.dailyLimit.toStringAsFixed(0) ?? w.dailyLimit.toStringAsFixed(0)}',
-                  monthlyUsageText:
-                      '${usage?.monthlyUsed.toStringAsFixed(0) ?? '0'} / ${usage?.monthlyLimit.toStringAsFixed(0) ?? w.monthlyLimit.toStringAsFixed(0)}',
+                  dailyUsageText: '${dUsed.toStringAsFixed(0)} / ${dLimit.toStringAsFixed(0)}',
+                  monthlyUsageText: '${mUsed.toStringAsFixed(0)} / ${mLimit.toStringAsFixed(0)}',
+                  dailyUsageRatio: dRatio,
+                  monthlyUsageRatio: mRatio,
                   color: color,
                   onTap: () => _editWallet(w),
+                  onLongPress: () => _showMiniStatement(context, w.id, w.name),
                   onMenuSelected: (value) async {
-                    if (value == 'reset_daily') {
+                    if (value == 'view_ledger') {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => WalletLedgerScreen(wallet: w),
+                        ),
+                      );
+                    } else if (value == 'reset_daily') {
                       await _resetUsage(wallet: w, monthly: false);
                     } else if (value == 'reset_monthly') {
                       await _resetUsage(wallet: w, monthly: true);
+                    } else if (value == 'reconcile') {
+                      await _reconcileWallet(w);
                     }
                   },
                 );
@@ -642,6 +847,7 @@ class _WalletCardPresentation extends StatelessWidget {
   final String monthlyUsageText;
   final Color color;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   final ValueChanged<String> onMenuSelected;
 
   const _WalletCardPresentation({
@@ -655,21 +861,31 @@ class _WalletCardPresentation extends StatelessWidget {
     required this.monthlyUsageText,
     required this.color,
     required this.onTap,
+    this.onLongPress,
     required this.onMenuSelected,
+    this.dailyUsageRatio = 0.0,
+    this.monthlyUsageRatio = 0.0,
   });
+
+  final double dailyUsageRatio;
+  final double monthlyUsageRatio;
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       borderRadius: BorderRadius.circular(22),
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(22),
           gradient: LinearGradient(
-            colors: [color.withValues(alpha: 0.92), color.withValues(alpha: 0.75)],
+            colors: [
+              color.withValues(alpha: 0.92),
+              color.withValues(alpha: 0.75),
+            ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -715,6 +931,10 @@ class _WalletCardPresentation extends StatelessWidget {
                   onSelected: onMenuSelected,
                   itemBuilder: (_) => const [
                     PopupMenuItem(
+                      value: 'view_ledger',
+                      child: Text('كشف الحساب'),
+                    ),
+                    PopupMenuItem(
                       value: 'reset_daily',
                       child: Text('تصفير استهلاك اليوم'),
                     ),
@@ -751,17 +971,79 @@ class _WalletCardPresentation extends StatelessWidget {
               style: TextStyle(color: Colors.white.withValues(alpha: 0.85)),
             ),
             const SizedBox(height: 10),
-            Wrap(
-              spacing: 10,
-              runSpacing: 6,
+            const SizedBox(height: 10),
+            Row(
               children: [
-                _pill('استهلاك اليوم: $dailyUsageText'),
-                _pill('استهلاك الشهر: $monthlyUsageText'),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _pill('اليومي: $dailyUsageText'),
+                      const SizedBox(height: 4),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: dailyUsageRatio,
+                          backgroundColor: Colors.white.withValues(alpha: 0.2),
+                          color: _getProgressColor(dailyUsageRatio),
+                          minHeight: 4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _pill('الشهري: $monthlyUsageText'),
+                      const SizedBox(height: 4),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: monthlyUsageRatio,
+                          backgroundColor: Colors.white.withValues(alpha: 0.2),
+                          color: _getProgressColor(monthlyUsageRatio),
+                          minHeight: 4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(color: Colors.white24, height: 1),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                TextButton.icon(
+                  onPressed: () => onMenuSelected('reconcile'),
+                  icon: const Icon(Icons.balance, color: Colors.white, size: 16),
+                  label: const Text('مطابقة', style: TextStyle(color: Colors.white, fontSize: 12)),
+                ),
+                TextButton.icon(
+                  onPressed: () => onMenuSelected('view_ledger'),
+                  icon: const Icon(Icons.list_alt, color: Colors.white, size: 16),
+                  label: const Text('سجل', style: TextStyle(color: Colors.white, fontSize: 12)),
+                ),
+                TextButton.icon(
+                  onPressed: () => onMenuSelected('reset_daily'),
+                  icon: const Icon(Icons.refresh, color: Colors.white, size: 16),
+                  label: const Text('تصفير', style: TextStyle(color: Colors.white, fontSize: 12)),
+                ),
               ],
             ),
           ],
         ),
       ),
     );
+  }
+
+  Color _getProgressColor(double ratio) {
+    if (ratio >= 0.9) return Colors.redAccent;
+    if (ratio >= 0.75) return Colors.orangeAccent;
+    return Colors.greenAccent;
   }
 }

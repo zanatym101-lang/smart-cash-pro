@@ -191,4 +191,152 @@ extension _AdminSettingsMaintenanceSection on _AdminSettingsScreenState {
       if (mounted) _setMountedState(() => _saving = false);
     }
   }
+
+  Future<void> _secureWorkspaceReset() async {
+    // 1. PIN verification (if PIN is configured)
+    final hasPin = await _adminSecurity.hasAdminPin();
+    if (!mounted) return;
+    if (hasPin) {
+      final pinCtrl = TextEditingController();
+      final pinOk = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('🔐 تأكيد رمز PIN للمدير'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('أدخل رمز PIN لتأكيد تصفير مساحة العمل:'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: pinCtrl,
+                keyboardType: TextInputType.number,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'رمز PIN',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.lock_outline),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('إلغاء'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('تحقق'),
+            ),
+          ],
+        ),
+      );
+      if (pinOk != true || !mounted) return;
+      final verified = await _adminSecurity.verifyAdminPin(pinCtrl.text.trim());
+      if (!verified) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('❌ رمز PIN غير صحيح، تم إلغاء العملية'),
+            backgroundColor: Color(0xFFB91C1C),
+          ),
+        );
+        return;
+      }
+    }
+
+    if (!mounted) return;
+
+    // 2. Arabic confirmation alert
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Color(0xFFB91C1C)),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'تصفير مساحة العمل وبدء فترة جديدة',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ),
+          ],
+        ),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '⚠️ تحذير: سيتم مسح جميع المعاملات، حركات الخزينة، المطالبات، والعمليات الحالية لبدء فترة محاسبية جديدة.',
+              style: TextStyle(
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFB91C1C),
+              ),
+            ),
+            SizedBox(height: 10),
+            Text(
+              '✅ سيتم الحفاظ على: تفعيل الاشتراك، الترخيص، رمز الجهاز، وإعدادات التطبيق دون أي تغيير.',
+              style: TextStyle(
+                color: Color(0xFF047857),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text('هل أنت متأكد من رغبتك في التصفير وبدء فترة جديدة الآن؟'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFB91C1C),
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('تأكيد التصفير وبدء فترة جديدة'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    _setMountedState(() => _saving = true);
+    try {
+      // 1. Purge cloud workspace collections if logged in / online
+      try {
+        await CloudSyncService.purgeWorkspaceCloudCollections();
+      } catch (_) {}
+
+      // 2. Record new workspace reset epoch to invalidate stale sync
+      await AppDb.instance.recordWorkspaceResetEpoch();
+
+      // 3. Clear local SQLite database and in-memory ledger
+      await AppDb.instance.resetDatabaseEmpty();
+      await AppDb.instance.clearOutbox();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم تصفير مساحة العمل وبدء فترة جديدة بنجاح ✅'),
+          backgroundColor: Color(0xFF047857),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('خطأ أثناء التصفير: $e'),
+          backgroundColor: const Color(0xFFB91C1C),
+        ),
+      );
+    } finally {
+      if (mounted) _setMountedState(() => _saving = false);
+    }
+  }
 }

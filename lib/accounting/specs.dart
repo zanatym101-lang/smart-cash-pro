@@ -104,7 +104,7 @@ class TransferLegacyType2TxSpec extends TxSpec {
       ),
       LedgerEntry(
         accountKey: "drawer",
-        deltaQirsh: spendQirsh - nfQirsh,
+        deltaQirsh: spendQirsh + cfQirsh,
         ts: now,
         txId: txId,
         meta: {"kind": "drawer_in_from_transfer_legacy_type2"},

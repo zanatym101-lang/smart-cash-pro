@@ -9,7 +9,9 @@ extension _ReportsDailyCloseSection on _ReportsScreenState {
       return;
     }
     try {
-      await AppDb.instance.closeDaily(_closeDate);
+      await CleanWriteGateway.appDbBridge().execute(
+        DailyCloseIntent(action: DailyCloseAction.close, date: _closeDate),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -53,7 +55,9 @@ extension _ReportsDailyCloseSection on _ReportsScreenState {
     if (ok != true) return;
 
     try {
-      await AppDb.instance.reopenDaily(_closeDate);
+      await CleanWriteGateway.appDbBridge().execute(
+        DailyCloseIntent(action: DailyCloseAction.reopen, date: _closeDate),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,

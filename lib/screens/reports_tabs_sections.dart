@@ -2,7 +2,6 @@ part of 'reports_screen.dart';
 
 extension _ReportsTabsSections on _ReportsScreenState {
   Widget _periodHero(DateRange range, LicenseInfo? license) {
-    final label = 'من ${_fmtDate(range.start)} إلى ${_fmtDate(range.end)}';
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
       padding: const EdgeInsets.all(16),
@@ -59,11 +58,14 @@ extension _ReportsTabsSections on _ReportsScreenState {
             ],
           ),
           const SizedBox(height: 8),
-          Text('الفترة: $label', style: const TextStyle(color: Colors.white70)),
+          Text(
+            _formatPeriodSubtitle(range),
+            style: const TextStyle(color: Colors.white70),
+          ),
           if (license != null && !license.isActivated) ...[
             const SizedBox(height: 6),
             Text(
-              'تجريبي • تقارير متبقية ${license.reportsLeft}',
+              'تجريبي • متبقي ${license.daysLeft} أيام',
               style: const TextStyle(color: Colors.white70),
             ),
           ],
@@ -79,76 +81,148 @@ extension _ReportsTabsSections on _ReportsScreenState {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
-        _kpiCard('إجمالي الربح', report.profit.total, icon: Icons.trending_up),
-        _kpiCard('صافي الربح بعد المصروفات', netProfit, icon: Icons.savings),
-        _kpiCard('إجمالي المصروفات', expenses, icon: Icons.payments_outlined),
+        _kpiCard(
+          'إجمالي الربح',
+          report.profit.total,
+          icon: Icons.trending_up,
+          color: kReportEmeraldGreen,
+        ),
+        _kpiCard(
+          'صافي الربح بعد المصروفات',
+          netProfit,
+          icon: Icons.savings,
+          color: netProfit >= 0 ? kReportEmeraldGreen : kReportOutflowRed,
+        ),
+        _kpiCard(
+          'إجمالي المصروفات',
+          expenses,
+          icon: Icons.payments_outlined,
+          color: kReportExpenseOrange,
+        ),
         _kpiCard(
           'ربح التحويل',
           report.profit.transfer,
           icon: Icons.compare_arrows,
+          color: kReportEmeraldGreen,
         ),
         _kpiCard(
           'ربح الاستلام',
           report.profit.receive,
           icon: Icons.call_received,
+          color: kReportEmeraldGreen,
         ),
-        _kpiCard('ربح فوري', report.profit.fawry, icon: Icons.bolt),
+        _kpiCard(
+          'ربح فوري',
+          report.profit.fawry,
+          icon: Icons.bolt,
+          color: kReportEmeraldGreen,
+        ),
       ],
     );
   }
 
-  Widget _smartTab(SmartInsights? smart) {
-    if (smart == null) return const SizedBox.shrink();
-    final hasAny =
-        smart.bestProfitDays.isNotEmpty ||
-        smart.mostActiveDays.isNotEmpty ||
-        smart.topCustomersByProfit.isNotEmpty ||
-        smart.topCustomersByVolume.isNotEmpty;
-    if (!hasAny) {
-      return const Center(child: Text('لا توجد بيانات خلال الفترة المختارة'));
+  Widget _smartTab(SmartInsights? smart, TreasurySnapshot? treasury) {
+    final range = _activeRange();
+    final topWallet = _computeTopActiveWallet(range);
+    final avgTicket = _computeAvgTicketSize(range);
+
+    final drawer = treasury?.drawerBalance ?? 0;
+    final wallets = treasury?.walletsTotal ?? 0;
+    final totalTreasury = drawer + wallets;
+    String liquidityRatioStr = 'كاش: 0% • محافظ: 0%';
+    String? liquiditySubtitle;
+    if (totalTreasury > 0) {
+      final drawerPct = ((drawer / totalTreasury) * 100).clamp(0, 100);
+      final walletsPct = ((wallets / totalTreasury) * 100).clamp(0, 100);
+      liquidityRatioStr =
+          'كاش ${drawerPct.toStringAsFixed(0)}% • محافظ ${walletsPct.toStringAsFixed(0)}%';
+      liquiditySubtitle =
+          'درج: ${drawer.toStringAsFixed(2)} | محافظ: ${wallets.toStringAsFixed(2)}';
     }
 
-    final bestProfit = smart.bestProfitDays.isNotEmpty
+    final hasDetailedInsights = smart != null &&
+        (smart.bestProfitDays.isNotEmpty ||
+            smart.mostActiveDays.isNotEmpty ||
+            smart.topCustomersByProfit.isNotEmpty ||
+            smart.topCustomersByVolume.isNotEmpty);
+
+    final bestProfit = (smart != null && smart.bestProfitDays.isNotEmpty)
         ? smart.bestProfitDays.first
         : null;
-    final mostActive = smart.mostActiveDays.isNotEmpty
+    final mostActive = (smart != null && smart.mostActiveDays.isNotEmpty)
         ? smart.mostActiveDays.first
         : null;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
+        _sectionTitle('مؤشرات الأداء الذكية'),
+        _smartKpi(
+          'المحفظة الأكثر نشاطاً',
+          topWallet != null
+              ? '${topWallet.name} (${topWallet.count} عملية)'
+              : 'لا توجد حركات محافظ',
+          Icons.account_balance_wallet,
+          color: const Color(0xFF3B82F6),
+        ),
+        _smartKpi(
+          'نسبة السيولة (كاش / محافظ)',
+          liquidityRatioStr,
+          Icons.pie_chart_outline,
+          color: kReportEmeraldGreen,
+          subtitle: liquiditySubtitle,
+        ),
+        _smartKpi(
+          'متوسط حجم العملية',
+          avgTicket > 0 ? '${avgTicket.toStringAsFixed(2)} ج.م' : '0.00 ج.م',
+          Icons.analytics_outlined,
+          color: const Color(0xFF8B5CF6),
+        ),
         if (bestProfit != null)
           _smartKpi(
             'أفضل يوم ربحًا',
             '${bestProfit.dateKey} • ${bestProfit.profit.toStringAsFixed(2)}',
             Icons.emoji_events,
+            color: kReportEmeraldGreen,
           ),
         if (mostActive != null)
           _smartKpi(
             'أكثر يوم نشاطًا',
             '${mostActive.dateKey} • ${mostActive.count} عملية',
             Icons.local_fire_department,
+            color: kReportExpenseOrange,
           ),
         const SizedBox(height: 12),
-        if (smart.bestProfitDays.isNotEmpty) ...[
-          _sectionTitle('أفضل الأيام ربحًا'),
-          ...smart.bestProfitDays.map(_dayRow),
-          const SizedBox(height: 12),
-        ],
-        if (smart.mostActiveDays.isNotEmpty) ...[
-          _sectionTitle('أكثر الأيام نشاطًا'),
-          ...smart.mostActiveDays.map(_dayRow),
-          const SizedBox(height: 12),
-        ],
-        if (smart.topCustomersByProfit.isNotEmpty) ...[
-          _sectionTitle('أفضل العملاء (حسب الربح)'),
-          ...smart.topCustomersByProfit.map(_customerRow),
-          const SizedBox(height: 12),
-        ],
-        if (smart.topCustomersByVolume.isNotEmpty) ...[
-          _sectionTitle('أعلى التعاملات (حسب المبلغ)'),
-          ...smart.topCustomersByVolume.map(_customerRow),
+        if (hasDetailedInsights) ...[
+          if (smart.bestProfitDays.isNotEmpty) ...[
+            _sectionTitle('أفضل الأيام ربحًا'),
+            ...smart.bestProfitDays.map(_dayRow),
+            const SizedBox(height: 12),
+          ],
+          if (smart.mostActiveDays.isNotEmpty) ...[
+            _sectionTitle('أكثر الأيام نشاطًا'),
+            ...smart.mostActiveDays.map(_dayRow),
+            const SizedBox(height: 12),
+          ],
+          if (smart.topCustomersByProfit.isNotEmpty) ...[
+            _sectionTitle('أفضل العملاء (حسب الربح)'),
+            ...smart.topCustomersByProfit.map(_customerRow),
+            const SizedBox(height: 12),
+          ],
+          if (smart.topCustomersByVolume.isNotEmpty) ...[
+            _sectionTitle('أعلى التعاملات (حسب المبلغ)'),
+            ...smart.topCustomersByVolume.map(_customerRow),
+          ],
+        ] else ...[
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.info_outline, color: Colors.blueGrey),
+              title: Text('تحليل إضافي'),
+              subtitle: Text(
+                'سيتم إدراج أفضل الأيام والعملاء تلقائياً عند تسجيل عمليات خلال هذه الفترة.',
+              ),
+            ),
+          ),
         ],
       ],
     );
@@ -170,71 +244,100 @@ extension _ReportsTabsSections on _ReportsScreenState {
           'إجمالي الداخل',
           report.cashflow.inflow,
           icon: Icons.south_west,
+          color: kReportEmeraldGreen,
         ),
         _kpiCard(
           'إجمالي الخارج',
           report.cashflow.outflow,
           icon: Icons.north_east,
+          color: kReportOutflowRed,
         ),
-        _kpiCard('صافي الحركة', report.cashflow.net, icon: Icons.swap_vert),
+        _kpiCard(
+          'صافي الحركة',
+          report.cashflow.net,
+          icon: Icons.swap_vert,
+          color: report.cashflow.net >= 0
+              ? kReportEmeraldGreen
+              : kReportOutflowRed,
+        ),
         const SizedBox(height: 12),
         _sectionTitle('تفصيل الداخل'),
-        ...inflow.map((e) => _lineRow(e.key, e.value)),
+        ...inflow.map(
+          (e) => _lineRow(
+            e.key,
+            e.value,
+            color: kReportEmeraldGreen,
+            icon: Icons.south_west,
+          ),
+        ),
         const SizedBox(height: 12),
         _sectionTitle('تفصيل الخارج'),
-        ...outflow.map((e) => _lineRow(e.key, e.value)),
+        ...outflow.map(
+          (e) => _lineRow(
+            e.key,
+            e.value,
+            color: kReportOutflowRed,
+            icon: Icons.north_east,
+          ),
+        ),
       ],
     );
   }
 
   Widget _opsTab(ReportData? report) {
     if (report == null) return const SizedBox.shrink();
-    final range = _activeRange();
-    final expenseTotal = _expenseTotalForRange(range);
-    final expenseArchive = _expenseArchiveTotal(range);
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
       children: [
-        _kpiCard(
-          'إجمالي المصروفات (الفترة)',
-          expenseTotal,
-          icon: Icons.payments_outlined,
-        ),
-        _kpiCard(
-          'أرشيف المصروفات (قبل الفترة)',
-          expenseArchive,
-          icon: Icons.archive_outlined,
-        ),
-        const Divider(),
         _countTile(
           'عدد التحويلات',
           report.ops.transferCount,
           Icons.compare_arrows,
+          color: const Color(0xFF3B82F6),
         ),
         _countTile(
           'عدد الاستلامات',
           report.ops.receiveCount,
           Icons.call_received,
+          color: kReportEmeraldGreen,
         ),
-        _countTile('عدد فوري نقدي', report.ops.fawryCashCount, Icons.bolt),
+        _countTile(
+          'عدد فوري نقدي',
+          report.ops.fawryCashCount,
+          Icons.bolt,
+          color: Colors.amber.shade700,
+        ),
         _countTile(
           'عدد فوري آجل',
           report.ops.fawryCreditCount,
           Icons.hourglass_bottom,
+          color: kReportExpenseOrange,
         ),
-        _countTile('عدد المصروفات', report.ops.expenseCount, Icons.payments),
+        _countTile(
+          'عدد المصروفات',
+          report.ops.expenseCount,
+          Icons.payments,
+          color: kReportOutflowRed,
+        ),
         _countTile(
           'عدد تحصيل المستحقات',
           report.ops.claimCollectCount,
           Icons.request_quote,
+          color: kReportEmeraldGreen,
         ),
         _countTile(
           'عدد سداد المستحقات',
           report.ops.claimPayCount,
           Icons.assignment_return,
+          color: kReportOutflowRed,
         ),
         const Divider(),
-        _countTile('عدد الآجل', report.ops.pendingCount, Icons.pending_actions),
+        _countTile(
+          'عدد الآجل',
+          report.ops.pendingCount,
+          Icons.pending_actions,
+          color: Colors.indigo,
+        ),
       ],
     );
   }
@@ -250,36 +353,19 @@ extension _ReportsTabsSections on _ReportsScreenState {
           'إجمالي مستحقات لنا (مفتوحة)',
           report.claims.receivableOpen,
           icon: Icons.trending_up,
+          color: kReportEmeraldGreen,
         ),
         _kpiCard(
           'إجمالي مستحقات علينا (مفتوحة)',
           report.claims.payableOpen,
           icon: Icons.trending_down,
-        ),
-        _kpiCard(netLabel, net.abs(), icon: Icons.balance),
-      ],
-    );
-  }
-
-  Widget _treasuryTab(TreasurySnapshot? treasury) {
-    if (treasury == null) return const SizedBox.shrink();
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-      children: [
-        _kpiCard(
-          'رصيد الدرج الحالي',
-          treasury.drawerBalance,
-          icon: Icons.account_balance,
+          color: kReportOutflowRed,
         ),
         _kpiCard(
-          'إجمالي المحافظ الحالي',
-          treasury.walletsTotal,
-          icon: Icons.account_balance_wallet,
-        ),
-        _kpiCard(
-          'إجمالي الخزنة',
-          treasury.drawerBalance + treasury.walletsTotal,
-          icon: Icons.savings,
+          netLabel,
+          net.abs(),
+          icon: Icons.balance,
+          color: net >= 0 ? kReportEmeraldGreen : kReportOutflowRed,
         ),
       ],
     );
@@ -295,7 +381,7 @@ extension _ReportsTabsSections on _ReportsScreenState {
           child: ListTile(
             leading: Icon(
               r.ok ? Icons.verified : Icons.warning_amber_rounded,
-              color: r.ok ? Colors.green : Colors.red,
+              color: r.ok ? kReportEmeraldGreen : kReportOutflowRed,
             ),
             title: const Text('حالة المطابقة'),
             subtitle: Text(
@@ -318,8 +404,8 @@ extension _ReportsTabsSections on _ReportsScreenState {
         ? '+${diff.toStringAsFixed(2)}'
         : diff.toStringAsFixed(2);
     final diffColor = line.ok
-        ? Colors.green
-        : (diff > 0 ? Colors.blue : Colors.red);
+        ? kReportEmeraldGreen
+        : (diff > 0 ? const Color(0xFF3B82F6) : kReportOutflowRed);
 
     return Card(
       child: Padding(
@@ -368,6 +454,9 @@ extension _ReportsTabsSections on _ReportsScreenState {
           'السيولة المتاحة',
           treasury.availableLiquidityNow,
           icon: Icons.account_balance_wallet_outlined,
+          color: treasury.availableLiquidityNow >= 0
+              ? kReportEmeraldGreen
+              : kReportOutflowRed,
         ),
         _kpiCard(
           'رأس المال الحقيقي (معتمد)',
@@ -383,22 +472,65 @@ extension _ReportsTabsSections on _ReportsScreenState {
           'صافي الربح بعد المصروفات',
           netProfitAfterExpenses,
           icon: Icons.trending_up,
+          color: netProfitAfterExpenses >= 0
+              ? kReportEmeraldGreen
+              : kReportOutflowRed,
+        ),
+        const SizedBox(height: 10),
+        _sectionTitle('أرصدة الخزنة والدرج'),
+        _kpiCard(
+          'رصيد الدرج الحالي',
+          treasury.drawerBalance,
+          icon: Icons.account_balance,
+          color: kReportEmeraldGreen,
+        ),
+        _kpiCard(
+          'إجمالي المحافظ الحالي',
+          treasury.walletsTotal,
+          icon: Icons.account_balance_wallet,
+          color: kReportEmeraldGreen,
+        ),
+        _kpiCard(
+          'إجمالي الخزنة (درج + محافظ)',
+          treasury.drawerBalance + treasury.walletsTotal,
+          icon: Icons.savings,
+          color: kReportEmeraldGreen,
         ),
         const SizedBox(height: 10),
         _sectionTitle('ملخص سريع'),
-        _lineRow('إجمالي الربح', report.profit.total),
-        _lineRow('إجمالي المصروفات', expenses),
-        _lineRow('صافي حركة الدرج', report.cashflow.net),
-        _lineRow('مستحقات لنا (مفتوح)', report.claims.receivableOpen),
-        _lineRow('مستحقات علينا (مفتوح)', report.claims.payableOpen),
-        _lineRow('صافي المستحقات', report.claims.net),
+        _lineRow('إجمالي الربح', report.profit.total, color: kReportEmeraldGreen),
+        _lineRow('إجمالي المصروفات', expenses, color: kReportExpenseOrange),
+        _lineRow(
+          'صافي حركة الدرج',
+          report.cashflow.net,
+          color: report.cashflow.net >= 0
+              ? kReportEmeraldGreen
+              : kReportOutflowRed,
+        ),
+        _lineRow(
+          'مستحقات لنا (مفتوح)',
+          report.claims.receivableOpen,
+          color: kReportEmeraldGreen,
+        ),
+        _lineRow(
+          'مستحقات علينا (مفتوح)',
+          report.claims.payableOpen,
+          color: kReportOutflowRed,
+        ),
+        _lineRow(
+          'صافي المستحقات',
+          report.claims.net,
+          color: report.claims.net >= 0
+              ? kReportEmeraldGreen
+              : kReportOutflowRed,
+        ),
         _lineRow('رصيد الآجل (صافي)', treasury.pendingNet),
         const SizedBox(height: 10),
         _sectionTitle('تنبيهات سريعة'),
         if (alerts.isEmpty)
           const Card(
             child: ListTile(
-              leading: Icon(Icons.verified, color: Colors.green),
+              leading: Icon(Icons.verified, color: kReportEmeraldGreen),
               title: Text('وضع سليم'),
               subtitle: Text('لا توجد مؤشرات خطر حالياً.'),
             ),
@@ -407,7 +539,10 @@ extension _ReportsTabsSections on _ReportsScreenState {
           ...alerts.map(
             (msg) => Card(
               child: ListTile(
-                leading: const Icon(Icons.warning_amber_rounded),
+                leading: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: kReportOutflowRed,
+                ),
                 title: Text(msg),
               ),
             ),
@@ -416,25 +551,60 @@ extension _ReportsTabsSections on _ReportsScreenState {
     );
   }
 
-  double _expenseTotalForRange(DateRange range) {
-    return _txns
-        .where(
-          (t) =>
-              t.kind == 'expense' &&
-              t.status == 'posted' &&
-              range.contains(t.entryDate),
-        )
-        .fold<double>(0, (s, t) => s + t.amount);
+  ({String name, int count})? _computeTopActiveWallet(DateRange range) {
+    final walletOps = <int, int>{};
+    for (final t in _txns) {
+      if (t.status != 'posted' || !range.contains(t.entryDate)) continue;
+      if (t.walletFromId != null) {
+        walletOps[t.walletFromId!] = (walletOps[t.walletFromId!] ?? 0) + 1;
+      }
+      if (t.walletToId != null) {
+        walletOps[t.walletToId!] = (walletOps[t.walletToId!] ?? 0) + 1;
+      }
+    }
+    if (walletOps.isEmpty) return null;
+    var bestId = walletOps.keys.first;
+    var bestCount = walletOps[bestId]!;
+    for (final entry in walletOps.entries) {
+      if (entry.value > bestCount) {
+        bestId = entry.key;
+        bestCount = entry.value;
+      }
+    }
+    final wallet = _wallets.firstWhere(
+      (w) => w.id == bestId,
+      orElse: () => Wallet(id: bestId, name: 'محفظة #$bestId'),
+    );
+    return (name: wallet.name, count: bestCount);
   }
 
-  double _expenseArchiveTotal(DateRange range) {
-    return _txns
-        .where(
-          (t) =>
-              t.kind == 'expense' &&
-              t.status == 'posted' &&
-              t.entryDate.isBefore(range.start),
-        )
-        .fold<double>(0, (s, t) => s + t.amount);
+  double _computeAvgTicketSize(DateRange range) {
+    double totalVol = 0;
+    int count = 0;
+    for (final t in _txns) {
+      if (t.status != 'posted' || !range.contains(t.entryDate)) continue;
+      if (t.kind == 'drawer_deposit' ||
+          t.kind == 'external_funding' ||
+          t.kind == 'rollback') {
+        continue;
+      }
+      count++;
+      switch (t.kind) {
+        case 'transfer':
+          totalVol += (t.mode == 'type2_v2'
+              ? t.amount + t.clientFee
+              : t.amount - t.networkFee);
+          break;
+        case 'fawry_cash':
+        case 'fawry_credit':
+          totalVol += (t.amount + t.clientFee);
+          break;
+        default:
+          totalVol += t.amount;
+          break;
+      }
+    }
+    return count > 0 ? (totalVol / count) : 0.0;
   }
 }
+

@@ -149,7 +149,7 @@ class _AdminGateScreenState extends State<AdminGateScreen> {
       final ok = await _auth.authenticate(
         localizedReason: 'الدخول إلى وضع الأدمن',
         options: const AuthenticationOptions(
-          biometricOnly: true,
+          biometricOnly: false,
           stickyAuth: true,
         ),
       );

@@ -7,8 +7,10 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import '../config/app_env.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
+import '../services/ad_reward_service.dart';
 import '../data/app_session.dart';
 import '../models/license_info.dart';
 import '../services/admin_security_service.dart';
@@ -16,6 +18,7 @@ import 'developer_gate_screen.dart';
 import 'audit_log_screen.dart';
 import 'sync_outbox_screen.dart';
 import 'drive_backup_screen.dart';
+import '../services/cloud_sync_service.dart';
 
 part 'admin_settings_backup_section.dart';
 part 'admin_settings_maintenance_section.dart';
@@ -61,6 +64,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
     _loadSettings();
     _loadLicense();
     _loadHealth();
+    AdRewardService.instance.loadRewardedAd();
   }
 
   void _setMountedState(VoidCallback fn) {
@@ -79,6 +83,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
   }
 
   void _handleDevTap() {
+    if (isClientRelease) return;
     final now = DateTime.now();
     if (_lastDevTap == null || now.difference(_lastDevTap!).inSeconds > 4) {
       _devTapCount = 0;
@@ -97,10 +102,12 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: GestureDetector(
-          onTap: _handleDevTap,
-          child: const AppTitle(subtitle: 'إعدادات الأدمن'),
-        ),
+        title: isClientRelease
+            ? const AppTitle(subtitle: 'إعدادات الأدمن')
+            : GestureDetector(
+                onTap: _handleDevTap,
+                child: const AppTitle(subtitle: 'إعدادات الأدمن'),
+              ),
       ),
       body: SingleChildScrollView(
         child: Padding(
@@ -161,7 +168,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                             ),
                             const SizedBox(height: 6),
                             Text(
-                              'المتبقي: عمليات ${_license!.operationsLeft} • تقارير ${_license!.reportsLeft}',
+                              'النسخة التجريبية (${_license?.daysLeft ?? 0} أيام متبقية)',
                             ),
                             const SizedBox(height: 10),
                             TextField(
@@ -184,6 +191,21 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                                   : const Icon(Icons.verified),
                               label: const Text('تفعيل'),
                             ),
+                            const SizedBox(height: 10),
+                            OutlinedButton.icon(
+                              onPressed: _activating ? null : _watchAdToExtend,
+                              icon: _activating
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.ondemand_video, color: Colors.blue),
+                              label: const Text('مشاهدة إعلان لتمديد التجربة (1أيام) 🎁'),
+                            ),
+
                           ],
                         ],
                       ),
@@ -370,31 +392,73 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                 const Divider(),
                 const SizedBox(height: 12),
                 Card(
+                  color: const Color(0xFFFEF2F2),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: const BorderSide(color: Color(0xFFFECACA)),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'تصفير البيانات',
-                          style: TextStyle(fontWeight: FontWeight.w700),
+                        const Row(
+                          children: [
+                            Icon(Icons.warning_amber_rounded, color: Color(0xFFB91C1C)),
+                            SizedBox(width: 8),
+                            Text(
+                              'منطقة الخطر / تصفير مساحة العمل',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFFB91C1C),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 6),
                         const Text(
-                          'يحذف قاعدة البيانات المحلية ويعيد التطبيق للبداية.',
+                          'تصفير المعاملات، حركات الخزينة، والمطالبات لبدء فترة محاسبية جديدة مع الحفاظ على ترخيص التطبيق.',
+                          style: TextStyle(fontSize: 12, color: Color(0xFF7F1D1D)),
                         ),
                         const SizedBox(height: 10),
-                        ElevatedButton.icon(
-                          onPressed: _saving ? null : _resetDatabase,
-                          icon: const Icon(Icons.delete_forever),
-                          label: const Text('تصفير مع بيانات البداية'),
+                        FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFFB91C1C),
+                          ),
+                          onPressed: _saving ? null : _secureWorkspaceReset,
+                          icon: const Icon(Icons.restart_alt),
+                          label: const Text('تصفير مساحة العمل وبدء فترة جديدة'),
                         ),
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          onPressed: _saving ? null : _resetDatabaseEmpty,
-                          icon: const Icon(Icons.delete_sweep),
-                          label: const Text('تصفير كامل بدون بيانات'),
-                        ),
+                        if (!isClientRelease) ...[
+                          const SizedBox(height: 10),
+                          const Divider(color: Color(0xFFFECACA)),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'أدوات المطورين / الاختبار:',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF7F1D1D),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: _saving ? null : _resetDatabase,
+                                icon: const Icon(Icons.delete_forever),
+                                label: const Text('تصفير مع بيانات البداية'),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: _saving ? null : _resetDatabaseEmpty,
+                                icon: const Icon(Icons.delete_sweep),
+                                label: const Text('تصفير كامل بدون بيانات'),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),

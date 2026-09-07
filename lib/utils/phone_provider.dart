@@ -1,5 +1,13 @@
 String providerFromPhone(String phone) {
-  final p = normalizePhone(phone);
+  var p = normalizePhone(phone);
+  if (p.startsWith('00201')) {
+    p = '0${p.substring(4)}';
+  } else if (p.startsWith('201')) {
+    p = '0${p.substring(2)}';
+  } else if (p.startsWith('0201')) {
+    p = '0${p.substring(3)}';
+  }
+  
   if (p.startsWith('010')) return 'vodafone';
   if (p.startsWith('011')) return 'etisalat';
   if (p.startsWith('012')) return 'orange';

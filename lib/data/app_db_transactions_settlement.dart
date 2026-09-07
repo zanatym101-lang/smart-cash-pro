@@ -41,9 +41,7 @@ extension AppDbTransactionsSettlement on AppDb {
 
     final isReceivable = src.kind == 'transfer' || src.kind == 'fawry_credit';
     final kind = isReceivable ? 'claim_collect' : 'claim_pay';
-    final actionLabel = isReceivable
-        ? 'تحصيل مستحق (آجل)'
-        : 'سداد مستحق (آجل)';
+    final actionLabel = isReceivable ? 'تحصيل مستحق (آجل)' : 'سداد مستحق (آجل)';
     final typeLabel = src.kind == 'transfer'
         ? 'تحويل آجل'
         : src.kind == 'receive'
@@ -96,6 +94,44 @@ extension AppDbTransactionsSettlement on AppDb {
     return txn.id;
   }
 
+  Future<void> settlePendingTxnFully({
+    required int pendingTxnId,
+    String? note,
+  }) async {
+    await _ensureLoaded();
+    await _ensureOperationAllowed();
+    _requireTxnAdmin();
+
+    final idx = _txns.indexWhere((t) => t.id == pendingTxnId);
+    if (idx < 0) throw Exception('المعاملة غير موجودة.');
+    final src = _txns[idx];
+    if (src.status != 'pending') {
+      throw Exception('لا يمكن التسوية الكاملة لعملية غير معلّقة.');
+    }
+
+    final due = src.kind == 'transfer'
+        ? _pendingTransferDueForTxn(src)
+        : src.kind == 'receive'
+        ? _pendingReceiveDueForTxn(src)
+        : src.kind == 'fawry_credit'
+        ? (src.amount + src.clientFee)
+        : 0;
+    if (due <= 0) {
+      throw Exception('لا يوجد مبلغ مستحق لهذه العملية.');
+    }
+
+    final settledBefore = _pendingSettledAmount(pendingTxnId);
+    final remaining = (due - settledBefore).clamp(0, 1e18).toDouble();
+    if (remaining > 0) {
+      await addPendingSettlementForTxn(
+        pendingTxnId: pendingTxnId,
+        amount: remaining,
+        note: note,
+      );
+    }
+    await confirmPending(pendingTxnId);
+  }
+
   Future<void> rollbackPendingSettlement(int txnId) async {
     await _ensureLoaded();
     _requireTxnAdmin();
@@ -144,7 +180,19 @@ extension AppDbTransactionsSettlement on AppDb {
       throw Exception('لا يمكن تعديل تسوية ليست الأحدث للمعلّق.');
     }
 
-    _txns[idx] = t.copyWith(status: 'rolled_back');
+        final reverseTxn = t.copyWith(
+      id: _nextTxnId++,
+      entryDate: DateTime.now(),
+      amount: -t.amount,
+      clientFee: -t.clientFee,
+      networkFee: -t.networkFee,
+      
+      status: 'reverse_entry',
+      note: 'قيد عكسي لإلغاء تسوية معلقة رقم ${t.id}',
+    );
+    _txns[idx] = t.copyWith(status: 'reversed');
+    _txns.add(reverseTxn);
+    
     _rebuildEngineFromTxns();
     await _save();
     await enqueueOutbox(

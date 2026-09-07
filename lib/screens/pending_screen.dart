@@ -2,6 +2,8 @@
 // - UI: read-only + commands only (approve/reject)
 // - Accounting validation/apply happens inside AppDb -> AccountingEngine
 import 'package:flutter/material.dart';
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../models/transaction.dart';
@@ -48,7 +50,8 @@ class _PendingScreenState extends State<PendingScreen> {
 
   bool _isDueToday(Txn t) {
     final range = _todayBusinessRange();
-    return !t.entryDate.isBefore(range.start) && t.entryDate.isBefore(range.end);
+    return !t.entryDate.isBefore(range.start) &&
+        t.entryDate.isBefore(range.end);
   }
 
   bool _isOverdue(Txn t) {
@@ -64,9 +67,7 @@ class _PendingScreenState extends State<PendingScreen> {
 
   int _comparePending(Txn a, Txn b, {required bool groupFirst}) {
     if (groupFirst) {
-      final groupCompare = _pendingGroupRank(a).compareTo(
-        _pendingGroupRank(b),
-      );
+      final groupCompare = _pendingGroupRank(a).compareTo(_pendingGroupRank(b));
       if (groupCompare != 0) return groupCompare;
     }
     final dateCompare = a.entryDate.compareTo(b.entryDate);
@@ -241,7 +242,13 @@ class _PendingScreenState extends State<PendingScreen> {
 
     setState(() => _busyTxIds.add(t.id));
     try {
-      await AppDb.instance.confirmPending(t.id);
+      await CleanWriteGateway.appDbBridge().execute(
+        ConfirmPendingIntent(
+          pendingTxnId: t.id.toString(),
+          claimId:
+              'pending-${t.id}-claim-${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -318,7 +325,13 @@ class _PendingScreenState extends State<PendingScreen> {
     try {
       for (final id in ids) {
         try {
-          await AppDb.instance.confirmPending(id);
+          await CleanWriteGateway.appDbBridge().execute(
+            ConfirmPendingIntent(
+              pendingTxnId: id.toString(),
+              claimId:
+                  'pending-$id-claim-${DateTime.now().microsecondsSinceEpoch}',
+            ),
+          );
           approved++;
         } catch (_) {
           failed++;
@@ -373,7 +386,9 @@ class _PendingScreenState extends State<PendingScreen> {
     try {
       for (final id in ids) {
         try {
-          await AppDb.instance.cancelPending(id);
+          await CleanWriteGateway.appDbBridge().execute(
+            CancelPendingIntent(pendingTxnId: id.toString()),
+          );
           canceled++;
         } catch (_) {
           failed++;
@@ -409,7 +424,9 @@ class _PendingScreenState extends State<PendingScreen> {
 
     setState(() => _busyTxIds.add(t.id));
     try {
-      await AppDb.instance.cancelPending(t.id);
+      await CleanWriteGateway.appDbBridge().execute(
+        CancelPendingIntent(pendingTxnId: t.id.toString()),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,

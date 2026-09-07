@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 
 import '../data/app_db.dart';
 
@@ -23,6 +24,12 @@ class AdminSecurityService {
 
   bool _hasStoredAdminPin(Map<String, dynamic> settings) =>
       (settings['adminPin'] ?? '').toString().trim().isNotEmpty;
+
+  // DEBUG ONLY - REMOVE LATER
+  bool get _debugWebBypassEnabled => kDebugMode && kIsWeb;
+
+  // DEBUG ONLY - REMOVE LATER
+  bool _isDebugWebBypassPin(String pin) => pin.trim() == '0000';
 
   String _legacyDecodePin(String stored) {
     if (!stored.startsWith('enc:')) return stored;
@@ -153,6 +160,10 @@ class AdminSecurityService {
   }
 
   Future<String> getAdminPin() async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled) {
+      return '';
+    }
     final settings = await _readSettings();
     final stored = (settings['adminPin'] ?? '').toString().trim();
     if (stored.isEmpty) return '';
@@ -166,13 +177,27 @@ class AdminSecurityService {
   }
 
   Future<bool> hasAdminPin() async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled) {
+      return true;
+    }
     final settings = await _readSettings();
     return _hasStoredAdminPin(settings);
   }
 
-  Future<bool> requiresPinSetup() async => !await hasAdminPin();
+  Future<bool> requiresPinSetup() async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled) {
+      return false;
+    }
+    return !await hasAdminPin();
+  }
 
   Future<bool> verifyAdminPin(String pin) async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled && _isDebugWebBypassPin(pin)) {
+      return true;
+    }
     final settings = await _readSettings();
     if (!_hasStoredAdminPin(settings)) return false;
     final status = await getAdminPinStatus();
@@ -197,6 +222,10 @@ class AdminSecurityService {
   }
 
   Future<void> setAdminPin(String newPin) async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled) {
+      return;
+    }
     final pin = newPin.trim();
     if (pin.length < 4) {
       throw Exception('PIN يجب أن يكون 4 أرقام أو أكثر');
@@ -211,6 +240,16 @@ class AdminSecurityService {
   }
 
   Future<SecureRestoreStatus> getAdminPinStatus() async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled) {
+      return const SecureRestoreStatus(
+        failedAttempts: 0,
+        maxAttempts: _adminPinMaxAttempts,
+        remainingAttempts: _adminPinMaxAttempts,
+        lockedUntil: null,
+        locked: false,
+      );
+    }
     final settings = await _readSettings();
     final guard = _adminPinGuardMap(settings);
     final status = _adminPinStatusFromMap(guard);
@@ -233,6 +272,10 @@ class AdminSecurityService {
   }
 
   Future<bool> getBiometricEnabled() async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled) {
+      return false;
+    }
     final settings = await _readSettings();
     if (!settings.containsKey('biometricEnabled')) {
       if (!_hasStoredAdminPin(settings)) {
@@ -246,6 +289,10 @@ class AdminSecurityService {
   }
 
   Future<void> setBiometricEnabled(bool enabled) async {
+    // DEBUG ONLY - REMOVE LATER
+    if (_debugWebBypassEnabled) {
+      return;
+    }
     final settings = await _readSettings();
     settings['biometricEnabled'] = enabled;
     await _writeSettings(settings);

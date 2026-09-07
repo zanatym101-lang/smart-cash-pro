@@ -4117,6 +4117,762 @@ class SyncOutboxCompanion extends UpdateCompanion<DbOutbox> {
   }
 }
 
+class $CustomerAdjustmentsTable extends CustomerAdjustments
+    with TableInfo<$CustomerAdjustmentsTable, DbCustomerAdjustment> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $CustomerAdjustmentsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _customerIdMeta = const VerificationMeta(
+    'customerId',
+  );
+  @override
+  late final GeneratedColumn<String> customerId = GeneratedColumn<String>(
+    'customer_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _typeMeta = const VerificationMeta('type');
+  @override
+  late final GeneratedColumn<String> type = GeneratedColumn<String>(
+    'type',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _amountPiastresMeta = const VerificationMeta(
+    'amountPiastres',
+  );
+  @override
+  late final GeneratedColumn<int> amountPiastres = GeneratedColumn<int>(
+    'amount_piastres',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _dateMeta = const VerificationMeta('date');
+  @override
+  late final GeneratedColumn<DateTime> date = GeneratedColumn<DateTime>(
+    'date',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _noteMeta = const VerificationMeta('note');
+  @override
+  late final GeneratedColumn<String> note = GeneratedColumn<String>(
+    'note',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    customerId,
+    type,
+    amountPiastres,
+    date,
+    note,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'customer_adjustments';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<DbCustomerAdjustment> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('customer_id')) {
+      context.handle(
+        _customerIdMeta,
+        customerId.isAcceptableOrUnknown(data['customer_id']!, _customerIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_customerIdMeta);
+    }
+    if (data.containsKey('type')) {
+      context.handle(
+        _typeMeta,
+        type.isAcceptableOrUnknown(data['type']!, _typeMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_typeMeta);
+    }
+    if (data.containsKey('amount_piastres')) {
+      context.handle(
+        _amountPiastresMeta,
+        amountPiastres.isAcceptableOrUnknown(
+          data['amount_piastres']!,
+          _amountPiastresMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_amountPiastresMeta);
+    }
+    if (data.containsKey('date')) {
+      context.handle(
+        _dateMeta,
+        date.isAcceptableOrUnknown(data['date']!, _dateMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_dateMeta);
+    }
+    if (data.containsKey('note')) {
+      context.handle(
+        _noteMeta,
+        note.isAcceptableOrUnknown(data['note']!, _noteMeta),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  DbCustomerAdjustment map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return DbCustomerAdjustment(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      customerId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}customer_id'],
+      )!,
+      type: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}type'],
+      )!,
+      amountPiastres: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}amount_piastres'],
+      )!,
+      date: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}date'],
+      )!,
+      note: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}note'],
+      ),
+    );
+  }
+
+  @override
+  $CustomerAdjustmentsTable createAlias(String alias) {
+    return $CustomerAdjustmentsTable(attachedDatabase, alias);
+  }
+}
+
+class DbCustomerAdjustment extends DataClass
+    implements Insertable<DbCustomerAdjustment> {
+  final String id;
+  final String customerId;
+  final String type;
+  final int amountPiastres;
+  final DateTime date;
+  final String? note;
+  const DbCustomerAdjustment({
+    required this.id,
+    required this.customerId,
+    required this.type,
+    required this.amountPiastres,
+    required this.date,
+    this.note,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['customer_id'] = Variable<String>(customerId);
+    map['type'] = Variable<String>(type);
+    map['amount_piastres'] = Variable<int>(amountPiastres);
+    map['date'] = Variable<DateTime>(date);
+    if (!nullToAbsent || note != null) {
+      map['note'] = Variable<String>(note);
+    }
+    return map;
+  }
+
+  CustomerAdjustmentsCompanion toCompanion(bool nullToAbsent) {
+    return CustomerAdjustmentsCompanion(
+      id: Value(id),
+      customerId: Value(customerId),
+      type: Value(type),
+      amountPiastres: Value(amountPiastres),
+      date: Value(date),
+      note: note == null && nullToAbsent ? const Value.absent() : Value(note),
+    );
+  }
+
+  factory DbCustomerAdjustment.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return DbCustomerAdjustment(
+      id: serializer.fromJson<String>(json['id']),
+      customerId: serializer.fromJson<String>(json['customerId']),
+      type: serializer.fromJson<String>(json['type']),
+      amountPiastres: serializer.fromJson<int>(json['amountPiastres']),
+      date: serializer.fromJson<DateTime>(json['date']),
+      note: serializer.fromJson<String?>(json['note']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'customerId': serializer.toJson<String>(customerId),
+      'type': serializer.toJson<String>(type),
+      'amountPiastres': serializer.toJson<int>(amountPiastres),
+      'date': serializer.toJson<DateTime>(date),
+      'note': serializer.toJson<String?>(note),
+    };
+  }
+
+  DbCustomerAdjustment copyWith({
+    String? id,
+    String? customerId,
+    String? type,
+    int? amountPiastres,
+    DateTime? date,
+    Value<String?> note = const Value.absent(),
+  }) => DbCustomerAdjustment(
+    id: id ?? this.id,
+    customerId: customerId ?? this.customerId,
+    type: type ?? this.type,
+    amountPiastres: amountPiastres ?? this.amountPiastres,
+    date: date ?? this.date,
+    note: note.present ? note.value : this.note,
+  );
+  DbCustomerAdjustment copyWithCompanion(CustomerAdjustmentsCompanion data) {
+    return DbCustomerAdjustment(
+      id: data.id.present ? data.id.value : this.id,
+      customerId: data.customerId.present
+          ? data.customerId.value
+          : this.customerId,
+      type: data.type.present ? data.type.value : this.type,
+      amountPiastres: data.amountPiastres.present
+          ? data.amountPiastres.value
+          : this.amountPiastres,
+      date: data.date.present ? data.date.value : this.date,
+      note: data.note.present ? data.note.value : this.note,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('DbCustomerAdjustment(')
+          ..write('id: $id, ')
+          ..write('customerId: $customerId, ')
+          ..write('type: $type, ')
+          ..write('amountPiastres: $amountPiastres, ')
+          ..write('date: $date, ')
+          ..write('note: $note')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(id, customerId, type, amountPiastres, date, note);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is DbCustomerAdjustment &&
+          other.id == this.id &&
+          other.customerId == this.customerId &&
+          other.type == this.type &&
+          other.amountPiastres == this.amountPiastres &&
+          other.date == this.date &&
+          other.note == this.note);
+}
+
+class CustomerAdjustmentsCompanion
+    extends UpdateCompanion<DbCustomerAdjustment> {
+  final Value<String> id;
+  final Value<String> customerId;
+  final Value<String> type;
+  final Value<int> amountPiastres;
+  final Value<DateTime> date;
+  final Value<String?> note;
+  final Value<int> rowid;
+  const CustomerAdjustmentsCompanion({
+    this.id = const Value.absent(),
+    this.customerId = const Value.absent(),
+    this.type = const Value.absent(),
+    this.amountPiastres = const Value.absent(),
+    this.date = const Value.absent(),
+    this.note = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  CustomerAdjustmentsCompanion.insert({
+    required String id,
+    required String customerId,
+    required String type,
+    required int amountPiastres,
+    required DateTime date,
+    this.note = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       customerId = Value(customerId),
+       type = Value(type),
+       amountPiastres = Value(amountPiastres),
+       date = Value(date);
+  static Insertable<DbCustomerAdjustment> custom({
+    Expression<String>? id,
+    Expression<String>? customerId,
+    Expression<String>? type,
+    Expression<int>? amountPiastres,
+    Expression<DateTime>? date,
+    Expression<String>? note,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (customerId != null) 'customer_id': customerId,
+      if (type != null) 'type': type,
+      if (amountPiastres != null) 'amount_piastres': amountPiastres,
+      if (date != null) 'date': date,
+      if (note != null) 'note': note,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  CustomerAdjustmentsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? customerId,
+    Value<String>? type,
+    Value<int>? amountPiastres,
+    Value<DateTime>? date,
+    Value<String?>? note,
+    Value<int>? rowid,
+  }) {
+    return CustomerAdjustmentsCompanion(
+      id: id ?? this.id,
+      customerId: customerId ?? this.customerId,
+      type: type ?? this.type,
+      amountPiastres: amountPiastres ?? this.amountPiastres,
+      date: date ?? this.date,
+      note: note ?? this.note,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (customerId.present) {
+      map['customer_id'] = Variable<String>(customerId.value);
+    }
+    if (type.present) {
+      map['type'] = Variable<String>(type.value);
+    }
+    if (amountPiastres.present) {
+      map['amount_piastres'] = Variable<int>(amountPiastres.value);
+    }
+    if (date.present) {
+      map['date'] = Variable<DateTime>(date.value);
+    }
+    if (note.present) {
+      map['note'] = Variable<String>(note.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CustomerAdjustmentsCompanion(')
+          ..write('id: $id, ')
+          ..write('customerId: $customerId, ')
+          ..write('type: $type, ')
+          ..write('amountPiastres: $amountPiastres, ')
+          ..write('date: $date, ')
+          ..write('note: $note, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $AdjustmentAllocationsTable extends AdjustmentAllocations
+    with TableInfo<$AdjustmentAllocationsTable, DbAdjustmentAllocation> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $AdjustmentAllocationsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _adjustmentIdMeta = const VerificationMeta(
+    'adjustmentId',
+  );
+  @override
+  late final GeneratedColumn<String> adjustmentId = GeneratedColumn<String>(
+    'adjustment_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _linkedItemIdMeta = const VerificationMeta(
+    'linkedItemId',
+  );
+  @override
+  late final GeneratedColumn<String> linkedItemId = GeneratedColumn<String>(
+    'linked_item_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _allocatedAmountPiastresMeta =
+      const VerificationMeta('allocatedAmountPiastres');
+  @override
+  late final GeneratedColumn<int> allocatedAmountPiastres =
+      GeneratedColumn<int>(
+        'allocated_amount_piastres',
+        aliasedName,
+        false,
+        type: DriftSqlType.int,
+        requiredDuringInsert: true,
+      );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    adjustmentId,
+    linkedItemId,
+    allocatedAmountPiastres,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'adjustment_allocations';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<DbAdjustmentAllocation> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('adjustment_id')) {
+      context.handle(
+        _adjustmentIdMeta,
+        adjustmentId.isAcceptableOrUnknown(
+          data['adjustment_id']!,
+          _adjustmentIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_adjustmentIdMeta);
+    }
+    if (data.containsKey('linked_item_id')) {
+      context.handle(
+        _linkedItemIdMeta,
+        linkedItemId.isAcceptableOrUnknown(
+          data['linked_item_id']!,
+          _linkedItemIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_linkedItemIdMeta);
+    }
+    if (data.containsKey('allocated_amount_piastres')) {
+      context.handle(
+        _allocatedAmountPiastresMeta,
+        allocatedAmountPiastres.isAcceptableOrUnknown(
+          data['allocated_amount_piastres']!,
+          _allocatedAmountPiastresMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_allocatedAmountPiastresMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  DbAdjustmentAllocation map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return DbAdjustmentAllocation(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      adjustmentId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}adjustment_id'],
+      )!,
+      linkedItemId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}linked_item_id'],
+      )!,
+      allocatedAmountPiastres: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}allocated_amount_piastres'],
+      )!,
+    );
+  }
+
+  @override
+  $AdjustmentAllocationsTable createAlias(String alias) {
+    return $AdjustmentAllocationsTable(attachedDatabase, alias);
+  }
+}
+
+class DbAdjustmentAllocation extends DataClass
+    implements Insertable<DbAdjustmentAllocation> {
+  final String id;
+  final String adjustmentId;
+  final String linkedItemId;
+  final int allocatedAmountPiastres;
+  const DbAdjustmentAllocation({
+    required this.id,
+    required this.adjustmentId,
+    required this.linkedItemId,
+    required this.allocatedAmountPiastres,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['adjustment_id'] = Variable<String>(adjustmentId);
+    map['linked_item_id'] = Variable<String>(linkedItemId);
+    map['allocated_amount_piastres'] = Variable<int>(allocatedAmountPiastres);
+    return map;
+  }
+
+  AdjustmentAllocationsCompanion toCompanion(bool nullToAbsent) {
+    return AdjustmentAllocationsCompanion(
+      id: Value(id),
+      adjustmentId: Value(adjustmentId),
+      linkedItemId: Value(linkedItemId),
+      allocatedAmountPiastres: Value(allocatedAmountPiastres),
+    );
+  }
+
+  factory DbAdjustmentAllocation.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return DbAdjustmentAllocation(
+      id: serializer.fromJson<String>(json['id']),
+      adjustmentId: serializer.fromJson<String>(json['adjustmentId']),
+      linkedItemId: serializer.fromJson<String>(json['linkedItemId']),
+      allocatedAmountPiastres: serializer.fromJson<int>(
+        json['allocatedAmountPiastres'],
+      ),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'adjustmentId': serializer.toJson<String>(adjustmentId),
+      'linkedItemId': serializer.toJson<String>(linkedItemId),
+      'allocatedAmountPiastres': serializer.toJson<int>(
+        allocatedAmountPiastres,
+      ),
+    };
+  }
+
+  DbAdjustmentAllocation copyWith({
+    String? id,
+    String? adjustmentId,
+    String? linkedItemId,
+    int? allocatedAmountPiastres,
+  }) => DbAdjustmentAllocation(
+    id: id ?? this.id,
+    adjustmentId: adjustmentId ?? this.adjustmentId,
+    linkedItemId: linkedItemId ?? this.linkedItemId,
+    allocatedAmountPiastres:
+        allocatedAmountPiastres ?? this.allocatedAmountPiastres,
+  );
+  DbAdjustmentAllocation copyWithCompanion(
+    AdjustmentAllocationsCompanion data,
+  ) {
+    return DbAdjustmentAllocation(
+      id: data.id.present ? data.id.value : this.id,
+      adjustmentId: data.adjustmentId.present
+          ? data.adjustmentId.value
+          : this.adjustmentId,
+      linkedItemId: data.linkedItemId.present
+          ? data.linkedItemId.value
+          : this.linkedItemId,
+      allocatedAmountPiastres: data.allocatedAmountPiastres.present
+          ? data.allocatedAmountPiastres.value
+          : this.allocatedAmountPiastres,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('DbAdjustmentAllocation(')
+          ..write('id: $id, ')
+          ..write('adjustmentId: $adjustmentId, ')
+          ..write('linkedItemId: $linkedItemId, ')
+          ..write('allocatedAmountPiastres: $allocatedAmountPiastres')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(id, adjustmentId, linkedItemId, allocatedAmountPiastres);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is DbAdjustmentAllocation &&
+          other.id == this.id &&
+          other.adjustmentId == this.adjustmentId &&
+          other.linkedItemId == this.linkedItemId &&
+          other.allocatedAmountPiastres == this.allocatedAmountPiastres);
+}
+
+class AdjustmentAllocationsCompanion
+    extends UpdateCompanion<DbAdjustmentAllocation> {
+  final Value<String> id;
+  final Value<String> adjustmentId;
+  final Value<String> linkedItemId;
+  final Value<int> allocatedAmountPiastres;
+  final Value<int> rowid;
+  const AdjustmentAllocationsCompanion({
+    this.id = const Value.absent(),
+    this.adjustmentId = const Value.absent(),
+    this.linkedItemId = const Value.absent(),
+    this.allocatedAmountPiastres = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  AdjustmentAllocationsCompanion.insert({
+    required String id,
+    required String adjustmentId,
+    required String linkedItemId,
+    required int allocatedAmountPiastres,
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       adjustmentId = Value(adjustmentId),
+       linkedItemId = Value(linkedItemId),
+       allocatedAmountPiastres = Value(allocatedAmountPiastres);
+  static Insertable<DbAdjustmentAllocation> custom({
+    Expression<String>? id,
+    Expression<String>? adjustmentId,
+    Expression<String>? linkedItemId,
+    Expression<int>? allocatedAmountPiastres,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (adjustmentId != null) 'adjustment_id': adjustmentId,
+      if (linkedItemId != null) 'linked_item_id': linkedItemId,
+      if (allocatedAmountPiastres != null)
+        'allocated_amount_piastres': allocatedAmountPiastres,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  AdjustmentAllocationsCompanion copyWith({
+    Value<String>? id,
+    Value<String>? adjustmentId,
+    Value<String>? linkedItemId,
+    Value<int>? allocatedAmountPiastres,
+    Value<int>? rowid,
+  }) {
+    return AdjustmentAllocationsCompanion(
+      id: id ?? this.id,
+      adjustmentId: adjustmentId ?? this.adjustmentId,
+      linkedItemId: linkedItemId ?? this.linkedItemId,
+      allocatedAmountPiastres:
+          allocatedAmountPiastres ?? this.allocatedAmountPiastres,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (adjustmentId.present) {
+      map['adjustment_id'] = Variable<String>(adjustmentId.value);
+    }
+    if (linkedItemId.present) {
+      map['linked_item_id'] = Variable<String>(linkedItemId.value);
+    }
+    if (allocatedAmountPiastres.present) {
+      map['allocated_amount_piastres'] = Variable<int>(
+        allocatedAmountPiastres.value,
+      );
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('AdjustmentAllocationsCompanion(')
+          ..write('id: $id, ')
+          ..write('adjustmentId: $adjustmentId, ')
+          ..write('linkedItemId: $linkedItemId, ')
+          ..write('allocatedAmountPiastres: $allocatedAmountPiastres, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -4127,6 +4883,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $RecentNumbersTable recentNumbers = $RecentNumbersTable(this);
   late final $MetaTable meta = $MetaTable(this);
   late final $SyncOutboxTable syncOutbox = $SyncOutboxTable(this);
+  late final $CustomerAdjustmentsTable customerAdjustments =
+      $CustomerAdjustmentsTable(this);
+  late final $AdjustmentAllocationsTable adjustmentAllocations =
+      $AdjustmentAllocationsTable(this);
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -4139,6 +4899,8 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     recentNumbers,
     meta,
     syncOutbox,
+    customerAdjustments,
+    adjustmentAllocations,
   ];
 }
 
@@ -6132,6 +6894,451 @@ typedef $$SyncOutboxTableProcessedTableManager =
       DbOutbox,
       PrefetchHooks Function()
     >;
+typedef $$CustomerAdjustmentsTableCreateCompanionBuilder =
+    CustomerAdjustmentsCompanion Function({
+      required String id,
+      required String customerId,
+      required String type,
+      required int amountPiastres,
+      required DateTime date,
+      Value<String?> note,
+      Value<int> rowid,
+    });
+typedef $$CustomerAdjustmentsTableUpdateCompanionBuilder =
+    CustomerAdjustmentsCompanion Function({
+      Value<String> id,
+      Value<String> customerId,
+      Value<String> type,
+      Value<int> amountPiastres,
+      Value<DateTime> date,
+      Value<String?> note,
+      Value<int> rowid,
+    });
+
+class $$CustomerAdjustmentsTableFilterComposer
+    extends Composer<_$AppDatabase, $CustomerAdjustmentsTable> {
+  $$CustomerAdjustmentsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get customerId => $composableBuilder(
+    column: $table.customerId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get type => $composableBuilder(
+    column: $table.type,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get amountPiastres => $composableBuilder(
+    column: $table.amountPiastres,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get date => $composableBuilder(
+    column: $table.date,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get note => $composableBuilder(
+    column: $table.note,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$CustomerAdjustmentsTableOrderingComposer
+    extends Composer<_$AppDatabase, $CustomerAdjustmentsTable> {
+  $$CustomerAdjustmentsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get customerId => $composableBuilder(
+    column: $table.customerId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get type => $composableBuilder(
+    column: $table.type,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get amountPiastres => $composableBuilder(
+    column: $table.amountPiastres,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get date => $composableBuilder(
+    column: $table.date,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get note => $composableBuilder(
+    column: $table.note,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$CustomerAdjustmentsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $CustomerAdjustmentsTable> {
+  $$CustomerAdjustmentsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get customerId => $composableBuilder(
+    column: $table.customerId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get type =>
+      $composableBuilder(column: $table.type, builder: (column) => column);
+
+  GeneratedColumn<int> get amountPiastres => $composableBuilder(
+    column: $table.amountPiastres,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get date =>
+      $composableBuilder(column: $table.date, builder: (column) => column);
+
+  GeneratedColumn<String> get note =>
+      $composableBuilder(column: $table.note, builder: (column) => column);
+}
+
+class $$CustomerAdjustmentsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $CustomerAdjustmentsTable,
+          DbCustomerAdjustment,
+          $$CustomerAdjustmentsTableFilterComposer,
+          $$CustomerAdjustmentsTableOrderingComposer,
+          $$CustomerAdjustmentsTableAnnotationComposer,
+          $$CustomerAdjustmentsTableCreateCompanionBuilder,
+          $$CustomerAdjustmentsTableUpdateCompanionBuilder,
+          (
+            DbCustomerAdjustment,
+            BaseReferences<
+              _$AppDatabase,
+              $CustomerAdjustmentsTable,
+              DbCustomerAdjustment
+            >,
+          ),
+          DbCustomerAdjustment,
+          PrefetchHooks Function()
+        > {
+  $$CustomerAdjustmentsTableTableManager(
+    _$AppDatabase db,
+    $CustomerAdjustmentsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$CustomerAdjustmentsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$CustomerAdjustmentsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$CustomerAdjustmentsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> customerId = const Value.absent(),
+                Value<String> type = const Value.absent(),
+                Value<int> amountPiastres = const Value.absent(),
+                Value<DateTime> date = const Value.absent(),
+                Value<String?> note = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CustomerAdjustmentsCompanion(
+                id: id,
+                customerId: customerId,
+                type: type,
+                amountPiastres: amountPiastres,
+                date: date,
+                note: note,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String customerId,
+                required String type,
+                required int amountPiastres,
+                required DateTime date,
+                Value<String?> note = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CustomerAdjustmentsCompanion.insert(
+                id: id,
+                customerId: customerId,
+                type: type,
+                amountPiastres: amountPiastres,
+                date: date,
+                note: note,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$CustomerAdjustmentsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $CustomerAdjustmentsTable,
+      DbCustomerAdjustment,
+      $$CustomerAdjustmentsTableFilterComposer,
+      $$CustomerAdjustmentsTableOrderingComposer,
+      $$CustomerAdjustmentsTableAnnotationComposer,
+      $$CustomerAdjustmentsTableCreateCompanionBuilder,
+      $$CustomerAdjustmentsTableUpdateCompanionBuilder,
+      (
+        DbCustomerAdjustment,
+        BaseReferences<
+          _$AppDatabase,
+          $CustomerAdjustmentsTable,
+          DbCustomerAdjustment
+        >,
+      ),
+      DbCustomerAdjustment,
+      PrefetchHooks Function()
+    >;
+typedef $$AdjustmentAllocationsTableCreateCompanionBuilder =
+    AdjustmentAllocationsCompanion Function({
+      required String id,
+      required String adjustmentId,
+      required String linkedItemId,
+      required int allocatedAmountPiastres,
+      Value<int> rowid,
+    });
+typedef $$AdjustmentAllocationsTableUpdateCompanionBuilder =
+    AdjustmentAllocationsCompanion Function({
+      Value<String> id,
+      Value<String> adjustmentId,
+      Value<String> linkedItemId,
+      Value<int> allocatedAmountPiastres,
+      Value<int> rowid,
+    });
+
+class $$AdjustmentAllocationsTableFilterComposer
+    extends Composer<_$AppDatabase, $AdjustmentAllocationsTable> {
+  $$AdjustmentAllocationsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get adjustmentId => $composableBuilder(
+    column: $table.adjustmentId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get linkedItemId => $composableBuilder(
+    column: $table.linkedItemId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get allocatedAmountPiastres => $composableBuilder(
+    column: $table.allocatedAmountPiastres,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$AdjustmentAllocationsTableOrderingComposer
+    extends Composer<_$AppDatabase, $AdjustmentAllocationsTable> {
+  $$AdjustmentAllocationsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get adjustmentId => $composableBuilder(
+    column: $table.adjustmentId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get linkedItemId => $composableBuilder(
+    column: $table.linkedItemId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get allocatedAmountPiastres => $composableBuilder(
+    column: $table.allocatedAmountPiastres,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$AdjustmentAllocationsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $AdjustmentAllocationsTable> {
+  $$AdjustmentAllocationsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get adjustmentId => $composableBuilder(
+    column: $table.adjustmentId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get linkedItemId => $composableBuilder(
+    column: $table.linkedItemId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get allocatedAmountPiastres => $composableBuilder(
+    column: $table.allocatedAmountPiastres,
+    builder: (column) => column,
+  );
+}
+
+class $$AdjustmentAllocationsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $AdjustmentAllocationsTable,
+          DbAdjustmentAllocation,
+          $$AdjustmentAllocationsTableFilterComposer,
+          $$AdjustmentAllocationsTableOrderingComposer,
+          $$AdjustmentAllocationsTableAnnotationComposer,
+          $$AdjustmentAllocationsTableCreateCompanionBuilder,
+          $$AdjustmentAllocationsTableUpdateCompanionBuilder,
+          (
+            DbAdjustmentAllocation,
+            BaseReferences<
+              _$AppDatabase,
+              $AdjustmentAllocationsTable,
+              DbAdjustmentAllocation
+            >,
+          ),
+          DbAdjustmentAllocation,
+          PrefetchHooks Function()
+        > {
+  $$AdjustmentAllocationsTableTableManager(
+    _$AppDatabase db,
+    $AdjustmentAllocationsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$AdjustmentAllocationsTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$AdjustmentAllocationsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$AdjustmentAllocationsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> adjustmentId = const Value.absent(),
+                Value<String> linkedItemId = const Value.absent(),
+                Value<int> allocatedAmountPiastres = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => AdjustmentAllocationsCompanion(
+                id: id,
+                adjustmentId: adjustmentId,
+                linkedItemId: linkedItemId,
+                allocatedAmountPiastres: allocatedAmountPiastres,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                required String adjustmentId,
+                required String linkedItemId,
+                required int allocatedAmountPiastres,
+                Value<int> rowid = const Value.absent(),
+              }) => AdjustmentAllocationsCompanion.insert(
+                id: id,
+                adjustmentId: adjustmentId,
+                linkedItemId: linkedItemId,
+                allocatedAmountPiastres: allocatedAmountPiastres,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$AdjustmentAllocationsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $AdjustmentAllocationsTable,
+      DbAdjustmentAllocation,
+      $$AdjustmentAllocationsTableFilterComposer,
+      $$AdjustmentAllocationsTableOrderingComposer,
+      $$AdjustmentAllocationsTableAnnotationComposer,
+      $$AdjustmentAllocationsTableCreateCompanionBuilder,
+      $$AdjustmentAllocationsTableUpdateCompanionBuilder,
+      (
+        DbAdjustmentAllocation,
+        BaseReferences<
+          _$AppDatabase,
+          $AdjustmentAllocationsTable,
+          DbAdjustmentAllocation
+        >,
+      ),
+      DbAdjustmentAllocation,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -6148,4 +7355,8 @@ class $AppDatabaseManager {
   $$MetaTableTableManager get meta => $$MetaTableTableManager(_db, _db.meta);
   $$SyncOutboxTableTableManager get syncOutbox =>
       $$SyncOutboxTableTableManager(_db, _db.syncOutbox);
+  $$CustomerAdjustmentsTableTableManager get customerAdjustments =>
+      $$CustomerAdjustmentsTableTableManager(_db, _db.customerAdjustments);
+  $$AdjustmentAllocationsTableTableManager get adjustmentAllocations =>
+      $$AdjustmentAllocationsTableTableManager(_db, _db.adjustmentAllocations);
 }

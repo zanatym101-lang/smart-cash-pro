@@ -1,5 +1,6 @@
 // Dashboard: KPIs + navigation (admin-aware)
 import 'package:flutter/material.dart';
+import '../config/app_env.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
 import '../data/reporting.dart';
@@ -9,6 +10,12 @@ import '../models/license_info.dart';
 import '../models/quick_action_item.dart';
 import '../models/transaction.dart';
 
+import 'package:flutter/services.dart';
+import '../ai_sms/sms_inbox_screen.dart';
+import '../ai_sms/models/parsed_transaction_draft.dart';
+import '../ai_sms/sms_review_screen.dart';
+import '../ai_sms/customer_matching_service.dart';
+import '../services/sms_parser.dart';
 import '../widgets/app_title.dart';
 import 'wallets_screen.dart';
 import 'treasury_screen.dart';
@@ -24,16 +31,19 @@ import 'reports_screen.dart';
 import 'help_screen.dart';
 import 'quick_actions_order_screen.dart';
 import 'customers_screen.dart';
-import 'assistant_screen.dart';
+import 'monther_chat_screen.dart';
+
+bool shouldShowSmsImportAction() => enableSms;
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  State<DashboardScreen> createState() => DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
+class DashboardScreenState extends State<DashboardScreen> with WidgetsBindingObserver {
+  String? _lastProcessedClipboard;
   TreasurySnapshot? _snap;
   LicenseInfo? _license;
   ReportData? _todayReport;
@@ -54,6 +64,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   double _expensesTotalMonth = 0;
   int _pendingDueTodayCount = 0;
   int _pendingOverdueCount = 0;
+
+  String _formatLastUpdated(DateTime dt) {
+    final hour12 = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final period = dt.hour >= 12 ? 'م' : 'ص';
+    return '${hour12.toString().padLeft(2, '0')}:$minute $period';
+  }
 
   DateTime _businessShift(DateTime d) {
     if (_dayStartHour <= 0) return d;
@@ -310,7 +327,312 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkClipboardForSms();
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkClipboardForSms();
+    }
+  }
+
+  @visibleForTesting
+  Future<void> handleSmsDraftReview(ParsedTransactionDraft initialDraft) =>
+      _handleSmsDraftReview(initialDraft);
+
+  Future<void> _handleSmsDraftReview(ParsedTransactionDraft initialDraft) async {
+    try {
+      // 1. Auto-Match Customer: Look up customer in AppDb by phone number
+      final draftWithMatchedCustomer = await SmsParser.autoMatchCustomer(initialDraft);
+      final phone = SmsParser.extractPhone(
+        '${draftWithMatchedCustomer.customerName ?? ''} ${draftWithMatchedCustomer.note ?? ''} ${draftWithMatchedCustomer.rawMessage}',
+      );
+      final customerFound = phone != null &&
+          await SmsParser.lookupCustomerByPhone(phone) != null;
+
+      // Load wallet options
+      final wallets = await AppDb.instance.listWallets();
+      final walletOptions = wallets
+          .map(
+            (w) => SmsReviewWalletOption(
+              id: w.id,
+              name: w.name,
+              phone: w.phone,
+            ),
+          )
+          .toList(growable: false);
+
+      final candidates = await AppDb.instance.listCustomerCandidates();
+      final customerMatchSuggestion = const CustomerMatchingService().suggest(
+        draft: draftWithMatchedCustomer,
+        existingCustomers: candidates,
+      );
+
+      if (!mounted) return;
+      final reviewedDraft = await Navigator.of(context).push<ParsedTransactionDraft>(
+        MaterialPageRoute(
+          builder: (_) => SmsReviewScreen(
+            draft: draftWithMatchedCustomer,
+            walletOptions: walletOptions,
+            customerMatchSuggestion: customerMatchSuggestion,
+          ),
+        ),
+      );
+
+      if (!mounted || reviewedDraft == null) return;
+
+      // Execute transaction into AppDb
+      final walletId = reviewedDraft.walletId ?? (walletOptions.isNotEmpty ? walletOptions.first.id : null);
+      final draftAmount = reviewedDraft.amount;
+      if (walletId != null && draftAmount != null && draftAmount > 0) {
+        final isPending = reviewedDraft.transactionMode == TransactionMode.deferred;
+        if (reviewedDraft.operationType == ParsedOperationType.transfer) {
+          await AppDb.instance.addTransfer(
+            walletId: walletId,
+            amount: draftAmount,
+            clientFee: 0,
+            networkFee: 0,
+            transferType: 'type1',
+            isPending: isPending,
+            party: reviewedDraft.customerName,
+            note: reviewedDraft.note,
+          );
+        } else if (reviewedDraft.operationType == ParsedOperationType.receive) {
+          await AppDb.instance.addReceive(
+            walletId: walletId,
+            amount: draftAmount,
+            commission: 0,
+            receiveType: 'cash',
+            isPending: isPending,
+            party: reviewedDraft.customerName,
+            note: reviewedDraft.note,
+          );
+        }
+      }
+
+      await _load();
+      if (!mounted) return;
+
+      // If customer was not found in AppDb and we have a phone number, offer one-tap save
+      if (!customerFound && phone != null && phone.isNotEmpty) {
+        _showSaveCustomerDialog(phone, reviewedDraft.customerName);
+      }
+
+      // 2. WhatsApp Receipt Button: On transaction confirmation from SMS, provide direct option to launch WhatsApp
+      final opName = reviewedDraft.operationType == ParsedOperationType.receive ? 'الاستلام' : 'التحويل';
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 10),
+          backgroundColor: const Color(0xFF0F172A),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Color(0xFF10B981), size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'تم تسجيل $opName (${reviewedDraft.amount} ج)',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+          action: SnackBarAction(
+            label: 'إيصال واتساب 💬',
+            textColor: const Color(0xFF38BDF8),
+            onPressed: () {
+              SmsParser.launchWhatsAppReceipt(reviewedDraft);
+            },
+          ),
+        ),
+      );
+    } catch (e, st) {
+      debugPrint('ERROR in _handleSmsDraftReview: $e\n$st');
+    }
+  }
+
+  void _showSaveCustomerDialog(String phone, String? currentName) {
+    final nameCtrl = TextEditingController(
+      text: (currentName != null && currentName != phone) ? currentName : '',
+    );
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.person_add, color: Color(0xFF0284C7)),
+            SizedBox(width: 8),
+            Text('حفظ العميل في الحسابات', style: TextStyle(fontSize: 16)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('الرقم: $phone', style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: nameCtrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'اسم العميل',
+                hintText: 'أدخل اسم العميل',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('تخطي'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              final name = nameCtrl.text.trim();
+              if (name.isNotEmpty) {
+                await SmsParser.saveCustomer(phone: phone, name: name);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('تم حفظ العميل $name بنجاح')),
+                  );
+                }
+              }
+              if (ctx.mounted) Navigator.of(ctx).pop();
+            },
+            icon: const Icon(Icons.save),
+            label: const Text('حفظ بنقرة واحدة'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _checkClipboardForSms() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text?.trim();
+      if (text == null || text.isEmpty || text == _lastProcessedClipboard) {
+        return;
+      }
+      if (text.length < 15 || text.length > 500) return;
+
+      final parsed = SmsParser.parseText(text, sender: 'Clipboard');
+      if (parsed.draft.amount != null && parsed.draft.operationType != ParsedOperationType.unknown) {
+        _lastProcessedClipboard = text;
+        if (!mounted) return;
+        
+        final opName = parsed.draft.operationType == ParsedOperationType.receive ? 'استلام' : 'تحويل';
+        final providerName = parsed.draft.provider ?? 'محفظة';
+        final amount = parsed.draft.amount!;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 8),
+            backgroundColor: const Color(0xFF0F172A),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            content: Row(
+              children: [
+                const Icon(Icons.auto_awesome, color: Color(0xFF38BDF8), size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'رسالة $providerName: $opName $amount ج',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+            action: SnackBarAction(
+              label: 'تسجيل القيد ⚡',
+              textColor: const Color(0xFF38BDF8),
+              onPressed: () {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                _handleSmsDraftReview(parsed.draft);
+              },
+            ),
+          ),
+        );
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _pasteAndReviewSms() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text?.trim();
+      if (text != null && text.isNotEmpty) {
+        final parsed = SmsParser.parseText(text, sender: 'Clipboard');
+        if (parsed.draft.amount != null) {
+          if (!mounted) return;
+          await _handleSmsDraftReview(parsed.draft);
+          return;
+        }
+      }
+    } catch (_) {}
+
+    // If clipboard is empty or unparsed, show paste dialog
+    if (!mounted) return;
+    final ctrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.auto_awesome, color: Color(0xFF0284C7)),
+            SizedBox(width: 8),
+            Text('تحليل رسالة محفظة ذكياً'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('الصق نص رسالة التحويل أو الاستلام هنا:', style: TextStyle(fontSize: 13)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                hintText: 'مثال: تم تحويل 500 جنيه لرقم 010... رقم العملية: 123456',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              final raw = ctrl.text.trim();
+              if (raw.isEmpty) return;
+              Navigator.of(ctx).pop();
+              final parsed = SmsParser.parseText(raw, sender: 'Manual');
+              _handleSmsDraftReview(parsed.draft);
+            },
+            icon: const Icon(Icons.bolt),
+            label: const Text('تحليل القيد فوراً'),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _kpiCard({
@@ -464,7 +786,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   onTap: () async {
                     await Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => const AssistantScreen(),
+                        builder: (_) => const MontherChatScreen(),
                       ),
                     );
                     _load();
@@ -714,12 +1036,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        int cross = 2;
+        int cross = 3;
         if (width >= 900) {
-          cross = 4;
+          cross = 6;
         } else if (width >= 600) {
-          cross = 3;
-        } else if (width >= 360) {
+          cross = 4;
+        } else {
           cross = 3;
         }
 
@@ -730,7 +1052,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             crossAxisCount: cross,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
-            childAspectRatio: width < 360 ? 1.2 : 1.05,
+            childAspectRatio: 1.1,
           ),
           itemCount: items.length,
           itemBuilder: (_, i) => _ActionTile(item: items[i]),
@@ -767,6 +1089,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           subtitle: isAdmin ? 'لوحة التحكم (أدمن)' : 'لوحة التحكم',
         ),
         actions: [
+          IconButton(
+            tooltip: 'لصق وتحليل رسالة محفظة ⚡',
+            icon: const Icon(Icons.content_paste_go, color: Color(0xFF38BDF8)),
+            onPressed: _pasteAndReviewSms,
+          ),
           if (isAdmin)
             IconButton(
               tooltip: 'إعدادات الأدمن',
@@ -826,7 +1153,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
-                    'آخر تحديث: ${_lastUpdated!.toLocal()}',
+                    'آخر تحديث: ${_formatLastUpdated(_lastUpdated!.toLocal())}',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -842,13 +1169,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               _actionGrid(_applyOrder(_actions(isAdmin), _actionOrder)),
 
               _sectionTitle('ملخصات سريعة'),
-              _kpiCard(
-                title: 'إجمالي السيولة المتاحة الآن',
-                value: s.availableLiquidityNow.toStringAsFixed(2),
-                icon: Icons.summarize,
-                hint:
-                    '\u0627\u0644\u062e\u0632\u0646\u0629 \u0627\u0644\u0641\u0639\u0644\u064a\u0629: ${s.actualTreasuryApproved.toStringAsFixed(2)}',
-              ),
               if (today != null)
                 _kpiCard(
                   title: 'مؤشرات اليوم',
@@ -891,6 +1211,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         : (value?.isNegative == false ? '\u0644\u0646\u0627' : null);
 
     final items = <QuickActionItem>[
+      if (shouldShowSmsImportAction())
+        QuickActionItem(
+          id: 'sms_import',
+          title: 'استيراد من الرسائل',
+          icon: Icons.sms_outlined,
+          color: const Color(0xFF7C3AED),
+          onTap: () async {
+            final changed = await Navigator.of(context).push<bool>(
+              MaterialPageRoute(builder: (_) => SmsInboxScreen.withDefaults()),
+            );
+            if (changed == true) {
+              _load();
+            }
+          },
+        ),
       QuickActionItem(
         id: 'help',
         title: 'شرح البرنامج',
@@ -906,7 +1241,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         id: 'transfer',
         title: isAdmin ? 'تحويل' : 'تحويل (آجل)',
         icon: Icons.swap_horiz,
-        color: const Color(0xFF14B8A6),
+        color: const Color(0xFFEA580C),
         onTap: () async {
           await Navigator.of(
             context,
@@ -918,7 +1253,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         id: 'receive',
         title: isAdmin ? 'استلام' : 'استلام (آجل)',
         icon: Icons.call_received,
-        color: const Color(0xFF1D4ED8),
+        color: const Color(0xFF16A34A),
         onTap: () async {
           await Navigator.of(
             context,
@@ -1070,53 +1405,153 @@ class _ActionTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isTransfer = item.id == 'transfer';
+    final isReceive = item.id == 'receive';
+    final isProminent = isTransfer || isReceive;
+
+    final LinearGradient cardGradient;
+    final LinearGradient? badgeGradient;
+    final Color badgeBg;
+    final Color iconColor;
+    final double borderWidth;
+    final Color borderColor;
+    final List<BoxShadow> shadows;
+
+    if (isTransfer) {
+      cardGradient = LinearGradient(
+        colors: [
+          const Color(0xFFEA580C).withValues(alpha: 0.15),
+          const Color(0xFFDC2626).withValues(alpha: 0.04),
+        ],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      );
+      badgeGradient = const LinearGradient(
+        colors: [Color(0xFFEA580C), Color(0xFFDC2626)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      );
+      badgeBg = const Color(0xFFEA580C);
+      iconColor = Colors.white;
+      borderWidth = 1.5;
+      borderColor = const Color(0xFFEA580C).withValues(alpha: 0.40);
+      shadows = [
+        BoxShadow(
+          color: const Color(0xFFEA580C).withValues(alpha: 0.15),
+          blurRadius: 10,
+          offset: const Offset(0, 3),
+        ),
+      ];
+    } else if (isReceive) {
+      cardGradient = LinearGradient(
+        colors: [
+          const Color(0xFF16A34A).withValues(alpha: 0.15),
+          const Color(0xFF059669).withValues(alpha: 0.04),
+        ],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      );
+      badgeGradient = const LinearGradient(
+        colors: [Color(0xFF16A34A), Color(0xFF059669)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      );
+      badgeBg = const Color(0xFF16A34A);
+      iconColor = Colors.white;
+      borderWidth = 1.5;
+      borderColor = const Color(0xFF16A34A).withValues(alpha: 0.40);
+      shadows = [
+        BoxShadow(
+          color: const Color(0xFF16A34A).withValues(alpha: 0.15),
+          blurRadius: 10,
+          offset: const Offset(0, 3),
+        ),
+      ];
+    } else {
+      cardGradient = LinearGradient(
+        colors: [
+          item.color.withValues(alpha: 0.10),
+          item.color.withValues(alpha: 0.02),
+        ],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      );
+      badgeGradient = null;
+      badgeBg = item.color.withValues(alpha: 0.12);
+      iconColor = item.color;
+      borderWidth = 1.0;
+      borderColor = item.color.withValues(alpha: 0.18);
+      shadows = [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.03),
+          blurRadius: 8,
+          offset: const Offset(0, 2),
+        ),
+      ];
+    }
+
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: item.onTap,
       child: Container(
-        padding: const EdgeInsets.all(10),
+        padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              item.color.withValues(alpha: 0.18),
-              item.color.withValues(alpha: 0.06),
-            ],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
+          gradient: cardGradient,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: item.color.withValues(alpha: 0.2)),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
+          border: Border.all(color: borderColor, width: borderWidth),
+          boxShadow: shadows,
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              width: 34,
-              height: 34,
+              width: 32,
+              height: 32,
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.8),
+                color: badgeGradient == null ? badgeBg : null,
+                gradient: badgeGradient,
                 borderRadius: BorderRadius.circular(10),
+                border: badgeGradient == null
+                    ? Border.all(
+                        color: item.color.withValues(alpha: 0.20),
+                        width: 1,
+                      )
+                    : null,
+                boxShadow: isProminent
+                    ? [
+                        BoxShadow(
+                          color: (isTransfer
+                                  ? const Color(0xFFEA580C)
+                                  : const Color(0xFF16A34A))
+                              .withValues(alpha: 0.35),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ]
+                    : null,
               ),
-              child: Icon(item.icon, color: item.color, size: 18),
+              child: Icon(item.icon, color: iconColor, size: 18),
             ),
-            const Spacer(),
+            const SizedBox(height: 8),
             Text(
               item.title,
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w700),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: isProminent ? FontWeight.w800 : FontWeight.w700,
+                color: isProminent
+                    ? (isTransfer
+                        ? const Color(0xFFC2410C)
+                        : const Color(0xFF15803D))
+                    : null,
+              ),
             ),
             if (item.valueText != null) ...[
               const SizedBox(height: 2),
               Text(
                 item.valueText!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: Theme.of(
                   context,
                 ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800),
@@ -1126,6 +1561,8 @@ class _ActionTile extends StatelessWidget {
               const SizedBox(height: 1),
               Text(
                 item.metaText!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: Theme.of(
                   context,
                 ).textTheme.bodySmall?.copyWith(color: Colors.black54),

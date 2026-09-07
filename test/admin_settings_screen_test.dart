@@ -18,5 +18,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byType(AdminSettingsScreen), findsOneWidget);
+    expect(find.textContaining(r'${_license'), findsNothing);
+    expect(find.textContaining(r'{$_license'), findsNothing);
+    expect(find.text('تصفير مساحة العمل وبدء فترة جديدة'), findsOneWidget);
   });
 }

@@ -40,6 +40,72 @@ extension _ReportsDateRangeHelpers on _ReportsScreenState {
     return _todayRange();
   }
 
+  String _arabicWeekday(int weekday) {
+    switch (weekday) {
+      case DateTime.monday:
+        return 'الإثنين';
+      case DateTime.tuesday:
+        return 'الثلاثاء';
+      case DateTime.wednesday:
+        return 'الأربعاء';
+      case DateTime.thursday:
+        return 'الخميس';
+      case DateTime.friday:
+        return 'الجمعة';
+      case DateTime.saturday:
+        return 'السبت';
+      case DateTime.sunday:
+        return 'الأحد';
+      default:
+        return '';
+    }
+  }
+
+  String _arabicMonth(int month) {
+    switch (month) {
+      case 1:
+        return 'يناير';
+      case 2:
+        return 'فبراير';
+      case 3:
+        return 'مارس';
+      case 4:
+        return 'أبريل';
+      case 5:
+        return 'مايو';
+      case 6:
+        return 'يونيو';
+      case 7:
+        return 'يوليو';
+      case 8:
+        return 'أغسطس';
+      case 9:
+        return 'سبتمبر';
+      case 10:
+        return 'أكتوبر';
+      case 11:
+        return 'نوفمبر';
+      case 12:
+        return 'ديسمبر';
+      default:
+        return '';
+    }
+  }
+
+  String _formatPeriodSubtitle(DateRange range) {
+    if (_period == 'today') {
+      final d = range.start;
+      final dayName = _arabicWeekday(d.weekday);
+      final monthName = _arabicMonth(d.month);
+      return 'اليوم: $dayName ${d.day} $monthName ${d.year}';
+    } else if (_period == 'month') {
+      final d = range.start;
+      final monthName = _arabicMonth(d.month);
+      return 'الفترة: شهر $monthName ${d.year} (من ${_fmtDate(range.start)} إلى ${_fmtDate(range.end)})';
+    }
+    return 'الفترة: من ${_fmtDate(range.start)} إلى ${_fmtDate(range.end)}';
+  }
+
   String _fmtDate(DateTime d) {
     final y = d.year.toString().padLeft(4, '0');
     final m = d.month.toString().padLeft(2, '0');
@@ -74,3 +140,4 @@ extension _ReportsDateRangeHelpers on _ReportsScreenState {
     await _load();
   }
 }
+

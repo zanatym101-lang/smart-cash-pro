@@ -429,33 +429,50 @@ extension AppDbWallets on AppDb {
   Future<TreasurySnapshot> getTreasurySnapshot() async {
     await _ensureLoaded();
 
-    // Posted/actual balances from engine state (qirsh -> EGP)
-    final drawerActualBalance = Money.toEgpDouble(_state.drawerBalanceQirsh);
-    final fawryActualBalance = Money.toEgpDouble(_state.fawryBalanceQirsh);
+    // Compute actual wallets balance directly from state as single source of truth
     int walletsActualQ = 0;
     for (final w in _wallets) {
       walletsActualQ += _state.getWalletQirsh(w.id.toString());
     }
     final walletsActualTotal = Money.toEgpDouble(walletsActualQ);
+    final walletsTotal = walletsActualTotal;
 
-    // Available/projected balances (posted + pending)
-    final projected = _projectedBalances();
-    final drawerBalance = Money.toEgpDouble(projected.drawerQirsh);
-    int walletsAvailableQ = 0;
-    for (final w in _wallets) {
-      walletsAvailableQ += projected.walletsQirsh[w.id.toString()] ?? 0;
+    final drawerEntries = _state.ledger
+        .where((e) => e.accountKey == 'drawer')
+        .toList();
+    final txnsMap = {for (var t in _txns) t.id.toString(): t};
+    final treasuryAccount = TreasuryLedgerBuilder.build(
+      drawerEntries: drawerEntries,
+      txnsMap: txnsMap,
+    );
+    final drawerBalance = treasuryAccount.closingBalance.toDouble();
+    final drawerActualBalance = drawerBalance;
+
+    final customerAccounts = CustomerAccountBuilder.fromAppDbData(
+      txns: _txns,
+      claims: _claims,
+    );
+
+    double claimsReceivableOpen = 0;
+    double claimsPayableOpen = 0;
+    double pendingReceivableOpen = 0;
+    double pendingPayableOpen = 0;
+
+    for (final c in customerAccounts) {
+      claimsReceivableOpen += c.summary.openClaimsForUs;
+      claimsPayableOpen += c.summary.openClaimsAgainstUs;
+      pendingReceivableOpen += c.summary.openDeferredForUs;
+      pendingPayableOpen += c.summary.openDeferredAgainstUs;
     }
-    final walletsTotal = Money.toEgpDouble(walletsAvailableQ);
-    final fawryBalance = Money.toEgpDouble(projected.fawryQirsh);
 
-    // Pending txns count
+    final fawryActualBalance = Money.toEgpDouble(_state.fawryBalanceQirsh);
+    final fawryBalance = fawryActualBalance;
+
     final pendingCount = _txns.where((t) => _hasStatus(t, 'pending')).length;
-    final pendingFlow = _pendingLiquidityFlowQirsh();
-    final pendingInflow = Money.toEgpDouble(pendingFlow.inflowQirsh);
-    final pendingOutflow = Money.toEgpDouble(pendingFlow.outflowQirsh);
+    final pendingInflow = 0.0;
+    final pendingOutflow = 0.0;
     await _maybeNotifyPending();
 
-    // Profits derived from posted txns (CF). Rolled-back originals are excluded by status.
     final now = DateTime.now();
     final nowDayKey = _businessDateKeyFromDateTime(now);
     final nowShifted = _businessShift(now);
@@ -469,44 +486,37 @@ extension AppDbWallets on AppDb {
 
       final fee = t.clientFee;
       if (fee <= 0) continue;
+
+      // Do not recognize fee/commission as realized profit while an outbound claim is open
+      final hasOpenReceivableClaim = _claims.any(
+        (c) =>
+            c.sourceTxnId == t.id &&
+            c.status == 'open' &&
+            c.type == 'receivable',
+      );
+      if (hasOpenReceivableClaim) {
+        continue;
+      }
+
       profitApprovedTotal += fee;
 
-      if (_businessDateKeyFromDateTime(t.entryDate) == nowDayKey) {
+      // If claim was settled, realize commission on settlement date; otherwise on entryDate
+      final closedClaim = _claims.cast<Claim?>().firstWhere(
+        (c) =>
+            c?.sourceTxnId == t.id &&
+            c?.status == 'closed' &&
+            c?.type == 'receivable',
+        orElse: () => null,
+      );
+      final effectiveProfitDate = closedClaim?.settledDate ?? t.entryDate;
+
+      if (_businessDateKeyFromDateTime(effectiveProfitDate) == nowDayKey) {
         dailyProfit += fee;
       }
-      final tShifted = _businessShift(t.entryDate);
+      final tShifted = _businessShift(effectiveProfitDate);
       if (tShifted.year == nowShifted.year &&
           tShifted.month == nowShifted.month) {
         monthlyProfit += fee;
-      }
-    }
-
-    double claimsReceivableOpen = 0;
-    double claimsPayableOpen = 0;
-    for (final c in _claims) {
-      if (c.status != 'open') continue;
-      if (c.type == 'receivable') {
-        claimsReceivableOpen += c.amount;
-      } else if (c.type == 'payable') {
-        claimsPayableOpen += c.amount;
-      }
-    }
-
-    double pendingReceivableOpen = 0;
-    double pendingPayableOpen = 0;
-    for (final t in _txns) {
-      if (!_hasStatus(t, 'pending')) continue;
-      final kind = _txnKind(t);
-      if (kind == 'transfer') {
-        final due = (_pendingTransferDueForTxn(t) - _pendingSettledAmount(t.id))
-            .clamp(0, 1e18)
-            .toDouble();
-        pendingReceivableOpen += due;
-      } else if (kind == 'receive') {
-        final due = (_pendingReceiveDueForTxn(t) - _pendingSettledAmount(t.id))
-            .clamp(0, 1e18)
-            .toDouble();
-        pendingPayableOpen += due;
       }
     }
 
@@ -528,35 +538,6 @@ extension AppDbWallets on AppDb {
       dailyProfit: dailyProfit,
       monthlyProfit: monthlyProfit,
     );
-  }
-
-  ({int inflowQirsh, int outflowQirsh}) _pendingLiquidityFlowQirsh() {
-    int inflowQirsh = 0;
-    int outflowQirsh = 0;
-    final pendingSorted =
-        _txns
-            .where(
-              (t) =>
-                  _hasStatus(t, 'pending') && _walletPendingAffectsBalance(t),
-            )
-            .toList()
-          ..sort((a, b) => a.entryDate.compareTo(b.entryDate));
-
-    for (final t in pendingSorted) {
-      final spec = _specFromTxn(t);
-      final entries = spec.buildEntries(_txId(t.id));
-      for (final e in entries) {
-        final k = e.accountKey;
-        if (!k.startsWith('wallet:')) continue;
-        if (e.deltaQirsh >= 0) {
-          inflowQirsh += e.deltaQirsh;
-        } else {
-          outflowQirsh += -e.deltaQirsh;
-        }
-      }
-    }
-
-    return (inflowQirsh: inflowQirsh, outflowQirsh: outflowQirsh);
   }
 
   Future<void> _maybeNotifyPending() async {

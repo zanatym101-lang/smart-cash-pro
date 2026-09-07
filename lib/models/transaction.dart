@@ -16,6 +16,7 @@ class Txn {
   final String createdBy; // actor name
   final String createdRole; // admin/user/system
   final DateTime createdAt;
+  final bool isReversed;
 
   const Txn({
     required this.id,
@@ -35,6 +36,7 @@ class Txn {
     required this.createdBy,
     required this.createdRole,
     required this.createdAt,
+    this.isReversed = false,
   });
 
   Txn copyWith({
@@ -55,6 +57,7 @@ class Txn {
     String? createdBy,
     String? createdRole,
     DateTime? createdAt,
+    bool? isReversed,
   }) {
     return Txn(
       id: id ?? this.id,
@@ -74,6 +77,7 @@ class Txn {
       createdBy: createdBy ?? this.createdBy,
       createdRole: createdRole ?? this.createdRole,
       createdAt: createdAt ?? this.createdAt,
+      isReversed: isReversed ?? this.isReversed,
     );
   }
 
@@ -95,6 +99,7 @@ class Txn {
     'createdBy': createdBy,
     'createdRole': createdRole,
     'createdAt': createdAt.toIso8601String(),
+    'isReversed': isReversed,
   };
 
   static Txn fromJson(Map<String, dynamic> j) => Txn(
@@ -117,5 +122,6 @@ class Txn {
     createdAt: DateTime.parse(
       (j['createdAt'] ?? j['entryDate'] ?? DateTime.now().toIso8601String()).toString(),
     ),
+    isReversed: (j['isReversed'] as bool?) ?? (j['status'] == 'reversed'),
   );
 }

@@ -1,0 +1,365 @@
+diff a/lib/data/report_exporter.dart b/lib/data/report_exporter.dart	(rejected hunks)
+@@ -547,25 +520,28 @@ class ReportExporter {
+   }
+ 
+   static Future<String> exportCustomerPdf({
+-    required CustomerReportExportData data,
++    required CustomerAccount account,
++    required DateRange range,
+   }) async {
+     final doc = await _newPdfDocument();
+-    final period =
+-        '┘à┘ ${_fmtDate(data.range.start)} ╪ح┘┘ë ${_fmtDate(data.range.end)}';
+-    final netLabel = data.net >= 0 ? '╪╡╪د┘┘è ┘┘╪د' : '╪╡╪د┘┘è ╪╣┘┘è┘╪د';
++    final period = '┘à┘ ${_fmtDate(range.start)} ╪ح┘┘ë ${_fmtDate(range.end)}';
++    final netLabel = account.summary.netBalance >= 0 ? '╪╡╪د┘┘è ┘┘╪د' : '╪╡╪د┘┘è ╪╣┘┘è┘╪د';
+ 
++    // We can calculate opening and closing from rows by filtering the range
++    final rowsInRange = account.rows.where((r) => !r.date.isBefore(range.start) && !r.date.isAfter(range.end)).toList();
++    
+     doc.addPage(
+       pw.MultiPage(
++        textDirection: pw.TextDirection.rtl,
+         build: (_) => [
+-          _rtlBlock([
+-            pw.Text(
+-              '┘â╪┤┘ ╪ص╪│╪د╪ذ ╪╣┘à┘è┘',
+-              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
+-            ),
+-            pw.SizedBox(height: 8),
+-            pw.Text('╪د┘╪╣┘à┘è┘: ${data.customerName}'),
++          pw.Text(
++            '┘â╪┤┘ ╪ص╪│╪د╪ذ ╪╣┘à┘è┘',
++            style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
++          ),
++          pw.SizedBox(height: 8),
++          pw.Text('╪د┘╪╣┘à┘è┘: ${account.summary.customerName}'),
+             pw.Text(
+-              '╪د┘┘ç╪د╪ز┘: ${data.customerPhone.trim().isEmpty ? '-' : data.customerPhone}',
++              '╪د┘┘ç╪د╪ز┘: ${(account.summary.phone ?? '').trim().isEmpty ? '-' : account.summary.phone}',
+             ),
+             pw.Text('╪د┘┘╪ز╪▒╪ر: $period'),
+             pw.SizedBox(height: 12),
+@@ -573,80 +549,206 @@ class ReportExporter {
+               '╪د┘┘à┘ê┘é┘ ╪د┘╪ص╪د┘┘è',
+               style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+             ),
+-            pw.Text('┘┘╪د: ${data.receivable.toStringAsFixed(2)}'),
+-            pw.Text('╪╣┘┘è┘╪د: ${data.payable.toStringAsFixed(2)}'),
+-            pw.Text('$netLabel: ${data.net.abs().toStringAsFixed(2)}'),
++            pw.Text('┘┘╪د: ${account.summary.totalForUs.toStringAsFixed(2)}'),
++            pw.Text('╪╣┘┘è┘╪د: ${account.summary.totalAgainstUs.toStringAsFixed(2)}'),
++            pw.Text('$netLabel: ${account.summary.netBalance.abs().toStringAsFixed(2)}'),
+             pw.SizedBox(height: 12),
+             pw.Text(
+-              '┘à┘╪«╪╡ ╪د┘┘╪ز╪▒╪ر',
++              '┘â╪┤┘ ╪د┘╪ص╪▒┘â╪د╪ز',
+               style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+             ),
++            if (rowsInRange.isEmpty)
++              pw.Text('┘╪د ╪ز┘ê╪ش╪» ╪ص╪▒┘â╪د╪ز ┘┘è ╪د┘┘╪ز╪▒╪ر ╪د┘┘à╪«╪ز╪د╪▒╪ر'),
++            if (rowsInRange.isNotEmpty)
++              pw.TableHelper.fromTextArray(
++                headerStyle: pw.TextStyle(font: _pdfBoldFont, fontSize: 10),
++                cellStyle: pw.TextStyle(font: _pdfBaseFont, fontSize: 9),
++                cellAlignment: pw.Alignment.centerRight,
++                headers: const [
++                  '╪د┘╪ز╪د╪▒┘è╪«',
++                  '╪د┘╪ص╪▒┘â╪ر',
++                  '╪د┘╪ز┘╪د╪╡┘è┘',
++                  '╪د┘┘à╪ذ┘╪║',
++                  '╪د┘╪▒╪╡┘è╪» ╪ذ╪╣╪» ╪د┘╪ص╪▒┘â╪ر',
++                  '╪د┘╪ص╪د┘╪ر',
++                ],
++                data: rowsInRange
++                    .map(
++                      (r) => [
++                        _fmtDateTime(r.date),
++                        r.title,
++                        r.description,
++                        '${r.amount.abs().toStringAsFixed(2)} ${r.direction == CustomerLedgerDirection.forUs ? '(┘┘╪د)' : r.direction == CustomerLedgerDirection.againstUs ? '(╪╣┘┘è┘╪د)' : ''}',
++                        '${r.remainingBalanceAfterRow.abs().toStringAsFixed(2)} ${r.remainingBalanceAfterRow >= 0 ? '┘┘╪د' : '╪╣┘┘è┘╪د'}',
++                        r.status.name,
++                      ],
++                    )
++                    .toList(),
++              ),
++        ],
++      ),
++    );
++
++    final dir = await _exportDir();
++    final stamp = _now().millisecondsSinceEpoch;
++    final file = File('${dir.path}/customer_report_$stamp.pdf');
++    await file.writeAsBytes(await doc.save(), flush: true);
++    return file.path;
++  }
++
++  static String _formatWalletTxnType(dynamic type) {
++    final str = type.toString();
++    if (str.contains('transferOut')) return '╪ز╪ص┘ê┘è┘ ╪╡╪د╪»╪▒';
++    if (str.contains('receiveIn')) return '╪ح┘è╪»╪د╪╣/┘ê╪د╪▒╪»';
++    if (str.contains('feeDeduction')) return '╪╣┘à┘ê┘╪ر ╪┤╪ذ┘â╪ر';
++    if (str.contains('adjustment')) return '╪ز╪│┘ê┘è╪ر';
++    return str;
++  }
++
++  static Future<String> exportWalletPdf({
++    required WalletReportExportData data,
++  }) async {
++    final doc = await _newPdfDocument();
++    final period = '┘à┘ ${_fmtDate(data.range.start)} ╪ح┘┘ë ${_fmtDate(data.range.end)}';
++
++    doc.addPage(
++      pw.MultiPage(
++        textDirection: pw.TextDirection.rtl,
++        build: (_) => [
++          pw.Text(
++            '┘â╪┤┘ ╪ص╪│╪د╪ذ ┘à╪ص┘╪╕╪ر',
++            style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
++          ),
++            pw.SizedBox(height: 8),
++            pw.Text('╪د┘┘à╪ص┘╪╕╪ر: ${data.walletName}'),
++            pw.Text('╪د┘╪▒┘é┘à: ${data.walletNumber}'),
++            pw.Text('╪د┘┘╪ز╪▒╪ر: $period'),
++            pw.SizedBox(height: 12),
+             pw.Text(
+-              '╪د┘╪▒╪╡┘è╪» ╪د┘╪د┘╪ز╪ز╪د╪ص┘è: ${data.openingNet.abs().toStringAsFixed(2)} ${data.openingNet >= 0 ? '(┘┘╪د)' : '(╪╣┘┘è┘╪د)'}',
+-            ),
+-            pw.Text(
+-              '╪د┘╪▒╪╡┘è╪» ╪د┘╪«╪ز╪د┘à┘è: ${data.closingNet.abs().toStringAsFixed(2)} ${data.closingNet >= 0 ? '(┘┘╪د)' : '(╪╣┘┘è┘╪د)'}',
+-            ),
+-            pw.Text(
+-              '┘à┘┘╪░: ${data.postedCount} ظت ╪ص╪ش┘à ${data.postedVolume.toStringAsFixed(2)}',
++              '┘à┘╪«╪╡ ╪د┘┘╪ز╪▒╪ر',
++              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+             ),
++            pw.Text('╪د┘╪▒╪╡┘è╪» ╪د┘╪ص╪د┘┘è: ${data.currentBalance.toStringAsFixed(2)}'),
++            pw.Text('╪ح╪ش┘à╪د┘┘è ╪د┘┘à╪│╪ز┘┘à: ${data.totalReceived.toStringAsFixed(2)}'),
++            pw.Text('╪ح╪ش┘à╪د┘┘è ╪د┘┘à╪ص┘ê┘: ${data.totalTransferred.toStringAsFixed(2)}'),
++            pw.Text('╪ح╪ش┘à╪د┘┘è ╪د┘╪╣┘à┘ê┘╪د╪ز: ${data.totalFees.toStringAsFixed(2)}'),
++            pw.Text('╪╡╪د┘┘è ╪د┘╪ص╪▒┘â╪ر: ${data.netMovement.toStringAsFixed(2)}'),
++            pw.SizedBox(height: 12),
+             pw.Text(
+-              '╪ت╪ش┘: ${data.pendingCount} ظت ╪ص╪ش┘à ${data.pendingVolume.toStringAsFixed(2)}',
++              '┘â╪┤┘ ╪د┘╪ص╪▒┘â╪د╪ز (╪د┘╪▒╪╡┘è╪» ╪ذ╪╣╪» ┘â┘ ╪ص╪▒┘â╪ر)',
++              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+             ),
+-            pw.Text('╪▒╪ذ╪ص ┘à┘┘╪░: ${data.postedProfit.toStringAsFixed(2)}'),
++            if (data.rows.isEmpty)
++              pw.Text('┘╪د ╪ز┘ê╪ش╪» ╪ص╪▒┘â╪د╪ز ┘┘è ╪د┘┘╪ز╪▒╪ر ╪د┘┘à╪«╪ز╪د╪▒╪ر'),
++            if (data.rows.isNotEmpty)
++              pw.TableHelper.fromTextArray(
++                headerStyle: pw.TextStyle(font: _pdfBoldFont, fontSize: 10),
++                cellStyle: pw.TextStyle(font: _pdfBaseFont, fontSize: 9),
++                cellAlignment: pw.Alignment.centerRight,
++                headers: const [
++                  '╪د┘╪ز╪د╪▒┘è╪«',
++                  '╪د┘╪ص╪▒┘â╪ر',
++                  '╪د┘╪╣┘à┘è┘',
++                  '╪د┘┘à╪ذ┘╪║',
++                  '╪د┘╪▒╪╡┘è╪» ╪ذ╪╣╪» ╪د┘╪ص╪▒┘â╪ر',
++                  '╪د┘┘à╪▒╪ش╪╣',
++                ],
++                data: data.rows
++                    .map(
++                      (r) => [
++                        _fmtDateTime(r.date),
++                        _formatWalletTxnType(r.transactionType),
++                        r.reference ?? '', // Using reference as proxy for customer
++                        r.amount.formatted,
++                        r.balanceAfter.formatted,
++                        r.reference ?? '',
++                      ],
++                    )
++                    .toList(),
++              ),
++        ],
++      ),
++    );
++
++    final dir = await _exportDir();
++    final stamp = _now().millisecondsSinceEpoch;
++    final file = File('${dir.path}/wallet_report_$stamp.pdf');
++    await file.writeAsBytes(await doc.save(), flush: true);
++    return file.path;
++  }
++
++  static Future<String> exportTreasuryPdf({
++    required TreasuryReportExportData data,
++  }) async {
++    final doc = await _newPdfDocument();
++    final period = '┘à┘ ${_fmtDate(data.range.start)} ╪ح┘┘ë ${_fmtDate(data.range.end)}';
++
++    doc.addPage(
++      pw.MultiPage(
++        textDirection: pw.TextDirection.rtl,
++        build: (_) => [
++          pw.Text(
++            '┘â╪┤┘ ╪ص╪│╪د╪ذ ╪د┘╪«╪▓┘è┘╪ر',
++            style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
++          ),
++            pw.SizedBox(height: 8),
++            pw.Text('╪د┘┘╪ز╪▒╪ر: $period'),
+             pw.SizedBox(height: 12),
+             pw.Text(
+-              '╪ث┘┘ê╪د╪╣ ╪د┘╪╣┘à┘┘è╪د╪ز',
++              '┘à┘╪«╪╡ ╪د┘┘╪ز╪▒╪ر',
+               style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+             ),
+-            pw.Text('╪ز╪ص┘ê┘è┘: ${data.transferCount}'),
+-            pw.Text('╪د╪│╪ز┘╪د┘à: ${data.receiveCount}'),
+-            pw.Text('┘┘ê╪▒┘è: ${data.fawryCount}'),
++            pw.Text('╪د┘╪▒╪╡┘è╪» ╪د┘╪د┘╪ز╪ز╪د╪ص┘è: ${data.openingBalance.toStringAsFixed(2)}'),
++            pw.Text('╪ح╪ش┘à╪د┘┘è ╪د┘╪»╪د╪«┘: ${data.totalIn.toStringAsFixed(2)}'),
++            pw.Text('╪ح╪ش┘à╪د┘┘è ╪د┘╪«╪د╪▒╪ش: ${data.totalOut.toStringAsFixed(2)}'),
++            pw.Text('╪ح╪ش┘à╪د┘┘è ╪د┘┘à╪╡╪▒┘ê┘╪د╪ز: ${data.expenses.toStringAsFixed(2)}'),
++            pw.Text('╪ح╪ش┘à╪د┘┘è ╪د┘╪ز╪│┘ê┘è╪د╪ز: ${data.adjustments.toStringAsFixed(2)}'),
++            pw.Text('╪د┘╪▒╪╡┘è╪» ╪د┘╪«╪ز╪د┘à┘è: ${data.closingBalance.toStringAsFixed(2)}'),
+             pw.SizedBox(height: 12),
+             pw.Text(
+               '┘â╪┤┘ ╪د┘╪ص╪▒┘â╪د╪ز (╪د┘╪▒╪╡┘è╪» ╪ذ╪╣╪» ┘â┘ ╪ص╪▒┘â╪ر)',
+               style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+             ),
+-            if (data.statementRows.isEmpty)
++            if (data.rows.isEmpty)
+               pw.Text('┘╪د ╪ز┘ê╪ش╪» ╪ص╪▒┘â╪د╪ز ┘┘è ╪د┘┘╪ز╪▒╪ر ╪د┘┘à╪«╪ز╪د╪▒╪ر'),
+-            if (data.statementRows.isNotEmpty)
++            if (data.rows.isNotEmpty)
+               pw.TableHelper.fromTextArray(
+                 headerStyle: pw.TextStyle(font: _pdfBoldFont, fontSize: 10),
+                 cellStyle: pw.TextStyle(font: _pdfBaseFont, fontSize: 9),
+                 cellAlignment: pw.Alignment.centerRight,
+                 headers: const [
+                   '╪د┘╪ز╪د╪▒┘è╪«',
+-                  '╪د┘╪ص╪▒┘â╪ر',
++                  '╪د┘┘ê╪╡┘',
+                   '╪د┘┘à╪ذ┘╪║',
+                   '╪د┘╪▒╪╡┘è╪» ╪ذ╪╣╪» ╪د┘╪ص╪▒┘â╪ر',
+-                  '╪د┘╪ص╪د┘╪ر',
++                  '╪د┘┘à╪▒╪ش╪╣',
+                 ],
+-                data: data.statementRows
++                data: data.rows
+                     .map(
+                       (r) => [
+                         _fmtDateTime(r.date),
+-                        r.title,
+-                        r.amountSigned.toStringAsFixed(2),
+-                        '${r.runningNet.abs().toStringAsFixed(2)} ${r.runningSideLabel}',
+-                        r.status,
++                        r.description,
++                        r.amount.formatted,
++                        r.balanceAfter.formatted,
++                        r.reference ?? '',
+                       ],
+                     )
+                     .toList(),
+               ),
+-          ]),
+         ],
+       ),
+     );
+ 
+     final dir = await _exportDir();
+     final stamp = _now().millisecondsSinceEpoch;
+-    final file = File('${dir.path}/customer_report_$stamp.pdf');
++    final file = File('${dir.path}/treasury_report_$stamp.pdf');
+     await file.writeAsBytes(await doc.save(), flush: true);
+     return file.path;
+   }
+ 
+   static Future<String> exportCustomerExcel({
+-    required CustomerReportExportData data,
++    required CustomerAccount account,
++    required DateRange range,
+   }) async {
+     final excel = Excel.createExcel();
+ 
+@@ -654,71 +756,40 @@ class ReportExporter {
+     CellValue n(num v) =>
+         v is int ? IntCellValue(v) : DoubleCellValue(v.toDouble());
+ 
+-    final period =
+-        '┘à┘ ${_fmtDate(data.range.start)} ╪ح┘┘ë ${_fmtDate(data.range.end)}';
+-    final openingLabel = data.openingNet >= 0 ? '┘┘╪د' : '╪╣┘┘è┘╪د';
+-    final closingLabel = data.closingNet >= 0 ? '┘┘╪د' : '╪╣┘┘è┘╪د';
+-    final netLabel = data.net >= 0 ? '┘┘╪د' : '╪╣┘┘è┘╪د';
++    final period = '┘à┘ ${_fmtDate(range.start)} ╪ح┘┘ë ${_fmtDate(range.end)}';
++    final netLabel = account.summary.netBalance >= 0 ? '┘┘╪د' : '╪╣┘┘è┘╪د';
++    
++    final rowsInRange = account.rows.where((r) => !r.date.isBefore(range.start) && !r.date.isAfter(range.end)).toList();
+ 
+     final summary = excel['╪د┘┘à┘╪«╪╡'];
+-    summary.appendRow([t('╪د╪│┘à ╪د┘╪╣┘à┘è┘'), t(data.customerName)]);
++    summary.appendRow([t('╪د╪│┘à ╪د┘╪╣┘à┘è┘'), t(account.summary.customerName)]);
+     summary.appendRow([
+       t('╪د┘┘ç╪د╪ز┘'),
+-      t(data.customerPhone.trim().isEmpty ? '-' : data.customerPhone),
++      t((account.summary.phone ?? '').trim().isEmpty ? '-' : account.summary.phone!),
+     ]);
+     summary.appendRow([t('╪د┘┘╪ز╪▒╪ر'), t(period)]);
+     summary.appendRow([]);
+-    summary.appendRow([t('┘┘╪د'), n(data.receivable)]);
+-    summary.appendRow([t('╪╣┘┘è┘╪د'), n(data.payable)]);
+-    summary.appendRow([t('╪د┘╪╡╪د┘┘è ($netLabel)'), n(data.net.abs())]);
+-    summary.appendRow([]);
+-    summary.appendRow([
+-      t('╪د┘╪▒╪╡┘è╪» ╪د┘╪د┘╪ز╪ز╪د╪ص┘è ($openingLabel)'),
+-      n(data.openingNet.abs()),
+-    ]);
+-    summary.appendRow([
+-      t('╪د┘╪▒╪╡┘è╪» ╪د┘╪«╪ز╪د┘à┘è ($closingLabel)'),
+-      n(data.closingNet.abs()),
+-    ]);
+-    summary.appendRow([]);
+-    summary.appendRow([t('╪╣╪»╪» ╪د┘┘à┘┘╪░'), n(data.postedCount)]);
+-    summary.appendRow([t('╪╣╪»╪» ╪د┘╪ت╪ش┘'), n(data.pendingCount)]);
+-    summary.appendRow([t('╪ص╪ش┘à ╪د┘┘à┘┘╪░'), n(data.postedVolume)]);
+-    summary.appendRow([t('╪ص╪ش┘à ╪د┘╪ت╪ش┘'), n(data.pendingVolume)]);
+-    summary.appendRow([t('╪▒╪ذ╪ص ┘à┘┘╪░'), n(data.postedProfit)]);
+-    summary.appendRow([]);
+-    summary.appendRow([t('╪╣╪»╪» ╪د┘╪ز╪ص┘ê┘è┘'), n(data.transferCount)]);
+-    summary.appendRow([t('╪╣╪»╪» ╪د┘╪د╪│╪ز┘╪د┘à'), n(data.receiveCount)]);
+-    summary.appendRow([t('╪╣╪»╪» ┘┘ê╪▒┘è'), n(data.fawryCount)]);
+-
+-    final operations = excel['╪د┘╪╣┘à┘┘è╪د╪ز'];
+-    operations.appendRow([t('╪د┘╪ز╪د╪▒┘è╪«'), t('╪د┘┘┘ê╪╣'), t('╪د┘╪ص╪د┘╪ر'), t('╪د┘┘à╪ذ┘╪║')]);
+-    for (final row in data.latestTxns) {
+-      operations.appendRow([
+-        t(_fmtDateTime(row.date)),
+-        t(row.kind),
+-        t(row.status),
+-        n(row.amount),
+-      ]);
+-    }
++    summary.appendRow([t('┘┘╪د'), n(account.summary.totalForUs)]);
++    summary.appendRow([t('╪╣┘┘è┘╪د'), n(account.summary.totalAgainstUs)]);
++    summary.appendRow([t('╪د┘╪╡╪د┘┘è ($netLabel)'), n(account.summary.netBalance.abs())]);
+ 
+     final statement = excel['┘â╪┤┘_╪د┘╪ص╪│╪د╪ذ'];
+     statement.appendRow([
+       t('╪د┘╪ز╪د╪▒┘è╪«'),
+       t('╪د┘╪ص╪▒┘â╪ر'),
+       t('╪د┘╪ز┘╪د╪╡┘è┘'),
+-      t('╪د┘╪ص╪د┘╪ر'),
+       t('╪د┘┘à╪ذ┘╪║'),
+       t('╪د┘╪▒╪╡┘è╪» ╪ذ╪╣╪» ╪د┘╪ص╪▒┘â╪ر'),
++      t('╪د┘╪ص╪د┘╪ر'),
+     ]);
+-    for (final row in data.statementRows) {
++    for (final row in rowsInRange) {
+       statement.appendRow([
+         t(_fmtDateTime(row.date)),
+         t(row.title),
+-        t((row.details ?? '').trim().isEmpty ? '-' : row.details!.trim()),
+-        t(row.status),
+-        n(row.amountSigned),
+-        t('${row.runningNet.abs().toStringAsFixed(2)} ${row.runningSideLabel}'),
++        t(row.description.trim().isEmpty ? '-' : row.description.trim()),
++        t('${row.amount.abs().toStringAsFixed(2)} ${row.direction == CustomerLedgerDirection.forUs ? '(┘┘╪د)' : row.direction == CustomerLedgerDirection.againstUs ? '(╪╣┘┘è┘╪د)' : ''}'),
++        t('${row.remainingBalanceAfterRow.abs().toStringAsFixed(2)} ${row.remainingBalanceAfterRow >= 0 ? '┘┘╪د' : '╪╣┘┘è┘╪د'}'),
++        t(row.status.name),
+       ]);
+     }
+ 

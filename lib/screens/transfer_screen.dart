@@ -40,7 +40,7 @@ class _TransferScreenState extends State<TransferScreen> {
   String? _selectedContactName;
 
   final _amountCtrl = TextEditingController();
-  final _clientFeeCtrl = TextEditingController();
+  final _clientFeeCtrl = TextEditingController(text: '4');
   final _networkFeeCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
   final _partyNameCtrl = TextEditingController();
@@ -390,6 +390,26 @@ class _TransferScreenState extends State<TransferScreen> {
       return;
     }
 
+    final totalDeduction = _transferType == 'type2' ? (amt - cf) : (amt + nf);
+    final requestedAmount = _transferType == 'type2' ? (amt - cf - nf) : amt;
+    final fee = nf;
+    final available = await AppDb.instance.getWalletAvailableBalance(wid);
+    if (totalDeduction > available) {
+      if (!mounted) return;
+      final reqStr = requestedAmount.toStringAsFixed(2);
+      final feeStr = fee.toStringAsFixed(2);
+      final totalStr = totalDeduction.toStringAsFixed(2);
+      final availStr = available.toStringAsFixed(2);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'عفواً، رصيد المحفظة غير كافٍ. المطلوب خصمه (المبلغ: $reqStr + الرسوم: $feeStr = إجمالي: $totalStr ج.م) أكبر من الرصيد المتاح ($availStr ج.م)',
+          ),
+        ),
+      );
+      return;
+    }
+
     final review = await _confirmTransferSubmit(
       wallet: wallet,
       partyName: partyName,
@@ -526,9 +546,10 @@ class _TransferScreenState extends State<TransferScreen> {
       }
     } catch (e) {
       if (!mounted) return;
+      final msg = e.toString().replaceFirst('Exception: ', '');
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('فشل العملية: $e')));
+      ).showSnackBar(SnackBar(content: Text('فشل العملية: $msg')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -536,7 +557,7 @@ class _TransferScreenState extends State<TransferScreen> {
 
   void _clearForm() {
     _amountCtrl.clear();
-    _clientFeeCtrl.clear();
+    _clientFeeCtrl.text = '4';
     _networkFeeCtrl.clear();
     _networkFeeTouched = false;
     _noteCtrl.clear();
@@ -544,6 +565,7 @@ class _TransferScreenState extends State<TransferScreen> {
     _customerPhoneCtrl.clear();
     _selectedContactName = null;
     _viaPhone = false;
+    _transferType = 'type1';
     setState(() {});
   }
 

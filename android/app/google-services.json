@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "252860537917",
+    "project_id": "smart-cash-pro-a8e6a",
+    "storage_bucket": "smart-cash-pro-a8e6a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:252860537917:android:4e0d67a52297fa8fde9e54",
+        "android_client_info": {
+          "package_name": "com.smartcashpro.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAX5LQQRCWsa-RMlPw1UaYoc3ZbBwtSQJY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

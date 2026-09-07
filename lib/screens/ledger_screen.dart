@@ -9,6 +9,7 @@ import '../models/transaction.dart';
 import '../models/wallet.dart';
 import '../utils/txn_reference.dart';
 import 'tx_details_screen.dart';
+import '../widgets/tx_reversal_sheet.dart';
 
 bool matchesLedgerTxnSearch(Txn txn, String query) {
   final normalized = query.trim();
@@ -163,7 +164,7 @@ class _LedgerScreenState extends State<LedgerScreen> {
 
   String _statusLabel(String s) {
     if (s == 'posted') return 'معتمد';
-    if (s == 'rolled_back') return 'ملغي';
+    if (s == 'reversed') return 'معكوس'; if (s == 'reverse_entry') return 'قيد عكسي'; if (s == 'rolled_back') return 'ملغي';
     return 'آجل';
   }
 
@@ -463,16 +464,138 @@ class _LedgerScreenState extends State<LedgerScreen> {
                             '${t.entryDate.year}-${t.entryDate.month.toString().padLeft(2, '0')}-${t.entryDate.day.toString().padLeft(2, '0')} '
                             '${t.entryDate.hour.toString().padLeft(2, '0')}:${t.entryDate.minute.toString().padLeft(2, '0')}';
 
+                        String walletInfo = '';
+                        final wId = t.walletFromId ?? t.walletToId;
+                        if (wId != null) {
+                          final w = _wallets.where((w) => w.id == wId).firstOrNull;
+                          if (w != null) {
+                            walletInfo = '\nالمحفظة: ${w.name} - ${w.phone}';
+                          }
+                        }
+
+                        final isReversed = t.isReversed ||
+                            t.status == 'reversed' ||
+                            t.status == 'reverse_entry';
+                        final canReverse = !isReversed &&
+                            t.status != 'canceled' &&
+                            t.status != 'rolled_back';
+
                         return Card(
                           child: ListTile(
-                            leading: const Icon(Icons.receipt),
-                            title: Text(
-                              '${_kindLabel(t.kind)} • ${_statusLabel(t.status)}',
+                            leading: Icon(
+                              isReversed
+                                  ? Icons.remove_circle_outline
+                                  : Icons.receipt,
+                              color: isReversed ? Colors.grey : null,
+                            ),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${_kindLabel(t.kind)} • ${_statusLabel(t.status)}',
+                                    style: TextStyle(
+                                      decoration: isReversed
+                                          ? TextDecoration.lineThrough
+                                          : null,
+                                      color: isReversed
+                                          ? Colors.grey.shade600
+                                          : null,
+                                    ),
+                                  ),
+                                ),
+                                if (isReversed) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red.shade50,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                        color: Colors.red.shade300,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      'ملغاة / معكوسة',
+                                      style: TextStyle(
+                                        color: Colors.red.shade800,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                             subtitle: Text(
-                              'رقم #${t.id} • $dt • بواسطة ${t.createdBy}',
+                              'رقم #${t.id} • $dt • بواسطة ${t.createdBy}$walletInfo',
+                              style: TextStyle(
+                                color: isReversed ? Colors.grey.shade500 : null,
+                              ),
                             ),
-                            trailing: Text(t.amount.toStringAsFixed(2)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  t.amount.toStringAsFixed(2),
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    decoration: isReversed
+                                        ? TextDecoration.lineThrough
+                                        : null,
+                                    color: isReversed
+                                        ? Colors.grey.shade600
+                                        : null,
+                                  ),
+                                ),
+                                if (canReverse && AppSession.isAdmin)
+                                  PopupMenuButton<String>(
+                                    icon: const Icon(
+                                      Icons.more_vert,
+                                      size: 20,
+                                    ),
+                                    tooltip: 'خيارات',
+                                    onSelected: (val) async {
+                                      if (val == 'reverse') {
+                                        final reversed =
+                                            await TxReversalSheet.show(
+                                          context,
+                                          txn: t,
+                                          wallets: _wallets,
+                                        );
+                                        if (reversed == true) {
+                                          await _load();
+                                        }
+                                      }
+                                    },
+                                    itemBuilder: (_) => [
+                                      const PopupMenuItem(
+                                        value: 'reverse',
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              Icons.undo,
+                                              color: Colors.orange,
+                                              size: 18,
+                                            ),
+                                            SizedBox(width: 8),
+                                            Text(
+                                              'إلغاء وقيد عكسي ↩️',
+                                              style: TextStyle(
+                                                color: Colors.red,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                              ],
+                            ),
+                            isThreeLine: walletInfo.isNotEmpty,
                             onTap: () async {
                               await Navigator.of(context).push(
                                 MaterialPageRoute(

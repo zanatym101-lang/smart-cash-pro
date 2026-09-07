@@ -64,11 +64,7 @@ void main() {
     fail('Widget not found in time: $finder');
   }
 
-  Future<void> pumpFrames(WidgetTester tester, {int count = 12}) async {
-    for (var i = 0; i < count; i++) {
-      await tester.pump(const Duration(milliseconds: 50));
-    }
-  }
+  
 
   setUpAll(() async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -104,11 +100,14 @@ void main() {
 
       await tester.pumpWidget(const MaterialApp(home: ClaimsScreen()));
       await pumpUntilFound(tester, find.text('مبالغ لنا'));
-      await pumpFrames(tester, count: 10);
 
       final originalFinder = find.text('تحويل آجل • 905.00');
       final settlementFinder = find.text('تحصيل مستحق • 500.00');
       final remainingFinder = find.text('مستحق مفتوح • 405.00');
+
+      await pumpUntilFound(tester, originalFinder);
+      await pumpUntilFound(tester, settlementFinder);
+      await pumpUntilFound(tester, remainingFinder);
 
       expect(originalFinder, findsOneWidget);
       expect(settlementFinder, findsOneWidget);

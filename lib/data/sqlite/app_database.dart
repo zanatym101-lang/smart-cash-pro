@@ -143,6 +143,30 @@ class SyncOutbox extends Table {
   DateTimeColumn get sentAt => dateTime().nullable()();
 }
 
+@DataClassName('DbCustomerAdjustment')
+class CustomerAdjustments extends Table {
+  TextColumn get id => text()();
+  TextColumn get customerId => text()();
+  TextColumn get type => text()();
+  IntColumn get amountPiastres => integer()();
+  DateTimeColumn get date => dateTime()();
+  TextColumn get note => text().nullable()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+@DataClassName('DbAdjustmentAllocation')
+class AdjustmentAllocations extends Table {
+  TextColumn get id => text()();
+  TextColumn get adjustmentId => text()();
+  TextColumn get linkedItemId => text()();
+  IntColumn get allocatedAmountPiastres => integer()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
 LazyDatabase _openConnection([String? customPath]) {
   return LazyDatabase(() async {
     final file = customPath == null
@@ -158,7 +182,7 @@ LazyDatabase _openConnection([String? customPath]) {
 }
 
 @DriftDatabase(
-  tables: [Wallets, Txns, Claims, DailyCloses, RecentNumbers, Meta, SyncOutbox],
+  tables: [Wallets, Txns, Claims, DailyCloses, RecentNumbers, Meta, SyncOutbox, CustomerAdjustments, AdjustmentAllocations],
 )
 class AppDatabase extends _$AppDatabase {
   final bool _hardenRuntimePragmas;
@@ -168,7 +192,7 @@ class AppDatabase extends _$AppDatabase {
       super(_openConnection(customPath));
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -178,6 +202,10 @@ class AppDatabase extends _$AppDatabase {
     onUpgrade: (m, from, to) async {
       if (from < 2) {
         await m.createTable(syncOutbox);
+      }
+      if (from < 3) {
+        await m.createTable(customerAdjustments);
+        await m.createTable(adjustmentAllocations);
       }
     },
     beforeOpen: (details) async {
@@ -219,6 +247,8 @@ class AppDatabase extends _$AppDatabase {
       await delete(recentNumbers).go();
       await delete(meta).go();
       await delete(syncOutbox).go();
+      await delete(customerAdjustments).go();
+      await delete(adjustmentAllocations).go();
     });
   }
 
@@ -281,6 +311,7 @@ class AppDatabase extends _$AppDatabase {
             createdBy: r.createdBy,
             createdRole: r.createdRole,
             createdAt: r.createdAt,
+            isReversed: r.status == 'reversed',
           ),
         )
         .toList();
@@ -497,6 +528,8 @@ class AppDatabase extends _$AppDatabase {
         if (clearSyncOutbox) {
           b.deleteAll(syncOutbox);
         }
+        b.deleteAll(customerAdjustments);
+        b.deleteAll(adjustmentAllocations);
 
         if (walletItems.isNotEmpty) {
           b.insertAll(

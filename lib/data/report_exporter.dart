@@ -9,6 +9,9 @@ import 'package:pdf/widgets.dart' as pw;
 import 'app_db.dart';
 import 'reporting.dart';
 import '../models/daily_close.dart';
+import '../domain/models/wallet_ledger.dart';
+import '../domain/models/treasury_ledger.dart';
+import '../screens/customer_account/customer_account_models.dart';
 
 class CustomerTxnExportRow {
   final DateTime date;
@@ -83,6 +86,52 @@ class CustomerReportExportData {
     this.openingNet = 0,
     this.closingNet = 0,
     this.statementRows = const [],
+  });
+}
+
+class WalletReportExportData {
+  final String walletName;
+  final String walletNumber;
+  final DateRange range;
+  final double currentBalance;
+  final double totalReceived;
+  final double totalTransferred;
+  final double totalFees;
+  final double netMovement;
+  final List<WalletLedgerRow> rows;
+
+  const WalletReportExportData({
+    required this.walletName,
+    required this.walletNumber,
+    required this.range,
+    required this.currentBalance,
+    required this.totalReceived,
+    required this.totalTransferred,
+    required this.totalFees,
+    required this.netMovement,
+    this.rows = const [],
+  });
+}
+
+class TreasuryReportExportData {
+  final DateRange range;
+  final double openingBalance;
+  final double totalIn;
+  final double totalOut;
+  final double expenses;
+  final double adjustments;
+  final double closingBalance;
+  final List<TreasuryLedgerRow> rows;
+
+  const TreasuryReportExportData({
+    required this.range,
+    required this.openingBalance,
+    required this.totalIn,
+    required this.totalOut,
+    required this.expenses,
+    required this.adjustments,
+    required this.closingBalance,
+    this.rows = const [],
   });
 }
 
@@ -171,14 +220,12 @@ class ReportExporter {
     return '$date $hh:$mm';
   }
 
-  static Future<Directory> _exportDir() async {
+    static Future<Directory> _exportDir() async {
     final resolver = _exportDirOverride;
     if (resolver != null) {
       return resolver();
     }
-    final downloads = await getDownloadsDirectory();
-    if (downloads != null) return downloads;
-    return getApplicationSupportDirectory();
+    return getTemporaryDirectory();
   }
 
   static Future<Directory> exportDirectory() async {
@@ -547,12 +594,14 @@ class ReportExporter {
   }
 
   static Future<String> exportCustomerPdf({
-    required CustomerReportExportData data,
+    required CustomerAccount account,
+    required DateRange range,
   }) async {
     final doc = await _newPdfDocument();
-    final period =
-        'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
-    final netLabel = data.net >= 0 ? 'صافي لنا' : 'صافي علينا';
+    final period = 'من ${_fmtDate(range.start)} إلى ${_fmtDate(range.end)}';
+    final netLabel = account.summary.netBalance >= 0 ? 'صافي لنا' : 'صافي علينا';
+
+    final rowsInRange = account.rows.where((r) => !r.date.isBefore(range.start) && !r.date.isAfter(range.end)).toList();
 
     doc.addPage(
       pw.MultiPage(
@@ -563,9 +612,9 @@ class ReportExporter {
               style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
             ),
             pw.SizedBox(height: 8),
-            pw.Text('العميل: ${data.customerName}'),
+            pw.Text('العميل: ${account.summary.customerName}'),
             pw.Text(
-              'الهاتف: ${data.customerPhone.trim().isEmpty ? '-' : data.customerPhone}',
+              'الهاتف: ${(account.summary.phone ?? '').trim().isEmpty ? '-' : account.summary.phone}',
             ),
             pw.Text('الفترة: $period'),
             pw.SizedBox(height: 12),
@@ -573,43 +622,17 @@ class ReportExporter {
               'الموقف الحالي',
               style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
             ),
-            pw.Text('لنا: ${data.receivable.toStringAsFixed(2)}'),
-            pw.Text('علينا: ${data.payable.toStringAsFixed(2)}'),
-            pw.Text('$netLabel: ${data.net.abs().toStringAsFixed(2)}'),
-            pw.SizedBox(height: 12),
-            pw.Text(
-              'ملخص الفترة',
-              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
-            ),
-            pw.Text(
-              'الرصيد الافتتاحي: ${data.openingNet.abs().toStringAsFixed(2)} ${data.openingNet >= 0 ? '(لنا)' : '(علينا)'}',
-            ),
-            pw.Text(
-              'الرصيد الختامي: ${data.closingNet.abs().toStringAsFixed(2)} ${data.closingNet >= 0 ? '(لنا)' : '(علينا)'}',
-            ),
-            pw.Text(
-              'منفذ: ${data.postedCount} • حجم ${data.postedVolume.toStringAsFixed(2)}',
-            ),
-            pw.Text(
-              'آجل: ${data.pendingCount} • حجم ${data.pendingVolume.toStringAsFixed(2)}',
-            ),
-            pw.Text('ربح منفذ: ${data.postedProfit.toStringAsFixed(2)}'),
-            pw.SizedBox(height: 12),
-            pw.Text(
-              'أنواع العمليات',
-              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
-            ),
-            pw.Text('تحويل: ${data.transferCount}'),
-            pw.Text('استلام: ${data.receiveCount}'),
-            pw.Text('فوري: ${data.fawryCount}'),
+            pw.Text('لنا: ${account.summary.totalForUs.toStringAsFixed(2)}'),
+            pw.Text('علينا: ${account.summary.totalAgainstUs.toStringAsFixed(2)}'),
+            pw.Text('$netLabel: ${account.summary.netBalance.abs().toStringAsFixed(2)}'),
             pw.SizedBox(height: 12),
             pw.Text(
               'كشف الحركات (الرصيد بعد كل حركة)',
               style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
             ),
-            if (data.statementRows.isEmpty)
+            if (rowsInRange.isEmpty)
               pw.Text('لا توجد حركات في الفترة المختارة'),
-            if (data.statementRows.isNotEmpty)
+            if (rowsInRange.isNotEmpty)
               pw.TableHelper.fromTextArray(
                 headerStyle: pw.TextStyle(font: _pdfBoldFont, fontSize: 10),
                 cellStyle: pw.TextStyle(font: _pdfBaseFont, fontSize: 9),
@@ -621,14 +644,14 @@ class ReportExporter {
                   'الرصيد بعد الحركة',
                   'الحالة',
                 ],
-                data: data.statementRows
+                data: rowsInRange
                     .map(
                       (r) => [
                         _fmtDateTime(r.date),
-                        r.title,
-                        r.amountSigned.toStringAsFixed(2),
-                        '${r.runningNet.abs().toStringAsFixed(2)} ${r.runningSideLabel}',
-                        r.status,
+                        r.description,
+                        r.amount.abs().toStringAsFixed(2),
+                        r.remainingBalanceAfterRow.abs().toStringAsFixed(2),
+                        r.status.name,
                       ],
                     )
                     .toList(),
@@ -646,7 +669,8 @@ class ReportExporter {
   }
 
   static Future<String> exportCustomerExcel({
-    required CustomerReportExportData data,
+    required CustomerAccount account,
+    required DateRange range,
   }) async {
     final excel = Excel.createExcel();
 
@@ -654,71 +678,38 @@ class ReportExporter {
     CellValue n(num v) =>
         v is int ? IntCellValue(v) : DoubleCellValue(v.toDouble());
 
-    final period =
-        'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
-    final openingLabel = data.openingNet >= 0 ? 'لنا' : 'علينا';
-    final closingLabel = data.closingNet >= 0 ? 'لنا' : 'علينا';
-    final netLabel = data.net >= 0 ? 'لنا' : 'علينا';
+    final period = 'من ${_fmtDate(range.start)} إلى ${_fmtDate(range.end)}';
+    final netLabel = account.summary.netBalance >= 0 ? 'لنا' : 'علينا';
+    
+    final rowsInRange = account.rows.where((r) => !r.date.isBefore(range.start) && !r.date.isAfter(range.end)).toList();
 
     final summary = excel['الملخص'];
-    summary.appendRow([t('اسم العميل'), t(data.customerName)]);
+    summary.appendRow([t('اسم العميل'), t(account.summary.customerName)]);
     summary.appendRow([
       t('الهاتف'),
-      t(data.customerPhone.trim().isEmpty ? '-' : data.customerPhone),
+      t((account.summary.phone ?? '').trim().isEmpty ? '-' : account.summary.phone!),
     ]);
     summary.appendRow([t('الفترة'), t(period)]);
     summary.appendRow([]);
-    summary.appendRow([t('لنا'), n(data.receivable)]);
-    summary.appendRow([t('علينا'), n(data.payable)]);
-    summary.appendRow([t('الصافي ($netLabel)'), n(data.net.abs())]);
-    summary.appendRow([]);
-    summary.appendRow([
-      t('الرصيد الافتتاحي ($openingLabel)'),
-      n(data.openingNet.abs()),
-    ]);
-    summary.appendRow([
-      t('الرصيد الختامي ($closingLabel)'),
-      n(data.closingNet.abs()),
-    ]);
-    summary.appendRow([]);
-    summary.appendRow([t('عدد المنفذ'), n(data.postedCount)]);
-    summary.appendRow([t('عدد الآجل'), n(data.pendingCount)]);
-    summary.appendRow([t('حجم المنفذ'), n(data.postedVolume)]);
-    summary.appendRow([t('حجم الآجل'), n(data.pendingVolume)]);
-    summary.appendRow([t('ربح منفذ'), n(data.postedProfit)]);
-    summary.appendRow([]);
-    summary.appendRow([t('عدد التحويل'), n(data.transferCount)]);
-    summary.appendRow([t('عدد الاستلام'), n(data.receiveCount)]);
-    summary.appendRow([t('عدد فوري'), n(data.fawryCount)]);
-
-    final operations = excel['العمليات'];
-    operations.appendRow([t('التاريخ'), t('النوع'), t('الحالة'), t('المبلغ')]);
-    for (final row in data.latestTxns) {
-      operations.appendRow([
-        t(_fmtDateTime(row.date)),
-        t(row.kind),
-        t(row.status),
-        n(row.amount),
-      ]);
-    }
+    summary.appendRow([t('لنا'), n(account.summary.totalForUs)]);
+    summary.appendRow([t('علينا'), n(account.summary.totalAgainstUs)]);
+    summary.appendRow([t('الصافي ($netLabel)'), n(account.summary.netBalance.abs())]);
 
     final statement = excel['كشف_الحساب'];
     statement.appendRow([
       t('التاريخ'),
       t('الحركة'),
-      t('التفاصيل'),
-      t('الحالة'),
       t('المبلغ'),
       t('الرصيد بعد الحركة'),
+      t('الحالة'),
     ]);
-    for (final row in data.statementRows) {
+    for (final row in rowsInRange) {
       statement.appendRow([
         t(_fmtDateTime(row.date)),
-        t(row.title),
-        t((row.details ?? '').trim().isEmpty ? '-' : row.details!.trim()),
-        t(row.status),
-        n(row.amountSigned),
-        t('${row.runningNet.abs().toStringAsFixed(2)} ${row.runningSideLabel}'),
+        t(row.description.trim().isEmpty ? '-' : row.description.trim()),
+        t('${row.amount.abs().toStringAsFixed(2)} ${row.direction == CustomerLedgerDirection.forUs ? '(لنا)' : row.direction == CustomerLedgerDirection.againstUs ? '(علينا)' : ''}'),
+        t('${row.remainingBalanceAfterRow.abs().toStringAsFixed(2)} ${row.remainingBalanceAfterRow >= 0 ? 'لنا' : 'علينا'}'),
+        t(row.status.name),
       ]);
     }
 
@@ -726,11 +717,264 @@ class ReportExporter {
     final stamp = _now().millisecondsSinceEpoch;
     final file = File('${dir.path}/customer_report_$stamp.xlsx');
     final encodeOverride = _excelEncodeOverride;
-    final bytes = encodeOverride != null
-        ? encodeOverride(excel)
-        : excel.encode();
-    if (bytes == null) throw Exception('Failed to export customer Excel');
+    final bytes = encodeOverride != null ? encodeOverride(excel) : excel.encode();
+    if (bytes == null) throw Exception('Failed to export Excel');
     await file.writeAsBytes(bytes, flush: true);
     return file.path;
   }
+
+  static String _formatWalletTxnType(dynamic type) {
+    final str = type.toString();
+    if (str.contains('transferOut')) return 'تحويل صادر';
+    if (str.contains('receiveIn')) return 'استلام/إيداع';
+    if (str.contains('feeDeduction')) return 'خصم عمولة';
+    if (str.contains('adjustment')) return 'تسوية';
+    return str;
+  }
+
+  static Future<String> exportWalletPdf({
+    required WalletReportExportData data,
+  }) async {
+    final doc = await _newPdfDocument();
+    final period = 'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
+
+    doc.addPage(
+      pw.MultiPage(
+        build: (_) => [
+          _rtlBlock([
+            pw.Text(
+              'كشف حساب محفظة',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
+            ),
+            pw.SizedBox(height: 8),
+            pw.Text('اسم المحفظة: ${data.walletName}'),
+            pw.Text('الرقم: ${data.walletNumber}'),
+            pw.Text('الفترة: $period'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'ملخص الحركة',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            pw.Text('الرصيد الحالي: ${data.currentBalance.toStringAsFixed(2)}'),
+            pw.Text('إجمالي المستلم: ${data.totalReceived.toStringAsFixed(2)}'),
+            pw.Text('إجمالي المحول: ${data.totalTransferred.toStringAsFixed(2)}'),
+            pw.Text('إجمالي العمولات: ${data.totalFees.toStringAsFixed(2)}'),
+            pw.Text('صافي الحركة: ${data.netMovement.toStringAsFixed(2)}'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'العمليات',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            if (data.rows.isEmpty)
+              pw.Text('لا توجد حركات في الفترة المختارة'),
+            if (data.rows.isNotEmpty)
+              pw.TableHelper.fromTextArray(
+                headerStyle: pw.TextStyle(font: _pdfBoldFont, fontSize: 10),
+                cellStyle: pw.TextStyle(font: _pdfBaseFont, fontSize: 9),
+                cellAlignment: pw.Alignment.centerRight,
+                headers: const [
+                  'التاريخ',
+                  'النوع',
+                  'المرجع',
+                  'المبلغ',
+                  'الرصيد بعد الحركة',
+                  'ملاحظات',
+                ],
+                data: data.rows
+                    .map(
+                      (r) => [
+                        _fmtDateTime(r.date),
+                        _formatWalletTxnType(r.transactionType),
+                        r.reference ?? '',
+                        (r.amount.inSmallestUnit / 100).toStringAsFixed(2),
+                        (r.balanceAfter.inSmallestUnit / 100).toStringAsFixed(2),
+                        r.reference ?? '',
+                      ],
+                    )
+                    .toList(),
+              ),
+          ]),
+        ],
+      ),
+    );
+
+    final dir = await _exportDir();
+    final stamp = _now().millisecondsSinceEpoch;
+    final file = File('${dir.path}/wallet_report_$stamp.pdf');
+    await file.writeAsBytes(await doc.save(), flush: true);
+    return file.path;
+  }
+
+  static Future<String> exportTreasuryPdf({
+    required TreasuryReportExportData data,
+  }) async {
+    final doc = await _newPdfDocument();
+    final period = 'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
+
+    doc.addPage(
+      pw.MultiPage(
+        build: (_) => [
+          _rtlBlock([
+            pw.Text(
+              'كشف حساب الخزينة',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 18),
+            ),
+            pw.SizedBox(height: 8),
+            pw.Text('الفترة: $period'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'ملخص الحركة',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            pw.Text('الرصيد الافتتاحي: ${data.openingBalance.toStringAsFixed(2)}'),
+            pw.Text('إجمالي الداخل: ${data.totalIn.toStringAsFixed(2)}'),
+            pw.Text('إجمالي الخارج: ${data.totalOut.toStringAsFixed(2)}'),
+            pw.Text('إجمالي المصروفات: ${data.expenses.toStringAsFixed(2)}'),
+            pw.Text('إجمالي التسويات: ${data.adjustments.toStringAsFixed(2)}'),
+            pw.Text('الرصيد الختامي: ${data.closingBalance.toStringAsFixed(2)}'),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              'العمليات',
+              style: pw.TextStyle(font: _pdfBoldFont, fontSize: 14),
+            ),
+            if (data.rows.isEmpty)
+              pw.Text('لا توجد حركات في الفترة المختارة'),
+            if (data.rows.isNotEmpty)
+              pw.TableHelper.fromTextArray(
+                headerStyle: pw.TextStyle(font: _pdfBoldFont, fontSize: 10),
+                cellStyle: pw.TextStyle(font: _pdfBaseFont, fontSize: 9),
+                cellAlignment: pw.Alignment.centerRight,
+                headers: const [
+                  'التاريخ',
+                  'البيان',
+                  'المبلغ',
+                  'الرصيد بعد الحركة',
+                  'ملاحظات',
+                ],
+                data: data.rows
+                    .map(
+                      (r) => [
+                        _fmtDateTime(r.date),
+                        r.description,
+                        (r.amount.inSmallestUnit / 100).toStringAsFixed(2),
+                        (r.balanceAfter.inSmallestUnit / 100).toStringAsFixed(2),
+                        r.reference ?? '',
+                      ],
+                    )
+                    .toList(),
+              ),
+          ]),
+        ],
+      ),
+    );
+
+    final dir = await _exportDir();
+    final stamp = _now().millisecondsSinceEpoch;
+    final file = File('${dir.path}/treasury_report_$stamp.pdf');
+    await file.writeAsBytes(await doc.save(), flush: true);
+    return file.path;
+  }
+
+  static Future<String> exportWalletExcel({
+    required WalletReportExportData data,
+  }) async {
+    final excel = Excel.createExcel();
+
+    CellValue t(String v) => TextCellValue(v);
+    CellValue n(num v) =>
+        v is int ? IntCellValue(v) : DoubleCellValue(v.toDouble());
+
+    final period = 'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
+
+    final summary = excel['الملخص'];
+    summary.appendRow([t('اسم المحفظة'), t(data.walletName)]);
+    summary.appendRow([t('الرقم'), t(data.walletNumber)]);
+    summary.appendRow([t('الفترة'), t(period)]);
+    summary.appendRow([]);
+    summary.appendRow([t('الرصيد الحالي'), n(data.currentBalance)]);
+    summary.appendRow([t('إجمالي المستلم'), n(data.totalReceived)]);
+    summary.appendRow([t('إجمالي المحول'), n(data.totalTransferred)]);
+    summary.appendRow([t('إجمالي العمولات'), n(data.totalFees)]);
+    summary.appendRow([t('صافي الحركة'), n(data.netMovement)]);
+
+    final statement = excel['كشف_الحساب'];
+    statement.appendRow([
+      t('التاريخ'),
+      t('النوع'),
+      t('المرجع'),
+      t('المبلغ'),
+      t('الرصيد بعد الحركة'),
+      t('ملاحظات'),
+    ]);
+    for (final row in data.rows) {
+      statement.appendRow([
+        t(_fmtDateTime(row.date)),
+        t(_formatWalletTxnType(row.transactionType)),
+        t(row.reference ?? ''),
+        n(row.amount.inSmallestUnit / 100),
+        n(row.balanceAfter.inSmallestUnit / 100),
+        t(row.reference ?? ''),
+      ]);
+    }
+
+    final dir = await _exportDir();
+    final stamp = _now().millisecondsSinceEpoch;
+    final file = File('${dir.path}/wallet_report_$stamp.xlsx');
+    final encodeOverride = _excelEncodeOverride;
+    final bytes = encodeOverride != null ? encodeOverride(excel) : excel.encode();
+    if (bytes == null) throw Exception('Failed to export wallet Excel');
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  }
+
+  static Future<String> exportTreasuryExcel({
+    required TreasuryReportExportData data,
+  }) async {
+    final excel = Excel.createExcel();
+
+    CellValue t(String v) => TextCellValue(v);
+    CellValue n(num v) =>
+        v is int ? IntCellValue(v) : DoubleCellValue(v.toDouble());
+
+    final period = 'من ${_fmtDate(data.range.start)} إلى ${_fmtDate(data.range.end)}';
+
+    final summary = excel['الملخص'];
+    summary.appendRow([t('كشف حساب الخزينة')]);
+    summary.appendRow([t('الفترة'), t(period)]);
+    summary.appendRow([]);
+    summary.appendRow([t('الرصيد الافتتاحي'), n(data.openingBalance)]);
+    summary.appendRow([t('إجمالي الداخل'), n(data.totalIn)]);
+    summary.appendRow([t('إجمالي الخارج'), n(data.totalOut)]);
+    summary.appendRow([t('إجمالي المصروفات'), n(data.expenses)]);
+    summary.appendRow([t('إجمالي التسويات'), n(data.adjustments)]);
+    summary.appendRow([t('الرصيد الختامي'), n(data.closingBalance)]);
+
+    final statement = excel['كشف_الحساب'];
+    statement.appendRow([
+      t('التاريخ'),
+      t('البيان'),
+      t('المبلغ'),
+      t('الرصيد بعد الحركة'),
+      t('ملاحظات'),
+    ]);
+    for (final row in data.rows) {
+      statement.appendRow([
+        t(_fmtDateTime(row.date)),
+        t(row.description),
+        n(row.amount.inSmallestUnit / 100),
+        n(row.balanceAfter.inSmallestUnit / 100),
+        t(row.reference ?? ''),
+      ]);
+    }
+
+    final dir = await _exportDir();
+    final stamp = _now().millisecondsSinceEpoch;
+    final file = File('${dir.path}/treasury_report_$stamp.xlsx');
+    final encodeOverride = _excelEncodeOverride;
+    final bytes = encodeOverride != null ? encodeOverride(excel) : excel.encode();
+    if (bytes == null) throw Exception('Failed to export treasury Excel');
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  }
+
 }

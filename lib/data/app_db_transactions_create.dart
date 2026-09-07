@@ -158,6 +158,25 @@ extension AppDbTransactionsCreate on AppDb {
         ? (amount - clientFee)
         : (amount + networkFee);
 
+    final availableQirsh =
+        _projectedBalances().walletsQirsh[walletId.toString()] ?? 0;
+    final totalDeductionQirsh = Money.fromEgpDouble(walletSpend);
+    if (totalDeductionQirsh > availableQirsh) {
+      final requestedAmount = transferType == 'type2'
+          ? (amount - clientFee - networkFee)
+          : amount;
+      final fee = networkFee;
+      final totalDeduction = Money.toEgpDouble(totalDeductionQirsh);
+      final available = Money.toEgpDouble(availableQirsh);
+      final reqStr = requestedAmount.toStringAsFixed(2);
+      final feeStr = fee.toStringAsFixed(2);
+      final totalStr = totalDeduction.toStringAsFixed(2);
+      final availStr = available.toStringAsFixed(2);
+      throw Exception(
+        'عفواً، رصيد المحفظة غير كافٍ. المطلوب خصمه (المبلغ: $reqStr + الرسوم: $feeStr = إجمالي: $totalStr ج.م) أكبر من الرصيد المتاح ($availStr ج.م)',
+      );
+    }
+
     final txn = Txn(
       id: _nextTxnId++,
       kind: 'transfer',
@@ -186,8 +205,19 @@ extension AppDbTransactionsCreate on AppDb {
       _engine.approve(txId: txId, spec: spec);
     } catch (e) {
       if (_isWalletNegativeException(e)) {
+        final availableQirsh = _state.getWalletQirsh(walletId.toString());
+        final requestedAmount = transferType == 'type2'
+            ? (amount - clientFee - networkFee)
+            : amount;
+        final fee = networkFee;
+        final totalDeduction = walletSpend;
+        final available = Money.toEgpDouble(availableQirsh);
+        final reqStr = requestedAmount.toStringAsFixed(2);
+        final feeStr = fee.toStringAsFixed(2);
+        final totalStr = totalDeduction.toStringAsFixed(2);
+        final availStr = available.toStringAsFixed(2);
         throw Exception(
-          '\u0644\u0627 \u064a\u0645\u0643\u0646 \u062a\u0646\u0641\u064a\u0630 \u0627\u0644\u062a\u062d\u0648\u064a\u0644: \u0627\u0644\u0631\u0635\u064a\u062f \u0627\u0644\u062d\u0627\u0644\u064a \u0644\u0644\u0645\u062d\u0641\u0638\u0629 \u0644\u0627 \u064a\u0643\u0641\u064a.',
+          'عفواً، رصيد المحفظة غير كافٍ. المطلوب خصمه (المبلغ: $reqStr + الرسوم: $feeStr = إجمالي: $totalStr ج.م) أكبر من الرصيد المتاح ($availStr ج.م)',
         );
       }
       rethrow;
@@ -590,5 +620,52 @@ extension AppDbTransactionsCreate on AppDb {
       amount: existing.amount,
       note: existing.note ?? existing.mode,
     );
+  }
+  /// Reconciles wallet balance by creating corrective transactions.
+  /// If actualBalance > current, creates external funding (surplus).
+  /// If actualBalance < current, creates a transfer to drawer + expense (deficit).
+  Future<void> reconcileWalletBalance({
+    required int walletId,
+    required double actualBalance,
+    String? note,
+  }) async {
+    await _ensureLoaded();
+    await _ensureOperationAllowed();
+    
+    final w = _requireWallet(walletId);
+    final currentBalance = await getWalletBalance(walletId);
+    final diff = actualBalance - currentBalance;
+    
+    if (diff.abs() < 0.01) return; // Matches
+
+    if (diff > 0) {
+      // Surplus
+      await addExternalFunding(
+        walletId: walletId,
+        amount: diff,
+        note: note ?? 'تسوية رصيد',
+      );
+    } else {
+      // Deficit
+      final deficitAmount = diff.abs();
+      // 1. Withdraw from Wallet to Drawer
+      await addTransfer(
+        walletId: walletId,
+        amount: deficitAmount,
+        clientFee: 0,
+        networkFee: 0,
+        transferType: 'type1',
+        party: 'مطابقة رصيد',
+        note: 'سحب لتسوية العجز',
+        isPending: false,
+      );
+      // 2. Record Expense from Drawer
+      await addExpense(
+        amount: deficitAmount,
+        category: 'فروق وتسويات',
+        note: note ?? 'تسوية رصيد',
+        party: w.name,
+      );
+    }
   }
 }

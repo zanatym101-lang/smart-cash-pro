@@ -1,22 +1,34 @@
 import 'dart:io';
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:share_plus/share_plus.dart';
 
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../data/app_db.dart';
+import '../data/report_exporter.dart';
+import '../data/reporting.dart';
 import '../models/transaction.dart';
 import '../models/claim.dart';
 import '../models/customer_attachment.dart';
 import '../widgets/app_title.dart';
+import 'customer_account/customer_account_builder.dart';
+import 'customer_account/customer_account_models.dart';
 import 'customer_report_screen.dart';
 import 'receive_screen.dart';
 import 'transfer_screen.dart';
+import '../data/sqlite/customer_adjustments_repository.dart';
+import '../domain/models/customer_account.dart' as domain;
+import 'customer_adjustment_dialog.dart';
 
 String _stripSystemTags(String input) {
   var v = input;
   v = v.replaceAllMapped(
-    RegExp(r'settlement_note:\s*(.+?)(?=\s+-\s+claim_id:\d+|$)'),
+    RegExp(
+      r'settlement_note:\s*(.+?)(?=\s+-\s+(?:claim_id|pending_txn):\d+|$)',
+    ),
     (m) => 'ملاحظة التسوية: ${(m.group(1) ?? '').trim()}',
   );
   v = v.replaceAll(RegExp(r'claim_id:\d+'), '');
@@ -27,6 +39,7 @@ String _stripSystemTags(String input) {
 }
 
 enum _CustomerListFilter { all, receivable, payable, pending, archived }
+enum _CustomerSort { recentActivity, highestReceivable, highestPayable, oldestActivity }
 
 class CustomersScreen extends StatefulWidget {
   const CustomersScreen({super.key});
@@ -44,6 +57,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
   Set<String> _pinnedCustomers = {};
   double _customerAlertThreshold = 0;
   _CustomerListFilter _listFilter = _CustomerListFilter.all;
+  _CustomerSort _sort = _CustomerSort.recentActivity;
 
   @override
   void initState() {
@@ -116,6 +130,65 @@ class _CustomersScreenState extends State<CustomersScreen> {
     return null;
   }
 
+  int _customerLineIdentity(_CustomerLine line) {
+    return line.txnId ?? line.claimId ?? 0;
+  }
+
+  DateTime _customerLineStoryAnchorDate(_CustomerLine line) {
+    return line.storyAnchorDate ?? line.date;
+  }
+
+  int _customerLineGroupIdentity(_CustomerLine line) {
+    if (line.storySourceTxnId != null) return line.storySourceTxnId!;
+    if (line.txnId != null) return line.txnId!;
+    return -(line.claimId ?? 0);
+  }
+
+  int _customerLineStoryStage(_CustomerLine line) {
+    if (line.storySourceTxnId == null) return 99;
+    if (line.lineType == _CustomerLineType.claimOpen) return 2;
+    if (line.lineType == _CustomerLineType.txn &&
+        line.txnId == line.storySourceTxnId &&
+        (line.txnKind == 'transfer' ||
+            line.txnKind == 'receive' ||
+            line.txnKind == 'fawry_credit')) {
+      return 0;
+    }
+    if (line.lineType == _CustomerLineType.txn &&
+        (line.txnKind == 'claim_collect' || line.txnKind == 'claim_pay')) {
+      return 1;
+    }
+    return 99;
+  }
+
+  int _compareCustomerLines(_CustomerLine a, _CustomerLine b) {
+    final aGroupDate = _customerLineStoryAnchorDate(a);
+    final bGroupDate = _customerLineStoryAnchorDate(b);
+    final groupDate = bGroupDate.compareTo(aGroupDate);
+    if (groupDate != 0) return groupDate;
+
+    final aStory = a.storySourceTxnId;
+    final bStory = b.storySourceTxnId;
+    if (aStory != null && bStory != null && aStory == bStory) {
+      final stage = _customerLineStoryStage(
+        b,
+      ).compareTo(_customerLineStoryStage(a));
+      if (stage != 0) return stage;
+      final date = b.date.compareTo(a.date);
+      if (date != 0) return date;
+      return _customerLineIdentity(b).compareTo(_customerLineIdentity(a));
+    }
+
+    final groupIdentity = _customerLineGroupIdentity(
+      b,
+    ).compareTo(_customerLineGroupIdentity(a));
+    if (groupIdentity != 0) return groupIdentity;
+
+    final date = b.date.compareTo(a.date);
+    if (date != 0) return date;
+    return _customerLineIdentity(b).compareTo(_customerLineIdentity(a));
+  }
+
   Future<void> _load() async {
     setState(() {
       _loading = true;
@@ -129,11 +202,22 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       final txns = await AppDb.instance.listTxns();
       final claims = await AppDb.instance.listClaims();
+      final wallets = await AppDb.instance.listWallets();
+      final adjustments = await CustomerAdjustmentsRepository(AppDb.instance.sqlite).getAllAdjustments();
       final txnById = {for (final t in txns) t.id: t};
+      final claimById = {for (final c in claims) c.id: c};
+      final walletById = {for (final w in wallets) w.id: w};
+      final claimSourceTxnById = <int, int?>{
+        for (final c in claims) c.id: c.sourceTxnId,
+      };
 
       final settlementByPending = <int, List<Txn>>{};
       final settlementByClaim = <int, List<Txn>>{};
       final settledByClaimId = <int, double>{};
+      final storyAnchorDateByTxnId = <int, DateTime>{};
+      for (final t in txns) {
+        storyAnchorDateByTxnId[t.id] = t.entryDate;
+      }
       for (final t in txns) {
         if (t.status != 'posted') continue;
         if (t.kind != 'claim_collect' && t.kind != 'claim_pay') continue;
@@ -204,7 +288,11 @@ class _CustomersScreenState extends State<CustomersScreen> {
         }
         if (claim == null) continue;
         final totalSettled = settledByClaimId[claimId] ?? 0;
-        final original = claim.amount + totalSettled;
+        final original = claim.status == 'open'
+            ? claim.amount + totalSettled
+            : claim.amount > totalSettled
+            ? claim.amount
+            : totalSettled;
         var remaining = original;
         final list = entry.value
           ..sort((a, b) {
@@ -222,6 +310,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
       }
 
       final map = <String, _CustomerBucket>{};
+      final deferredSourceTxnIds = settlementByPending.keys.toSet();
 
       _CustomerBucket bucketFor({required String name, String? phone}) {
         final normalizedName = name.trim().isEmpty
@@ -241,47 +330,89 @@ class _CustomersScreenState extends State<CustomersScreen> {
 
       final openClaimSourceTxnIds = <int>{};
       for (final c in claims) {
-        if (c.status != 'open') continue;
         final name = c.party.trim();
         if (name.isEmpty) continue;
-        if (c.sourceTxnId != null) {
+        final sourceTxn = c.sourceTxnId == null ? null : txnById[c.sourceTxnId];
+        if (c.status == 'open' && c.sourceTxnId != null) {
           openClaimSourceTxnIds.add(c.sourceTxnId!);
+          deferredSourceTxnIds.add(c.sourceTxnId!);
         }
-        final phone = _extractPhone(c.note);
+        final phone =
+            _extractPhone(c.note) ??
+            _extractPhone(sourceTxn?.note) ??
+            _extractPhone(sourceTxn?.reference);
         final b = bucketFor(name: name, phone: phone);
         final settledForClaim = settledByClaimId[c.id] ?? 0;
-        final displayAmount = c.amount + settledForClaim;
+        final displayAmount = c.status == 'open'
+            ? c.amount + settledForClaim
+            : c.amount > settledForClaim
+            ? c.amount
+            : settledForClaim;
         if (c.type == 'receivable') {
-          b.receivableClaims += c.amount;
+          if (c.status == 'open') b.receivableClaims += c.amount;
           b.lines.add(
             _CustomerLine(
               date: c.entryDate,
               side: _LineSide.receivable,
               amount: displayAmount,
-              title: 'مستحق مفتوح (عليه)',
+              title: 'مستحق',
               details: _detailsForClaimLine(c),
               ref: 'Claim#${c.id}',
               lineType: _CustomerLineType.claimOpen,
               claimId: c.id,
               claimType: c.type,
+              txnStatus: c.status,
+              storySourceTxnId: c.sourceTxnId,
+              storyAnchorDate: c.sourceTxnId == null
+                  ? null
+                  : storyAnchorDateByTxnId[c.sourceTxnId!],
             ),
           );
         } else if (c.type == 'payable') {
-          b.payableClaims += c.amount;
+          if (c.status == 'open') b.payableClaims += c.amount;
           b.lines.add(
             _CustomerLine(
               date: c.entryDate,
               side: _LineSide.payable,
               amount: displayAmount,
-              title: 'مستحق مفتوح (له)',
+              title: 'مستحق',
               details: _detailsForClaimLine(c),
               ref: 'Claim#${c.id}',
               lineType: _CustomerLineType.claimOpen,
               claimId: c.id,
               claimType: c.type,
+              txnStatus: c.status,
+              storySourceTxnId: c.sourceTxnId,
+              storyAnchorDate: c.sourceTxnId == null
+                  ? null
+                  : storyAnchorDateByTxnId[c.sourceTxnId!],
             ),
           );
         }
+      }
+
+      for (final adj in adjustments) {
+        final name = adj.customerId.trim();
+        if (name.isEmpty) continue;
+        final b = bucketFor(
+          name: name,
+          phone: _extractPhone(adj.note),
+        );
+        final amountDouble = adj.amount.toDouble();
+        final isForUs = adj.type == domain.CustomerAdjustmentType.add;
+        b.lines.add(
+          _CustomerLine(
+            date: adj.date,
+            side: isForUs ? _LineSide.receivable : _LineSide.payable,
+            amount: amountDouble,
+            displayAmount: amountDouble,
+            title: isForUs ? 'تسوية (إضافة)' : 'تسوية (خصم)',
+            details: adj.note ?? 'تسوية حساب',
+            ref: 'Adj#${adj.id}',
+            lineType: _CustomerLineType.adjustment,
+            txnStatus: 'posted',
+          ),
+        );
       }
 
       for (final t in txns) {
@@ -305,6 +436,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
         }
         String? phone = _extractPhone(t.note) ?? _extractPhone(t.reference);
         final pendingRefFromNote = _extractPendingSettlementRef(t.note);
+        final claimIdFromNote = _extractClaimIdFromNote(t.note);
         if ((name.isEmpty || (phone ?? '').trim().isEmpty) &&
             pendingRefFromNote != null) {
           final src = txnById[pendingRefFromNote];
@@ -313,6 +445,23 @@ class _CustomersScreenState extends State<CustomersScreen> {
               name = (src.party ?? '').trim();
             }
             phone ??= _extractPhone(src.note) ?? _extractPhone(src.reference);
+          }
+        }
+        if ((name.isEmpty || (phone ?? '').trim().isEmpty) &&
+            claimIdFromNote != null) {
+          final claim = claimById[claimIdFromNote];
+          if (claim != null) {
+            if (name.isEmpty) {
+              name = claim.party.trim();
+            }
+            phone ??= _extractPhone(claim.note);
+            final sourceTxnId = claim.sourceTxnId;
+            if ((phone ?? '').trim().isEmpty && sourceTxnId != null) {
+              final src = txnById[sourceTxnId];
+              if (src != null) {
+                phone = _extractPhone(src.note) ?? _extractPhone(src.reference);
+              }
+            }
           }
         }
         if (name.isEmpty && (phone ?? '').trim().isEmpty) continue;
@@ -326,13 +475,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
             final dueBase = _pendingTransferDue(t);
             final settled = pendingSettled[t.id] ?? 0;
             final due = (dueBase - settled).clamp(0, 1e18).toDouble();
-            if (due > 0) {
+            if (dueBase > 0) {
               b.receivablePending += due;
               b.lines.add(
                 _CustomerLine(
                   date: t.entryDate,
                   side: _LineSide.receivable,
-                  amount: due,
+                  amount: dueBase,
                   displayAmount: dueBase,
                   title: 'تحويل آجل',
                   details: _detailsForTransfer(t),
@@ -341,6 +490,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   txnId: t.id,
                   txnKind: t.kind,
                   txnStatus: t.status,
+                  remainingAfter: due,
+                  storySourceTxnId: t.id,
+                  storyAnchorDate: t.entryDate,
+                  walletId: t.walletFromId ?? t.walletToId,
+                  walletName: walletById[t.walletFromId ?? t.walletToId]?.name,
+                  walletPhone: walletById[t.walletFromId ?? t.walletToId]?.phone,
                 ),
               );
             }
@@ -351,13 +506,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
             final dueBase = _pendingReceiveDue(t);
             final settled = pendingSettled[t.id] ?? 0;
             final due = (dueBase - settled).clamp(0, 1e18).toDouble();
-            if (due > 0) {
+            if (dueBase > 0) {
               b.payablePending += due;
               b.lines.add(
                 _CustomerLine(
                   date: t.entryDate,
                   side: _LineSide.payable,
-                  amount: due,
+                  amount: dueBase,
                   displayAmount: dueBase,
                   title: 'استلام آجل',
                   details: _detailsForReceive(t),
@@ -366,6 +521,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   txnId: t.id,
                   txnKind: t.kind,
                   txnStatus: t.status,
+                  remainingAfter: due,
+                  storySourceTxnId: t.id,
+                  storyAnchorDate: t.entryDate,
+                  walletId: t.walletFromId ?? t.walletToId,
+                  walletName: walletById[t.walletFromId ?? t.walletToId]?.name,
+                  walletPhone: walletById[t.walletFromId ?? t.walletToId]?.phone,
                 ),
               );
             }
@@ -376,13 +537,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
             final dueBase = t.amount + t.clientFee;
             final settled = pendingSettled[t.id] ?? 0;
             final due = (dueBase - settled).clamp(0, 1e18).toDouble();
-            if (due > 0) {
+            if (dueBase > 0) {
               b.receivablePending += due;
               b.lines.add(
                 _CustomerLine(
                   date: t.entryDate,
                   side: _LineSide.receivable,
-                  amount: due,
+                  amount: dueBase,
                   displayAmount: dueBase,
                   title: 'فوري آجل',
                   details: _detailsForFawry(t),
@@ -391,6 +552,12 @@ class _CustomersScreenState extends State<CustomersScreen> {
                   txnId: t.id,
                   txnKind: t.kind,
                   txnStatus: t.status,
+                  remainingAfter: due,
+                  storySourceTxnId: t.id,
+                  storyAnchorDate: t.entryDate,
+                  walletId: t.walletFromId ?? t.walletToId,
+                  walletName: walletById[t.walletFromId ?? t.walletToId]?.name,
+                  walletPhone: walletById[t.walletFromId ?? t.walletToId]?.phone,
                 ),
               );
             }
@@ -399,17 +566,33 @@ class _CustomersScreenState extends State<CustomersScreen> {
         }
 
         final pendingRef = pendingRefFromNote;
-        final claimIdForTxn = _extractClaimIdFromNote(t.note);
+        final claimIdForTxn = claimIdFromNote;
         final pendingSource = pendingRef != null ? txnById[pendingRef] : null;
         final remainingAfter = settlementRemainingByTxnId[t.id];
         final sourceKindLabel = settlementSourceLabelByTxnId[t.id];
+        final originatedDeferred =
+            t.status == 'posted' && deferredSourceTxnIds.contains(t.id);
+        final storySourceTxnId =
+            pendingRef ??
+            claimSourceTxnById[claimIdForTxn] ??
+            (originatedDeferred ? t.id : null);
+        final customerFacingAmount = originatedDeferred
+            ? (t.kind == 'transfer'
+                  ? _pendingTransferDue(t)
+                  : t.kind == 'receive'
+                  ? _pendingReceiveDue(t)
+                  : t.kind == 'fawry_credit'
+                  ? t.amount + t.clientFee
+                  : _txnVolume(t))
+            : _txnVolume(t);
 
         b.lines.add(
           _CustomerLine(
             date: t.entryDate,
             side: _txnSide(t),
-            amount: _txnVolume(t),
-            title: _kindLabel(t),
+            amount: customerFacingAmount,
+            displayAmount: customerFacingAmount,
+            title: originatedDeferred ? pendingLabel(t) : _kindLabel(t),
             details: t.kind == 'transfer'
                 ? _detailsForTransfer(t)
                 : t.kind == 'receive'
@@ -418,7 +601,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 ? _detailsForFawry(t)
                 : (t.kind == 'claim_collect' || t.kind == 'claim_pay')
                 ? (pendingSource != null
-                      ? _detailsForPendingSource(pendingSource)
+                      ? _detailsForPendingSettlement(t, pendingSource)
                       : _detailsForClaimTxn(t))
                 : t.note,
             ref: 'Txn#${t.id} (${t.status})',
@@ -430,21 +613,37 @@ class _CustomersScreenState extends State<CustomersScreen> {
             sourceKindLabel: sourceKindLabel,
             pendingTxnId: pendingRef,
             claimId: claimIdForTxn,
+            storySourceTxnId: storySourceTxnId,
+            storyAnchorDate: storySourceTxnId == null
+                ? null
+                : storyAnchorDateByTxnId[storySourceTxnId],
+            walletId: t.walletFromId ?? t.walletToId,
+            walletName: walletById[t.walletFromId ?? t.walletToId]?.name,
+            walletPhone: walletById[t.walletFromId ?? t.walletToId]?.phone,
           ),
         );
       }
 
       final customers = map.values.where((c) => c.lines.isNotEmpty).toList();
+      final accounts = CustomerAccountBuilder.fromAppDbData(
+        txns: txns,
+        claims: claims,
+        adjustments: adjustments,
+      );
+      final accountByKey = <String, CustomerAccount>{
+        for (final account in accounts)
+          _bucketKey(
+            name: account.summary.customerName,
+            phone: account.summary.phone,
+          ): account,
+      };
       for (final c in customers) {
-        c.lines.sort((a, b) {
-          final cDate = b.date.compareTo(a.date);
-          if (cDate != 0) return cDate;
-          final aId = a.txnId ?? a.claimId ?? 0;
-          final bId = b.txnId ?? b.claimId ?? 0;
-          return bId.compareTo(aId);
-        });
+        c.account = accountByKey[_customerKeyFor(c)];
+        c.lines.sort(_compareCustomerLines);
         if (c.lines.isNotEmpty) {
-          c.lastActivity = c.lines.first.date;
+          c.lastActivity = c.lines
+              .map((l) => l.date)
+              .reduce((a, b) => a.isAfter(b) ? a : b);
         }
       }
       customers.sort((a, b) {
@@ -456,7 +655,6 @@ class _CustomersScreenState extends State<CustomersScreen> {
         return bDate.compareTo(aDate);
       });
 
-      if (!mounted) return;
       setState(() {
         _customers = customers;
         _pinnedCustomers = pinned;
@@ -622,6 +820,19 @@ class _CustomersScreenState extends State<CustomersScreen> {
     return t.note;
   }
 
+  String? _detailsForPendingSettlement(Txn settlement, Txn source) {
+    final parts = <String>[];
+    final sourceDetails = _detailsForPendingSource(source);
+    if (sourceDetails != null && sourceDetails.trim().isNotEmpty) {
+      parts.add(sourceDetails.trim());
+    }
+    final settlementDetails = _detailsForClaimTxn(settlement);
+    if (settlementDetails.trim().isNotEmpty) {
+      parts.add(settlementDetails.trim());
+    }
+    return parts.isEmpty ? null : parts.join(' | ');
+  }
+
   String _kindLabel(Txn t) {
     switch (t.kind) {
       case 'transfer':
@@ -633,9 +844,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
       case 'fawry_credit':
         return 'فوري آجل';
       case 'claim_collect':
-        return 'تحصيل مستحق';
+        return 'تحصيل';
       case 'claim_pay':
-        return 'سداد مستحق';
+        return 'سداد';
       default:
         return t.kind;
     }
@@ -694,34 +905,36 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final q = _query.trim().toLowerCase();
     Iterable<_CustomerBucket> base = _customers;
 
-    switch (_listFilter) {
-      case _CustomerListFilter.archived:
-        base = base.where((c) => c.isArchived);
-        break;
-      case _CustomerListFilter.receivable:
-        base = base.where((c) => !c.isArchived && c.receivableTotal > 0);
-        break;
-      case _CustomerListFilter.payable:
-        base = base.where((c) => !c.isArchived && c.payableTotal > 0);
-        break;
-      case _CustomerListFilter.pending:
-        base = base.where(
-          (c) =>
-              !c.isArchived &&
-              (c.receivablePending > 0 || c.payablePending > 0),
-        );
-        break;
-      case _CustomerListFilter.all:
-        base = base.where((c) => !c.isArchived);
-        break;
-    }
-
+    // عند البحث: يبحث في كل العملاء (نشطين + أرشيف) بغض النظر عن الفلتر المحدد
     if (q.isNotEmpty) {
       base = base.where((c) {
         final name = c.name.toLowerCase();
         final phone = (c.phone ?? '').toLowerCase();
         return name.contains(q) || phone.contains(q);
       });
+    } else {
+      // بدون بحث: طبّق الفلتر المحدد
+      switch (_listFilter) {
+        case _CustomerListFilter.archived:
+          base = base.where((c) => c.isArchived);
+          break;
+        case _CustomerListFilter.receivable:
+          base = base.where((c) => !c.isArchived && c.receivableTotal > 0);
+          break;
+        case _CustomerListFilter.payable:
+          base = base.where((c) => !c.isArchived && c.payableTotal > 0);
+          break;
+        case _CustomerListFilter.pending:
+          base = base.where(
+            (c) =>
+                !c.isArchived &&
+                (c.receivablePending > 0 || c.payablePending > 0),
+          );
+          break;
+        case _CustomerListFilter.all:
+          base = base.where((c) => !c.isArchived);
+          break;
+      }
     }
 
     final list = base.toList();
@@ -729,9 +942,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
       final aPinned = _pinnedCustomers.contains(_customerKeyFor(a));
       final bPinned = _pinnedCustomers.contains(_customerKeyFor(b));
       if (aPinned != bPinned) return aPinned ? -1 : 1;
-      final aDate = a.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bDate = b.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
-      return bDate.compareTo(aDate);
+      
+      switch (_sort) {
+        case _CustomerSort.highestReceivable:
+          return b.receivableTotal.compareTo(a.receivableTotal);
+        case _CustomerSort.highestPayable:
+          return b.payableTotal.compareTo(a.payableTotal);
+        case _CustomerSort.oldestActivity:
+          final aDate = a.lastActivity ?? DateTime.now();
+          final bDate = b.lastActivity ?? DateTime.now();
+          return aDate.compareTo(bDate);
+        case _CustomerSort.recentActivity:
+          final aDate = a.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final bDate = b.lastActivity ?? DateTime.fromMillisecondsSinceEpoch(0);
+          return bDate.compareTo(aDate);
+      }
     });
     return list;
   }
@@ -805,6 +1030,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                     return;
                   }
                   final note = noteCtrl.text.trim();
+                  FocusScope.of(ctx).unfocus();
                   Navigator.of(ctx).pop(
                     _SettlementAmountInput(
                       amount: value,
@@ -861,6 +1087,54 @@ class _CustomersScreenState extends State<CustomersScreen> {
     return res == true;
   }
 
+  Future<_SettlementNoteInput?> _confirmSettlementWithNote({
+    required String title,
+    required String body,
+    required String okText,
+  }) async {
+    var noteText = '';
+    final result = await showDialog<_SettlementNoteInput>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(body),
+            const SizedBox(height: 12),
+            TextField(
+              onChanged: (value) => noteText = value,
+              decoration: const InputDecoration(
+                labelText: 'ملاحظة (اختياري)',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final note = noteText.trim();
+              FocusScope.of(ctx).unfocus();
+              Navigator.of(
+                ctx,
+              ).pop(_SettlementNoteInput(note: note.isEmpty ? null : note));
+            },
+            child: Text(okText),
+          ),
+        ],
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    return result;
+  }
+
   Future<void> _handleLineAction(_CustomerLine line, _LineAction action) async {
     final key = line.claimId ?? line.txnId;
     if (key != null && _busyIds.contains(key)) return;
@@ -904,22 +1178,46 @@ class _CustomersScreenState extends State<CustomersScreen> {
           actionLabel: actionLabel,
           party: party,
           remaining: remainingBefore,
+          withNote: true,
         );
         if (result == null) return;
         await run(() async {
           if (line.pendingTxnId != null) {
-            await AppDb.instance.rollbackPendingSettlement(line.txnId!);
-            await AppDb.instance.addPendingSettlementForTxn(
-              pendingTxnId: line.pendingTxnId!,
-              amount: result.amount,
+            await CleanWriteGateway.appDbBridge().execute(
+              RollbackTransactionIntent(
+                transactionId: line.txnId!.toString(),
+                rollbackType: RollbackTransactionType.pendingSettlement,
+              ),
+            );
+            await CleanWriteGateway.appDbBridge().execute(
+              CreateSettlementIntent(
+                itemId: line.pendingTxnId!.toString(),
+                settlementId:
+                    'pending-${line.pendingTxnId}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+                sourceType: line.side == _LineSide.receivable
+                    ? SettlementSourceType.deferredTransfer
+                    : SettlementSourceType.deferredReceive,
+                amount: result.amount,
+                note: result.note,
+              ),
             );
             return;
           }
           if (line.claimId != null) {
-            await AppDb.instance.rollbackClaimSettlement(line.txnId!);
-            await AppDb.instance.settleClaim(
-              claimId: line.claimId!,
-              amount: result.amount,
+            await CleanWriteGateway.appDbBridge().execute(
+              RollbackTransactionIntent(
+                transactionId: line.txnId!.toString(),
+                rollbackType: RollbackTransactionType.claimSettlement,
+              ),
+            );
+            await CleanWriteGateway.appDbBridge().execute(
+              SettleClaimIntent(
+                claimId: line.claimId!.toString(),
+                settlementId:
+                    'claim-${line.claimId}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+                amount: result.amount,
+                note: result.note,
+              ),
             );
             return;
           }
@@ -936,11 +1234,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
       if (!ok) return;
       await run(() async {
         if (line.pendingTxnId != null) {
-          await AppDb.instance.rollbackPendingSettlement(line.txnId!);
+          await CleanWriteGateway.appDbBridge().execute(
+            RollbackTransactionIntent(
+              transactionId: line.txnId!.toString(),
+              rollbackType: RollbackTransactionType.pendingSettlement,
+            ),
+          );
           return;
         }
         if (line.claimId != null) {
-          await AppDb.instance.rollbackClaimSettlement(line.txnId!);
+          await CleanWriteGateway.appDbBridge().execute(
+            RollbackTransactionIntent(
+              transactionId: line.txnId!.toString(),
+              rollbackType: RollbackTransactionType.claimSettlement,
+            ),
+          );
           return;
         }
         throw Exception('لا يمكن حذف هذه العملية.');
@@ -957,7 +1265,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
       );
       if (!ok) return;
       await run(() async {
-        await AppDb.instance.rollbackPosted(line.txnId!);
+        await CleanWriteGateway.appDbBridge().execute(
+          RollbackTransactionIntent(transactionId: line.txnId!.toString()),
+        );
       });
       return;
     }
@@ -981,7 +1291,16 @@ class _CustomersScreenState extends State<CustomersScreen> {
         line.amount,
       );
       final result = isFull
-          ? _SettlementAmountInput(amount: remaining, note: null)
+          ? await _confirmSettlementWithNote(
+              title: isReceivable ? 'تحصيل مستحق كلي' : 'سداد مستحق كلي',
+              body:
+                  'سيتم ${isReceivable ? 'تحصيل' : 'سداد'} المبلغ المتبقي كاملًا: ${remaining.toStringAsFixed(2)}.',
+              okText: isReceivable ? 'تحصيل كلي' : 'سداد كلي',
+            ).then(
+              (value) => value == null
+                  ? null
+                  : _SettlementAmountInput(amount: remaining, note: value.note),
+            )
           : await _promptSettlementAmount(
               actionLabel: actionLabel,
               party: party,
@@ -991,16 +1310,20 @@ class _CustomersScreenState extends State<CustomersScreen> {
       if (result == null) return;
 
       await run(() async {
-        await AppDb.instance.settleClaim(
-          claimId: line.claimId!,
-          amount: result.amount,
-          note: result.note,
+        await CleanWriteGateway.appDbBridge().execute(
+          SettleClaimIntent(
+            claimId: line.claimId!.toString(),
+            settlementId:
+                'claim-${line.claimId}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+            amount: result.amount,
+            note: result.note,
+          ),
         );
       });
       return;
     }
 
-    if (line.lineType == _CustomerLineType.txn && line.txnStatus == 'pending') {
+    if (line.lineType == _CustomerLineType.txn && (line.txnStatus == 'pending' || line.txnKind == 'claim_collect' || line.txnKind == 'claim_pay')) {
       if (action == _LineAction.collectPendingPartial ||
           action == _LineAction.payPendingPartial) {
         final actionLabel = action == _LineAction.collectPendingPartial
@@ -1016,13 +1339,47 @@ class _CustomersScreenState extends State<CustomersScreen> {
         final result = await _promptSettlementAmount(
           actionLabel: actionLabel,
           party: party,
-          remaining: line.amount,
+          remaining: line.remainingAfter ?? line.amount,
+          withNote: true,
         );
         if (result == null) return;
         await run(() async {
-          await AppDb.instance.addPendingSettlementForTxn(
-            pendingTxnId: line.txnId!,
-            amount: result.amount,
+          await CleanWriteGateway.appDbBridge().execute(
+            CreateSettlementIntent(
+              itemId: (line.pendingTxnId ?? line.txnId!).toString(),
+              settlementId:
+                  'pending-${(line.pendingTxnId ?? line.txnId!)}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+              sourceType: line.side == _LineSide.receivable
+                  ? SettlementSourceType.deferredTransfer
+                  : SettlementSourceType.deferredReceive,
+              amount: result.amount,
+              note: result.note,
+            ),
+          );
+        });
+      } else if (action == _LineAction.collectPendingFull ||
+          action == _LineAction.payPendingFull) {
+        final isCollect = action == _LineAction.collectPendingFull;
+        final confirmation = await _confirmSettlementWithNote(
+          title: isCollect ? 'تحصيل كلي للآجل' : 'سداد كلي للآجل',
+          body:
+              'سيتم ${isCollect ? 'تحصيل' : 'سداد'} المبلغ المتبقي كاملًا ثم إغلاق العملية الآجلة رقم #${line.txnId}.',
+          okText: isCollect ? 'تحصيل كلي' : 'سداد كلي',
+        );
+        if (confirmation == null) return;
+        await run(() async {
+          await CleanWriteGateway.appDbBridge().execute(
+            CreateSettlementIntent(
+              itemId: (line.pendingTxnId ?? line.txnId!).toString(),
+              settlementId:
+                  'pending-${(line.pendingTxnId ?? line.txnId!)}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+              sourceType: line.side == _LineSide.receivable
+                  ? SettlementSourceType.deferredTransfer
+                  : SettlementSourceType.deferredReceive,
+              amount: line.remainingAfter ?? line.amount,
+              fullSettlement: true,
+              note: confirmation.note,
+            ),
           );
         });
       } else if (action == _LineAction.confirmPending) {
@@ -1033,7 +1390,13 @@ class _CustomersScreenState extends State<CustomersScreen> {
         );
         if (!ok) return;
         await run(() async {
-          await AppDb.instance.confirmPending(line.txnId!);
+          await CleanWriteGateway.appDbBridge().execute(
+            ConfirmPendingIntent(
+              pendingTxnId: line.txnId!.toString(),
+              claimId:
+                  'pending-${line.txnId}-claim-${DateTime.now().microsecondsSinceEpoch}',
+            ),
+          );
         });
       } else if (action == _LineAction.cancelPending) {
         final ok = await _confirmAction(
@@ -1043,7 +1406,9 @@ class _CustomersScreenState extends State<CustomersScreen> {
         );
         if (!ok) return;
         await run(() async {
-          await AppDb.instance.cancelPending(line.txnId!);
+          await CleanWriteGateway.appDbBridge().execute(
+            CancelPendingIntent(pendingTxnId: line.txnId!.toString()),
+          );
         });
       }
     }
@@ -1073,6 +1438,15 @@ class _CustomersScreenState extends State<CustomersScreen> {
               builder: (_) =>
                   ReceiveScreen(initialParty: c.name, initialPhone: c.phone),
             ),
+          );
+          _load();
+        },
+        onAdjust: () async {
+          Navigator.of(ctx).pop();
+          await CustomerAdjustmentDialog.show(
+            context,
+            customerName: c.name,
+            customerPhone: c.phone,
           );
           _load();
         },
@@ -1128,10 +1502,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
     if (trimmed.isEmpty) return null;
     switch (trimmed) {
       case 'posted':
-        return 'معتمد';
+        return 'مغلق';
       case 'pending':
-        return 'معلّق';
-      case 'rolled_back':
+        return 'آجل';
+      case 'reversed': return 'معكوس'; case 'reverse_entry': return 'قيد عكسي'; case 'rolled_back':
         return 'ملغي';
       default:
         return trimmed;
@@ -1142,14 +1516,21 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final d = line.date;
     final date =
         '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-    final sideLabel = line.side == _LineSide.receivable
-        ? 'عليه (تحصيل)'
-        : 'له (سداد)';
+    
+    String sideLabel;
+    if (line.side == _LineSide.receivable) {
+      sideLabel = line.lineType == _CustomerLineType.claimOpen ? 'مستحقات (لنا)' : 'لنا';
+    } else {
+      sideLabel = line.lineType == _CustomerLineType.claimOpen ? 'مستحقات (علينا)' : 'علينا';
+    }
+
     final statusLabel = _txnStatusLabel(line.txnStatus);
+    final details = line.details == null ? null : _stripSystemTags(line.details!);
+
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('تفاصيل العملية'),
+        title: const Text('تفاصيل العملية', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         content: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1160,8 +1541,10 @@ class _CustomersScreenState extends State<CustomersScreen> {
               Text('المبلغ: ${_lineDisplayAmount(line).toStringAsFixed(2)}'),
               Text('المرجع: ${line.ref}'),
               if (statusLabel != null) Text('الحالة: $statusLabel'),
-              if (line.details != null && line.details!.trim().isNotEmpty)
-                Text('التفاصيل: ${line.details}'),
+              if (line.walletName != null || line.walletPhone != null)
+                Text('المحفظة/الخزنة: ${[line.walletName, line.walletPhone].where((e) => e != null && e.trim().isNotEmpty).join(' - ')}'),
+              if (details != null && details.trim().isNotEmpty)
+                Text('التفاصيل: $details'),
             ],
           ),
         ),
@@ -1190,6 +1573,17 @@ class _CustomersScreenState extends State<CustomersScreen> {
       appBar: AppBar(
         title: const AppTitle(subtitle: 'العملاء'),
         actions: [
+          PopupMenuButton<_CustomerSort>(
+            icon: const Icon(Icons.sort),
+            tooltip: 'ترتيب القائمة',
+            onSelected: (val) => setState(() => _sort = val),
+            itemBuilder: (ctx) => const [
+              PopupMenuItem(value: _CustomerSort.recentActivity, child: Text('آخر تعامل (الأحدث)')),
+              PopupMenuItem(value: _CustomerSort.oldestActivity, child: Text('أقدم تعامل (الأقدم)')),
+              PopupMenuItem(value: _CustomerSort.highestReceivable, child: Text('الأكثر مديونية (لنا)')),
+              PopupMenuItem(value: _CustomerSort.highestPayable, child: Text('الأكثر دائنية (علينا)')),
+            ],
+          ),
           IconButton(
             tooltip: 'حد التنبيه',
             onPressed: _editAlertThreshold,
@@ -1223,7 +1617,7 @@ class _CustomersScreenState extends State<CustomersScreen> {
                 _listFilterChip('علينا', _CustomerListFilter.payable),
                 _listFilterChip('المعلّق', _CustomerListFilter.pending),
                 _listFilterChip(
-                  'الأرشيف',
+                  'أرشيف',
                   _CustomerListFilter.archived,
                   count: archivedCount,
                 ),
@@ -1342,9 +1736,8 @@ class _CustomersScreenState extends State<CustomersScreen> {
   }
 
   Widget _customerCard(_CustomerBucket c, {required bool showArchivedLabel}) {
-    final netLabel = c.net >= 0 ? 'صافي عليه' : 'صافي له';
-    final netValue = c.net >= 0 ? c.net : -c.net;
-    final archivedTag = showArchivedLabel ? ' | مؤرشف' : '';
+    final net = c.net;
+    final netAbs = net.abs();
     final isPinned = _isPinned(c);
     final showWarning =
         _customerAlertThreshold > 0 &&
@@ -1354,17 +1747,72 @@ class _CustomersScreenState extends State<CustomersScreen> {
     final lastText = last == null
         ? 'لا توجد حركة'
         : 'آخر حركة: ${last.year}-${last.month.toString().padLeft(2, '0')}-${last.day.toString().padLeft(2, '0')}';
+    final archivedTag = showArchivedLabel ? ' · مؤرشف' : '';
+
+    // نص المتبقي: إما "لنا: +X.XX ج.م" أو "علينا: -X.XX ج.م" أو "خالص / متزن (0.00 ج.م)"
+    final String remainingText;
+    final Color remainingColor;
+    if (netAbs < 0.001) {
+      remainingText = 'خالص / متزن (0.00 ج.م)';
+      remainingColor = const Color(0xFF0369A1);
+    } else if (net > 0) {
+      remainingText = 'لنا: +${netAbs.toStringAsFixed(2)} ج.م';
+      remainingColor = const Color(0xFF047857);
+    } else {
+      remainingText = 'علينا: -${netAbs.toStringAsFixed(2)} ج.م';
+      remainingColor = const Color(0xFFB91C1C);
+    }
 
     return Card(
       child: ListTile(
         onTap: () => _openCustomer(c),
-        leading: const CircleAvatar(child: Icon(Icons.person)),
-        title: Text(
-          c.name,
-          style: const TextStyle(fontWeight: FontWeight.w700),
+        leading: CircleAvatar(
+          backgroundColor: net > 0.001
+              ? const Color(0xFFD1FAE5)
+              : net < -0.001
+                  ? const Color(0xFFFFE4E4)
+                  : const Color(0xFFDBEAFE),
+          child: Icon(
+            Icons.person,
+            color: net > 0.001
+                ? const Color(0xFF047857)
+                : net < -0.001
+                    ? const Color(0xFFB91C1C)
+                    : const Color(0xFF0369A1),
+          ),
         ),
-        subtitle: Text(
-          '${c.phone ?? 'بدون هاتف'}$archivedTag\n$lastText\n$netLabel: ${netValue.toStringAsFixed(2)} | عليه: ${c.receivableTotal.toStringAsFixed(2)} | له: ${c.payableTotal.toStringAsFixed(2)}',
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '${c.name}$archivedTag',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              lastText,
+              style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'لنا: ${c.receivableTotal.toStringAsFixed(2)} | علينا: ${c.payableTotal.toStringAsFixed(2)}',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF475569)),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              remainingText,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: remainingColor,
+              ),
+            ),
+          ],
         ),
         isThreeLine: true,
         trailing: Row(
@@ -1393,6 +1841,7 @@ class _CustomerSheet extends StatefulWidget {
   final _CustomerBucket customer;
   final VoidCallback onTransfer;
   final VoidCallback onReceive;
+  final VoidCallback onAdjust;
   final VoidCallback onTransferPending;
   final VoidCallback onReceivePending;
   final VoidCallback onReport;
@@ -1406,6 +1855,7 @@ class _CustomerSheet extends StatefulWidget {
     required this.customer,
     required this.onTransfer,
     required this.onReceive,
+    required this.onAdjust,
     required this.onTransferPending,
     required this.onReceivePending,
     required this.onReport,
@@ -1421,6 +1871,28 @@ class _CustomerSheet extends StatefulWidget {
 
 enum _CustomerLineFilter { all, claims, settlements, pending, posted }
 
+enum _CustomerAccountFilter {
+  all,
+  forUs,
+  againstUs,
+  deferredTransfers,
+  deferredReceives,
+  claims,
+  settlements,
+  archivedClosed,
+}
+
+enum _OpenSettlementTargetKind { deferred, claim }
+
+enum _SettlementMode { selectedItems, total }
+
+enum _TotalSettlementOrder {
+  oldestFirst,
+  newestFirst,
+  claimsFirst,
+  deferredFirst,
+}
+
 class _SettlementAmountInput {
   final double amount;
   final String? note;
@@ -1428,14 +1900,45 @@ class _SettlementAmountInput {
   const _SettlementAmountInput({required this.amount, required this.note});
 }
 
+class _SettlementNoteInput {
+  final String? note;
+
+  const _SettlementNoteInput({required this.note});
+}
+
+class _PartialOpenSettlementInput {
+  final Map<String, double> amountsByItemId;
+  final String? note;
+
+  const _PartialOpenSettlementInput({
+    required this.amountsByItemId,
+    required this.note,
+  });
+}
+
+class _TotalSettlementInput {
+  final double amount;
+  final String? note;
+  final _TotalSettlementOrder order;
+
+  const _TotalSettlementInput({
+    required this.amount,
+    required this.note,
+    required this.order,
+  });
+}
+
 class _CustomerSheetState extends State<_CustomerSheet> {
   _CustomerLineFilter _filter = _CustomerLineFilter.all;
+  _CustomerAccountFilter _accountFilter = _CustomerAccountFilter.all;
   bool _showActions = false;
+  bool _showAdvancedFilters = false;
   bool _batchBusy = false;
 
   _CustomerBucket get customer => widget.customer;
   VoidCallback get onTransfer => widget.onTransfer;
   VoidCallback get onReceive => widget.onReceive;
+  VoidCallback get onAdjust => widget.onAdjust;
   VoidCallback get onTransferPending => widget.onTransferPending;
   VoidCallback get onReceivePending => widget.onReceivePending;
   VoidCallback get onReport => widget.onReport;
@@ -1464,7 +1967,10 @@ class _CustomerSheetState extends State<_CustomerSheet> {
 
   String? _extractSettlementNote(String? details) {
     if (details == null) return null;
-    final m = RegExp(r'ملاحظة التسوية:\s*(.+)$').firstMatch(details.trim());
+    final cleanDetails = _stripSystemTags(details);
+    final m = RegExp(
+      r'ملاحظة التسوية:\s*(.+)$',
+    ).firstMatch(cleanDetails.trim());
     if (m == null) return null;
     final note = (m.group(1) ?? '').trim();
     return note.isEmpty ? null : note;
@@ -1512,139 +2018,6 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     );
   }
 
-  List<_CustomerLine> _openClaimsOfType(String type) {
-    final claims = customer.lines
-        .where(
-          (l) =>
-              l.lineType == _CustomerLineType.claimOpen && l.claimType == type,
-        )
-        .toList();
-    claims.sort((a, b) {
-      final c = a.date.compareTo(b.date);
-      if (c != 0) return c;
-      final aId = a.claimId ?? 0;
-      final bId = b.claimId ?? 0;
-      return aId.compareTo(bId);
-    });
-    return claims;
-  }
-
-  Future<Map<int, double>> _openClaimRemainingById() async {
-    final claims = await AppDb.instance.listClaims(status: 'open');
-    return {for (final c in claims) c.id: c.amount};
-  }
-
-  Future<String?> _pickSettlementType() async {
-    final hasReceivable = _openClaimsOfType('receivable').isNotEmpty;
-    final hasPayable = _openClaimsOfType('payable').isNotEmpty;
-    if (!hasReceivable && !hasPayable) return null;
-    if (hasReceivable && !hasPayable) return 'receivable';
-    if (!hasReceivable && hasPayable) return 'payable';
-
-    return showModalBottomSheet<String>(
-      context: context,
-      useSafeArea: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.call_received),
-              title: const Text('تسوية مستحقات لنا (تحصيل)'),
-              onTap: () => Navigator.of(ctx).pop('receivable'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.call_made),
-              title: const Text('تسوية مستحقات علينا (سداد)'),
-              onTap: () => Navigator.of(ctx).pop('payable'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<_SettlementAmountInput?> _promptTotalAmount({
-    required String title,
-    required String label,
-    required double maxAmount,
-  }) async {
-    final amountCtrl = TextEditingController();
-    final noteCtrl = TextEditingController();
-    String? error;
-    try {
-      final result = await showDialog<_SettlementAmountInput>(
-        context: context,
-        builder: (ctx) => StatefulBuilder(
-          builder: (ctx, setState) => AlertDialog(
-            title: Text(title),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('الإجمالي المتاح: ${maxAmount.toStringAsFixed(2)}'),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  decoration: InputDecoration(
-                    labelText: label,
-                    border: const OutlineInputBorder(),
-                    isDense: true,
-                    errorText: error,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: noteCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'ملاحظة (اختياري)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('إلغاء'),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  final value = double.tryParse(amountCtrl.text.trim());
-                  if (value == null || value <= 0) {
-                    setState(() => error = 'أدخل مبلغًا صحيحًا');
-                    return;
-                  }
-                  if (value > maxAmount) {
-                    setState(() => error = 'المبلغ أكبر من الإجمالي المتاح');
-                    return;
-                  }
-                  final note = noteCtrl.text.trim();
-                  Navigator.of(ctx).pop(
-                    _SettlementAmountInput(
-                      amount: value,
-                      note: note.isEmpty ? null : note,
-                    ),
-                  );
-                },
-                child: const Text('تنفيذ'),
-              ),
-            ],
-          ),
-        ),
-      );
-      await WidgetsBinding.instance.endOfFrame;
-      return result;
-    } finally {
-      amountCtrl.dispose();
-      noteCtrl.dispose();
-    }
-  }
-
   Future<void> _runBatch(
     String successMessage,
     Future<void> Function() action,
@@ -1667,116 +2040,6 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     } finally {
       if (mounted) setState(() => _batchBusy = false);
     }
-  }
-
-  Future<void> _settleAllClaims() async {
-    final type = await _pickSettlementType();
-    if (type == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    final lines = _openClaimsOfType(type);
-    if (lines.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    if (!mounted) return;
-    final label = type == 'receivable' ? 'تحصيل' : 'سداد';
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('$label كل المستحقات'),
-        content: Text('سيتم تنفيذ $label لكل المستحقات المفتوحة لهذا العميل.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('إلغاء'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('تنفيذ'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    await _runBatch('تمت تسوية كل المستحقات بنجاح ✅', () async {
-      final remainingById = await _openClaimRemainingById();
-      for (final line in lines) {
-        final claimId = line.claimId;
-        if (claimId == null) continue;
-        final remaining = remainingById[claimId] ?? 0;
-        if (remaining <= 0) continue;
-        await AppDb.instance.settleClaim(claimId: claimId, amount: remaining);
-      }
-    });
-  }
-
-  Future<void> _settlePartialFromTotal() async {
-    final type = await _pickSettlementType();
-    if (type == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    final lines = _openClaimsOfType(type);
-    if (lines.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مستحقات مفتوحة للتسوية')),
-      );
-      return;
-    }
-    final remainingById = await _openClaimRemainingById();
-    final total = lines.fold<double>(0, (sum, line) {
-      final claimId = line.claimId;
-      if (claimId == null) return sum;
-      return sum + (remainingById[claimId] ?? 0);
-    });
-    if (total <= 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا توجد مبالغ متبقية للتسوية')),
-      );
-      return;
-    }
-    final actionLabel = type == 'receivable' ? 'تحصيل' : 'سداد';
-    final result = await _promptTotalAmount(
-      title: '$actionLabel جزئي من الإجمالي',
-      label: 'مبلغ $actionLabel',
-      maxAmount: total,
-    );
-    if (result == null) return;
-
-    await _runBatch('تم تنفيذ التسوية الجزئية بنجاح ✅', () async {
-      var remainingAmount = result.amount;
-      for (final line in lines) {
-        if (remainingAmount <= 0) break;
-        final claimId = line.claimId;
-        if (claimId == null) continue;
-        final claimRemaining = remainingById[claimId] ?? 0;
-        if (claimRemaining <= 0) continue;
-        final take = remainingAmount < claimRemaining
-            ? remainingAmount
-            : claimRemaining;
-        if (take <= 0) continue;
-        await AppDb.instance.settleClaim(
-          claimId: claimId,
-          amount: take,
-          note: result.note,
-        );
-        remainingAmount -= take;
-      }
-    });
   }
 
   Future<void> _addClaimForCustomer(String type) async {
@@ -1842,12 +2105,17 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       if (ok != true) return;
       final amount = double.parse(amountCtrl.text.trim());
       await _runBatch('تمت إضافة المستحق بنجاح ✅', () async {
-        await AppDb.instance.addClaim(
-          type: type,
-          party: customer.name,
-          amount: amount,
-          note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
-          phone: customer.phone,
+        await CleanWriteGateway.appDbBridge().execute(
+          CreateClaimIntent(
+            claimId: 'claim-ui-${DateTime.now().microsecondsSinceEpoch}',
+            type: type == 'receivable'
+                ? ClaimDirection.receivable
+                : ClaimDirection.payable,
+            party: customer.name,
+            amount: amount,
+            note: noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
+            phone: customer.phone,
+          ),
         );
       });
     } finally {
@@ -1904,6 +2172,11 @@ class _CustomerSheetState extends State<_CustomerSheet> {
               title: const Text('مستحق علينا'),
               onTap: () => Navigator.of(ctx).pop('claim_payable'),
             ),
+            ListTile(
+              leading: const Icon(Icons.tune),
+              title: const Text('تسوية حساب'),
+              onTap: () => Navigator.of(ctx).pop('adjust'),
+            ),
           ],
         ),
       ),
@@ -1930,27 +2203,36 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       case 'claim_payable':
         await _addClaimForCustomer('payable');
         return;
+      case 'adjust':
+        onAdjust();
+        return;
       default:
         return;
     }
   }
 
+  bool _isOffsetLine(_CustomerLine line) {
+    final text = '${line.details ?? ''} ${line.ref} ${line.title}';
+    return text.contains('إغلاق تلقائي') ||
+        text.contains('مقاصة') ||
+        text.contains('إغلاق حساب') ||
+        text.contains('offset') ||
+        text.contains('تسوية / إغلاق');
+  }
+
   String? _buildSettlementDetails(_CustomerLine line) {
+    final isOffset = _isOffsetLine(line);
     final primary = <String>['المبلغ: ${line.amount.toStringAsFixed(2)}'];
     final secondary = <String>[];
     final service = _extractServiceLine(line.details);
     if (line.remainingAfter != null) {
       primary.add('المتبقي: ${line.remainingAfter!.toStringAsFixed(2)}');
     }
+    if (isOffset) {
+      secondary.add('🔄 مقاصة تسوية داخلية تصفير الحساب إلى 0.00 (بدون حركة نقدية)');
+    }
     final settlementNote = _extractSettlementNote(line.details);
     if (settlementNote != null) secondary.add('ملاحظة: $settlementNote');
-    if (line.claimId != null) {
-      secondary.add('مرجع المستحق: Claim#${line.claimId}');
-    }
-    if (line.sourceKindLabel != null &&
-        line.sourceKindLabel!.trim().isNotEmpty) {
-      secondary.add('نوع الربط: ${line.sourceKindLabel}');
-    }
     if (service != null) secondary.add(service);
 
     final lines = <String>[primary.join(' | ')];
@@ -2004,11 +2286,29 @@ class _CustomerSheetState extends State<_CustomerSheet> {
     required double currentNet,
   }) {
     final map = <_CustomerLine, double>{};
-    var runningAfter = currentNet;
-    for (final l in lines) {
+    final deferredStoryIds = lines
+        .where(
+          (line) =>
+              line.txnId != null &&
+              line.txnId == line.storySourceTxnId &&
+              (line.txnKind == 'transfer' ||
+                  line.txnKind == 'receive' ||
+                  line.txnKind == 'fawry_credit'),
+        )
+        .map((line) => line.txnId!)
+        .toSet();
+    final chronological = [...lines]..sort(_compareSimpleLedgerChronological);
+    var runningAfter = 0.0;
+    for (final l in chronological) {
+      final isDeferredClaimMarker =
+          l.lineType == _CustomerLineType.claimOpen &&
+          l.storySourceTxnId != null &&
+          deferredStoryIds.contains(l.storySourceTxnId);
+      final delta = isDeferredClaimMarker
+          ? 0
+          : (l.side == _LineSide.receivable ? l.amount : -l.amount);
+      runningAfter += delta;
       map[l] = runningAfter;
-      final delta = l.side == _LineSide.receivable ? l.amount : -l.amount;
-      runningAfter -= delta;
     }
     return map;
   }
@@ -2031,12 +2331,61 @@ class _CustomerSheetState extends State<_CustomerSheet> {
   }
 
   List<_CustomerLine> _applyFilter(List<_CustomerLine> lines) {
+    // صفوف التسوية (تحصيل/سداد) تُخفى من كل الفلاتر ماعدا فلتر "التسويات"
+    bool isSettlement(_CustomerLine l) =>
+        l.txnKind == 'claim_collect' || l.txnKind == 'claim_pay';
+
+    var filtered = switch (_accountFilter) {
+      _CustomerAccountFilter.forUs =>
+        lines.where((l) => l.side == _LineSide.receivable && !isSettlement(l)).toList(),
+      _CustomerAccountFilter.againstUs =>
+        lines.where((l) => l.side == _LineSide.payable && !isSettlement(l)).toList(),
+      _CustomerAccountFilter.deferredTransfers =>
+        lines
+            .where((l) => !isSettlement(l) && (l.txnKind == 'transfer' || l.title.contains('تحويل')))
+            .toList(),
+      _CustomerAccountFilter.deferredReceives =>
+        lines
+            .where((l) => !isSettlement(l) && (l.txnKind == 'receive' || l.title.contains('استلام')))
+            .toList(),
+      _CustomerAccountFilter.claims =>
+        lines
+            .where(
+              (l) =>
+                  !isSettlement(l) &&
+                  (l.lineType == _CustomerLineType.claimOpen || l.claimId != null),
+            )
+            .toList(),
+      _CustomerAccountFilter.settlements =>
+        // فلتر "التسويات" فقط يعرض هذه الصفوف
+        lines
+            .where((l) => l.txnKind == 'claim_collect' || l.txnKind == 'claim_pay')
+            .toList(),
+      _CustomerAccountFilter.archivedClosed =>
+        lines
+            .where(
+              (l) =>
+                  !isSettlement(l) &&
+                  (l.txnStatus == 'posted' ||
+                   l.txnStatus == 'rolled_back' ||
+                   (l.remainingAfter != null && l.remainingAfter! <= 0)),
+            )
+            .toList(),
+			_CustomerAccountFilter.all => lines.toList(),
+        // الكل: جميع الصفوف ما عدا صفوف التسوية
+    };
+
     switch (_filter) {
       case _CustomerLineFilter.claims:
-        return lines
-            .where((l) => l.lineType == _CustomerLineType.claimOpen)
+        return filtered
+            .where(
+              (l) =>
+                  l.lineType == _CustomerLineType.claimOpen ||
+                  l.claimId != null,
+            )
             .toList();
       case _CustomerLineFilter.settlements:
+        // البحث في القائمة الأصلية (lines) وليس filtered، لأن filtered تحذف صفوف التسوية
         return lines
             .where(
               (l) =>
@@ -2045,7 +2394,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             )
             .toList();
       case _CustomerLineFilter.pending:
-        return lines
+        return filtered
             .where(
               (l) =>
                   l.lineType == _CustomerLineType.txn &&
@@ -2053,7 +2402,7 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             )
             .toList();
       case _CustomerLineFilter.posted:
-        return lines
+        return filtered
             .where(
               (l) =>
                   l.lineType == _CustomerLineType.txn &&
@@ -2061,19 +2410,1233 @@ class _CustomerSheetState extends State<_CustomerSheet> {
             )
             .toList();
       case _CustomerLineFilter.all:
-        return lines;
+        return filtered;
     }
+  }
+
+  int _compareSimpleLedgerChronological(_CustomerLine a, _CustomerLine b) {
+    final anchor = _simpleLedgerAnchorDate(
+      a,
+    ).compareTo(_simpleLedgerAnchorDate(b));
+    if (anchor != 0) return anchor;
+    final story = (a.storySourceTxnId ?? a.txnId ?? -(a.claimId ?? 0))
+        .compareTo(b.storySourceTxnId ?? b.txnId ?? -(b.claimId ?? 0));
+    if (story != 0) return story;
+    final stage = _simpleLedgerStage(a).compareTo(_simpleLedgerStage(b));
+    if (stage != 0) return stage;
+    final date = a.date.compareTo(b.date);
+    if (date != 0) return date;
+    return _simpleLedgerIdentity(a).compareTo(_simpleLedgerIdentity(b));
+  }
+
+  int _compareSimpleLedgerDisplay(_CustomerLine a, _CustomerLine b) {
+    final chronological = _compareSimpleLedgerChronological(a, b);
+    return -chronological;
+  }
+
+  DateTime _simpleLedgerAnchorDate(_CustomerLine line) {
+    return line.storyAnchorDate ?? line.date;
+  }
+
+  int _simpleLedgerIdentity(_CustomerLine line) {
+    return line.txnId ?? -(line.claimId ?? 0);
+  }
+
+  int _simpleLedgerStage(_CustomerLine line) {
+    if (line.lineType == _CustomerLineType.claimOpen &&
+        line.storySourceTxnId != null &&
+        line.txnStatus != 'closed') {
+      return 2;
+    }
+    if (line.txnKind == 'claim_collect' || line.txnKind == 'claim_pay') {
+      return 1;
+    }
+    return 0;
+  }
+
+  List<_CustomerLine> buildSimpleCustomerLedger(_CustomerBucket customer) {
+    final sorted = [...customer.lines]..sort(_compareSimpleLedgerDisplay);
+    return sorted.where((line) {
+      final details = (line.details ?? '').toLowerCase();
+      final title = line.title.toLowerCase();
+      final isClosureMirror = details.contains('مقاصة تسوية') ||
+          details.contains('تسوية داخلية بدون حركة نقدية') ||
+          title.contains('مقاصة تسوية');
+      if (isClosureMirror && line.lineType == _CustomerLineType.txn) {
+        return false;
+      }
+      return true;
+    }).toList(growable: false);
+  }
+
+  List<_CustomerLine> _openSettlementTargets(
+    _LineSide side, {
+    required _OpenSettlementTargetKind kind,
+  }) {
+    return buildSimpleCustomerLedger(customer)
+        .where((line) {
+          if (line.side != side) return false;
+          if (line.lineType == _CustomerLineType.claimOpen) {
+            return kind == _OpenSettlementTargetKind.claim &&
+                line.txnStatus != 'closed' &&
+                (line.remainingAfter ?? line.amount) > 0;
+          }
+          final isDeferred =
+              line.lineType == _CustomerLineType.txn &&
+              line.txnStatus == 'pending' &&
+              (line.txnKind == 'transfer' ||
+                  line.txnKind == 'receive' ||
+                  line.txnKind == 'fawry_credit');
+          return kind == _OpenSettlementTargetKind.deferred &&
+              isDeferred &&
+              (line.remainingAfter ?? line.amount) > 0;
+        })
+        .toList(growable: false);
+  }
+
+  List<_CustomerLine> _allOpenSettlementTargets(_LineSide side) {
+    final seen = <String>{};
+    final all = <_CustomerLine>[
+      ..._openSettlementTargets(side, kind: _OpenSettlementTargetKind.deferred),
+      ..._openSettlementTargets(side, kind: _OpenSettlementTargetKind.claim),
+    ];
+    return all
+        .where((line) {
+          final id = _openCustomerItemForLine(line).itemId;
+          return seen.add(id);
+        })
+        .toList(growable: false);
+  }
+
+  Future<double> _resolveClaimRemaining(int claimId, double fallback) async {
+    try {
+      final claims = await AppDb.instance.listClaims(status: 'open');
+      for (final claim in claims) {
+        if (claim.id == claimId) return claim.amount;
+      }
+    } catch (_) {}
+    return fallback;
+  }
+
+  /// يُغلق كل البنود المفتوحة (آجلة + مستحقات) عندما يكون الصافي = صفر
+  /// بدون أي تأثير على الخزينة لأن الطرفين متساويان
+  Future<void> _closeBalancedAccount() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('إغلاق الحساب تلقائياً'),
+        content: const Text(
+          'الصافي = صفر، سيتم إغلاق جميع البنود المفتوحة (آجلة ومستحقات) دفعة واحدة.\n\n'
+          'هذا الإجراء آمن ولن يؤثر على رصيد الخزينة.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('إلغاء'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('تأكيد الإغلاق'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    // جمع كل البنود المفتوحة
+    final allReceivableDeferred = _openSettlementTargets(
+      _LineSide.receivable,
+      kind: _OpenSettlementTargetKind.deferred,
+    );
+    final allPayableDeferred = _openSettlementTargets(
+      _LineSide.payable,
+      kind: _OpenSettlementTargetKind.deferred,
+    );
+    final allReceivableClaim = _openSettlementTargets(
+      _LineSide.receivable,
+      kind: _OpenSettlementTargetKind.claim,
+    );
+    final allPayableClaim = _openSettlementTargets(
+      _LineSide.payable,
+      kind: _OpenSettlementTargetKind.claim,
+    );
+
+    final allTargets = [
+      ...allReceivableDeferred,
+      ...allPayableDeferred,
+      ...allReceivableClaim,
+      ...allPayableClaim,
+    ];
+
+    if (allTargets.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('لا توجد بنود مفتوحة لإغلاقها')),
+        );
+      }
+      return;
+    }
+
+    await _runSelectedSettlement(
+      successMessage: 'تم إغلاق الحساب بنجاح ✅',
+      action: () async {
+        for (final line in allTargets) {
+          await _settleLineFully(
+            line,
+            note: '🔄 مقاصة تسوية / إغلاق حساب (تسوية داخلية بدون حركة نقدية في الخزينة)',
+          );
+        }
+      },
+    );
+  }
+
+  Future<void> _quickCollect() async {
+    final netReceivable = customer.receivableTotal - customer.payableTotal;
+    final isNegative = netReceivable < -0.001;
+    bool isCashIn = !isNegative;
+
+    final defaultInAmount = customer.receivableTotal > 0
+        ? customer.receivableTotal
+        : (netReceivable > 0 ? netReceivable : 0.0);
+    final defaultOutAmount = customer.payableTotal > 0
+        ? customer.payableTotal
+        : (netReceivable < 0 ? netReceivable.abs() : 0.0);
+
+    final amtCtrl = TextEditingController(
+      text: isCashIn
+          ? (defaultInAmount > 0 ? defaultInAmount.toStringAsFixed(2) : '')
+          : (defaultOutAmount > 0 ? defaultOutAmount.toStringAsFixed(2) : ''),
+    );
+    final noteCtrl = TextEditingController(
+      text: isCashIn ? 'قبض كاش من العميل' : 'دفع كاش للعميل',
+    );
+
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final actionColor =
+              isCashIn ? const Color(0xFF047857) : const Color(0xFFB91C1C);
+          final netAbs = netReceivable.abs();
+          final String netDisplay;
+          final Color netColor;
+          if (netAbs < 0.001) {
+            netDisplay = 'خالص / متزن (0.00 ج.م)';
+            netColor = const Color(0xFF0369A1);
+          } else if (netReceivable > 0) {
+            netDisplay = 'لنا: +${netAbs.toStringAsFixed(2)} ج.م';
+            netColor = const Color(0xFF047857);
+          } else {
+            netDisplay = 'علينا: -${netAbs.toStringAsFixed(2)} ج.م';
+            netColor = const Color(0xFFB91C1C);
+          }
+
+          return AlertDialog(
+            title: const Text(
+              '💰 حركة نقدية / تسوية سريعة',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'العميل: ${customer.name}',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'إجمالي لنا: ${customer.receivableTotal.toStringAsFixed(2)} ج.م | إجمالي علينا: ${customer.payableTotal.toStringAsFixed(2)} ج.م',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF475569),
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'صافي الرصيد: $netDisplay',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                            color: netColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Segmented Switch: قبض كاش (In) vs دفع كاش (Out)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          onTap: () {
+                            setDialogState(() {
+                              isCashIn = true;
+                              if (amtCtrl.text.isEmpty ||
+                                  amtCtrl.text ==
+                                      defaultOutAmount.toStringAsFixed(2)) {
+                                amtCtrl.text = defaultInAmount > 0
+                                    ? defaultInAmount.toStringAsFixed(2)
+                                    : '';
+                              }
+                              if (noteCtrl.text == 'دفع كاش للعميل' ||
+                                  noteCtrl.text.isEmpty) {
+                                noteCtrl.text = 'قبض كاش من العميل';
+                              }
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            decoration: BoxDecoration(
+                              color: isCashIn
+                                  ? const Color(0xFF047857)
+                                  : const Color(0xFFE2E8F0),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              'قبض كاش من العميل 🟢',
+                              style: TextStyle(
+                                color: isCashIn ? Colors.white : Colors.black87,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: InkWell(
+                          onTap: () {
+                            setDialogState(() {
+                              isCashIn = false;
+                              if (amtCtrl.text.isEmpty ||
+                                  amtCtrl.text ==
+                                      defaultInAmount.toStringAsFixed(2)) {
+                                amtCtrl.text = defaultOutAmount > 0
+                                    ? defaultOutAmount.toStringAsFixed(2)
+                                    : '';
+                              }
+                              if (noteCtrl.text == 'قبض كاش من العميل' ||
+                                  noteCtrl.text.isEmpty) {
+                                noteCtrl.text = 'دفع كاش للعميل';
+                              }
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            decoration: BoxDecoration(
+                              color: !isCashIn
+                                  ? const Color(0xFFB91C1C)
+                                  : const Color(0xFFE2E8F0),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              'دفع كاش للعميل 🔴',
+                              style: TextStyle(
+                                color:
+                                    !isCashIn ? Colors.white : Colors.black87,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: amtCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      labelText: isCashIn
+                          ? 'المبلغ المقبوض (ج.م) [دخول خزينة]'
+                          : 'المبلغ المدفوع (ج.م) [خروج من الخزينة]',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: Icon(
+                        isCashIn
+                            ? Icons.arrow_downward
+                            : Icons.arrow_upward,
+                        color: actionColor,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: noteCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'ملاحظة (اختياري)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('إلغاء'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: actionColor),
+                onPressed: () {
+                  final val = double.tryParse(amtCtrl.text.trim());
+                  if (val == null || val <= 0) return;
+                  Navigator.pop(ctx, true);
+                },
+                child: Text(
+                  isCashIn
+                      ? 'تأكيد القبض والتسجيل بالخزينة 🟢'
+                      : 'تأكيد الدفع والخصم من الخزينة 🔴',
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (res != true || !mounted) return;
+    final actionAmount = double.tryParse(amtCtrl.text.trim()) ?? 0.0;
+    if (actionAmount <= 0) return;
+
+    if (isCashIn) {
+      // Cash IN: Collect cash from customer (reduce open receivables)
+      await _runSelectedSettlement(
+        successMessage:
+            'تم قبض $actionAmount ج.م وتسجيلها بالخزينة بنجاح ✅',
+        action: () async {
+          var remainingToCollect = actionAmount;
+          final receivableTargets =
+              _allOpenSettlementTargets(_LineSide.receivable);
+
+          for (final target in receivableTargets) {
+            if (remainingToCollect <= 0) break;
+            final item = _openCustomerItemForLine(target);
+            final targetRem = item.remainingAmount;
+            if (targetRem <= 0) continue;
+            final payNow = (targetRem <= remainingToCollect)
+                ? targetRem
+                : remainingToCollect;
+            if (payNow >= targetRem) {
+              await _settleLineFully(
+                target,
+                note: noteCtrl.text.trim().isEmpty
+                    ? 'قبض كاش سريع'
+                    : noteCtrl.text.trim(),
+              );
+            } else {
+              await _settleLinePartially(
+                target,
+                amount: payNow,
+                note: noteCtrl.text.trim().isEmpty
+                    ? 'قبض كاش سريع جزئي'
+                    : noteCtrl.text.trim(),
+              );
+            }
+            remainingToCollect -= payNow;
+          }
+
+          if (remainingToCollect > 0) {
+            await CleanWriteGateway.appDbBridge().execute(
+              CreateClaimIntent(
+                claimId:
+                    'claim-excess-${DateTime.now().microsecondsSinceEpoch}',
+                type: ClaimDirection.payable,
+                party: customer.name,
+                amount: remainingToCollect,
+                note:
+                    '${noteCtrl.text.trim().isEmpty ? 'قبض كاش سريع' : noteCtrl.text.trim()} (فائض تحصيل)',
+                phone: customer.phone,
+              ),
+            );
+          }
+        },
+      );
+    } else {
+      // Cash OUT: Pay cash to customer (settle open payables)
+      await _runSelectedSettlement(
+        successMessage:
+            'تم دفع $actionAmount ج.م وخصمها من الخزينة بنجاح ✅',
+        action: () async {
+          var remainingToPay = actionAmount;
+          final payableTargets = _allOpenSettlementTargets(_LineSide.payable);
+
+          for (final target in payableTargets) {
+            if (remainingToPay <= 0) break;
+            final item = _openCustomerItemForLine(target);
+            final targetRem = item.remainingAmount;
+            if (targetRem <= 0) continue;
+            final payNow =
+                (targetRem <= remainingToPay) ? targetRem : remainingToPay;
+            if (payNow >= targetRem) {
+              await _settleLineFully(
+                target,
+                note: noteCtrl.text.trim().isEmpty
+                    ? 'دفع كاش سريع'
+                    : noteCtrl.text.trim(),
+              );
+            } else {
+              await _settleLinePartially(
+                target,
+                amount: payNow,
+                note: noteCtrl.text.trim().isEmpty
+                    ? 'دفع كاش سريع جزئي'
+                    : noteCtrl.text.trim(),
+              );
+            }
+            remainingToPay -= payNow;
+          }
+
+          if (remainingToPay > 0) {
+            await CleanWriteGateway.appDbBridge().execute(
+              CreateClaimIntent(
+                claimId:
+                    'claim-excess-${DateTime.now().microsecondsSinceEpoch}',
+                type: ClaimDirection.receivable,
+                party: customer.name,
+                amount: remainingToPay,
+                note:
+                    '${noteCtrl.text.trim().isEmpty ? 'دفع كاش سريع' : noteCtrl.text.trim()} (فائض سداد)',
+                phone: customer.phone,
+              ),
+            );
+          }
+        },
+      );
+    }
+
+    if (!mounted) return;
+    final remainingNet = customer.receivableTotal - customer.payableTotal;
+    if (remainingNet.abs() < 0.001) {
+      final hasOpenItems = _openSettlementTargets(
+            _LineSide.receivable,
+            kind: _OpenSettlementTargetKind.deferred,
+          ).isNotEmpty ||
+          _openSettlementTargets(
+            _LineSide.payable,
+            kind: _OpenSettlementTargetKind.deferred,
+          ).isNotEmpty ||
+          _openSettlementTargets(
+            _LineSide.receivable,
+            kind: _OpenSettlementTargetKind.claim,
+          ).isNotEmpty ||
+          _openSettlementTargets(
+            _LineSide.payable,
+            kind: _OpenSettlementTargetKind.claim,
+          ).isNotEmpty;
+      if (hasOpenItems) {
+        await _closeBalancedAccount();
+      }
+    }
+  }
+
+  Future<void> _quickSettleOpenItem({
+    required _LineSide side,
+    required bool full,
+    required _OpenSettlementTargetKind kind,
+  }) async {
+    final targets = _openSettlementTargets(side, kind: kind);
+    if (targets.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('لا توجد عملية مفتوحة')));
+      return;
+    }
+    final mode = await _pickSettlementMode();
+    if (!mounted) return;
+    if (mode == null) return;
+
+    if (mode == _SettlementMode.total) {
+      final totalTargets = _allOpenSettlementTargets(side);
+      if (totalTargets.isEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('لا توجد عملية مفتوحة')));
+        return;
+      }
+      await _quickSettleFromTotal(
+        targets: totalTargets,
+        side: side,
+        full: full,
+      );
+      return;
+    }
+
+    final selected = targets.length == 1
+        ? <_CustomerLine>[targets.single]
+        : await _pickOpenSettlementTargets(targets);
+    if (selected == null || selected.isEmpty) return;
+
+    final actionLabel = side == _LineSide.receivable ? 'تحصيل' : 'سداد';
+    final fullLabel = '$actionLabel كلي';
+
+    if (full) {
+      final confirmation = await _confirmQuickFullSettlement(
+        targets: selected,
+        title: kind == _OpenSettlementTargetKind.claim
+            ? '$fullLabel للمستحق'
+            : '$fullLabel للآجل',
+        okText: fullLabel,
+      );
+      if (confirmation == null) return;
+      await _runSelectedSettlement(
+        successMessage: 'تم التنفيذ بنجاح ✅',
+        action: () async {
+          for (final line in selected) {
+            await _settleLineFully(line, note: confirmation.note);
+          }
+        },
+      );
+      return;
+    }
+
+    final partial = await _promptPartialSettlementForItems(
+      targets: selected,
+      actionLabel: actionLabel,
+    );
+    if (partial == null || partial.amountsByItemId.isEmpty) return;
+    await _runSelectedSettlement(
+      successMessage: 'تم التنفيذ بنجاح ✅',
+      action: () async {
+        for (final line in selected) {
+          final item = _openCustomerItemForLine(line);
+          final amount = partial.amountsByItemId[item.itemId];
+          if (amount == null || amount <= 0) continue;
+          await _settleLinePartially(line, amount: amount, note: partial.note);
+        }
+      },
+    );
+  }
+
+  Future<void> _quickSettleFromTotal({
+    required List<_CustomerLine> targets,
+    required _LineSide side,
+    required bool full,
+  }) async {
+    final totalOpen = targets.fold<double>(
+      0,
+      (sum, line) => sum + _openCustomerItemForLine(line).remainingAmount,
+    );
+    final actionLabel = side == _LineSide.receivable ? 'تحصيل' : 'سداد';
+    final input = await _promptTotalSettlement(
+      targets: targets,
+      actionLabel: actionLabel,
+      totalOpen: totalOpen,
+      full: full,
+    );
+    if (input == null) return;
+
+    final ordered = _orderTotalSettlementTargets(targets, input.order);
+    final note = _totalSettlementNote(input.note);
+    await _runSelectedSettlement(
+      successMessage: 'تم التنفيذ بنجاح ✅',
+      action: () async {
+        var remainingInput = input.amount;
+        for (final line in ordered) {
+          if (remainingInput <= 0.0001) break;
+          final item = _openCustomerItemForLine(line);
+          final allocation = remainingInput > item.remainingAmount
+              ? item.remainingAmount
+              : remainingInput;
+          if (allocation >= item.remainingAmount - 0.0001) {
+            await _settleLineFully(line, note: note);
+          } else {
+            await _settleLinePartially(line, amount: allocation, note: note);
+          }
+          remainingInput -= allocation;
+        }
+      },
+    );
+  }
+
+  Future<void> _runSelectedSettlement({
+    required String successMessage,
+    required Future<void> Function() action,
+  }) async {
+    if (_batchBusy) return;
+    setState(() => _batchBusy = true);
+    try {
+      await action();
+      await onRefresh();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(successMessage)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
+    } finally {
+      if (mounted) setState(() => _batchBusy = false);
+    }
+  }
+
+  Future<void> _settleLineFully(_CustomerLine line, {String? note}) async {
+    final gateway = CleanWriteGateway.appDbBridge();
+    if (line.lineType == _CustomerLineType.claimOpen) {
+      await gateway.execute(
+        CreateClaimSettlementIntent(
+          claimId: line.claimId!.toString(),
+          settlementId:
+              'claim-${line.claimId}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+          amount: await _resolveClaimRemaining(line.claimId!, line.amount),
+          fullSettlement: true,
+          note: note,
+        ),
+      );
+      return;
+    }
+    await gateway.execute(
+      CreateSettlementIntent(
+        itemId: (line.pendingTxnId ?? line.txnId!).toString(),
+        settlementId:
+            'pending-${(line.pendingTxnId ?? line.txnId!)}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+        sourceType: line.side == _LineSide.receivable
+            ? SettlementSourceType.deferredTransfer
+            : SettlementSourceType.deferredReceive,
+        amount: _openCustomerItemForLine(line).remainingAmount,
+        fullSettlement: true,
+        note: note,
+      ),
+    );
+  }
+
+  Future<void> _settleLinePartially(
+    _CustomerLine line, {
+    required double amount,
+    String? note,
+  }) async {
+    final gateway = CleanWriteGateway.appDbBridge();
+    if (line.lineType == _CustomerLineType.claimOpen) {
+      await gateway.execute(
+        CreateClaimSettlementIntent(
+          claimId: line.claimId!.toString(),
+          settlementId:
+              'claim-${line.claimId}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+          amount: amount,
+          note: note,
+        ),
+      );
+      return;
+    }
+    await gateway.execute(
+      CreateSettlementIntent(
+        itemId: (line.pendingTxnId ?? line.txnId!).toString(),
+        settlementId:
+            'pending-${(line.pendingTxnId ?? line.txnId!)}-settlement-${DateTime.now().microsecondsSinceEpoch}',
+        sourceType: line.side == _LineSide.receivable
+            ? SettlementSourceType.deferredTransfer
+            : SettlementSourceType.deferredReceive,
+        amount: amount,
+        note: note,
+      ),
+    );
+  }
+
+  Future<List<_CustomerLine>?> _pickOpenSettlementTargets(
+    List<_CustomerLine> targets,
+  ) {
+    final selectedIds = <String>{};
+    return showModalBottomSheet<List<_CustomerLine>>(
+      context: context,
+      useSafeArea: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: StatefulBuilder(
+            builder: (ctx, setState) => ListView(
+              shrinkWrap: true,
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+              children: [
+                Text(
+                  'اختر العملية المفتوحة',
+                  style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...targets.map((line) {
+                  final item = _openCustomerItemForLine(line);
+                  final date = _shortDate(item.createdAt);
+                  final selected = selectedIds.contains(item.itemId);
+                  return CheckboxListTile(
+                    value: selected,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    title: Text(item.title),
+                    subtitle: Text(
+                      '$date | الأصل: ${item.originalAmount.toStringAsFixed(2)} | المتبقي: ${item.remainingAmount.toStringAsFixed(2)}',
+                    ),
+                    onChanged: (value) {
+                      setState(() {
+                        if (value == true) {
+                          selectedIds.add(item.itemId);
+                        } else {
+                          selectedIds.remove(item.itemId);
+                        }
+                      });
+                    },
+                  );
+                }),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: const Text('إلغاء'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: selectedIds.isEmpty
+                            ? null
+                            : () => Navigator.of(ctx).pop(
+                                targets
+                                    .where(
+                                      (line) => selectedIds.contains(
+                                        _openCustomerItemForLine(line).itemId,
+                                      ),
+                                    )
+                                    .toList(growable: false),
+                              ),
+                        child: const Text('متابعة'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<_SettlementMode?> _pickSettlementMode() async {
+    return showDialog<_SettlementMode>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('اختر طريقة التسوية:'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ElevatedButton(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(_SettlementMode.selectedItems),
+              child: const Text('تحديد عمليات'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: () => Navigator.of(ctx).pop(_SettlementMode.total),
+              child: const Text('من الإجمالي'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('إلغاء'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<_TotalSettlementInput?> _promptTotalSettlement({
+    required List<_CustomerLine> targets,
+    required String actionLabel,
+    required double totalOpen,
+    required bool full,
+  }) async {
+    var amountText = full ? totalOpen.toStringAsFixed(2) : '';
+    var noteText = '';
+    var order = _TotalSettlementOrder.oldestFirst;
+    String? error;
+    final result = await showDialog<_TotalSettlementInput>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: Text('$actionLabel من الإجمالي'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('إجمالي المفتوح: ${totalOpen.toStringAsFixed(2)}'),
+                const SizedBox(height: 12),
+                TextFormField(
+                  initialValue: amountText,
+                  readOnly: full,
+                  onChanged: (value) => amountText = value,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: 'المبلغ',
+                    hintText: full ? totalOpen.toStringAsFixed(2) : null,
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<_TotalSettlementOrder>(
+                  initialValue: order,
+                  decoration: const InputDecoration(
+                    labelText: 'ترتيب التوزيع',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  items: _TotalSettlementOrder.values
+                      .map(
+                        (value) => DropdownMenuItem(
+                          value: value,
+                          child: Text(_totalSettlementOrderLabel(value)),
+                        ),
+                      )
+                      .toList(growable: false),
+                  onChanged: (value) {
+                    if (value != null) setState(() => order = value);
+                  },
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  onChanged: (value) => noteText = value,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظة (اختياري)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(error!, style: const TextStyle(color: Colors.red)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final amount = full
+                    ? totalOpen
+                    : double.tryParse(amountText.trim());
+                if (amount == null || amount <= 0) {
+                  setState(() => error = 'أدخل مبلغًا صحيحًا');
+                  return;
+                }
+                if (amount > totalOpen + 0.0001) {
+                  setState(() => error = 'المبلغ أكبر من إجمالي المفتوح');
+                  return;
+                }
+                final note = noteText.trim();
+                FocusScope.of(ctx).unfocus();
+                Navigator.of(ctx).pop(
+                  _TotalSettlementInput(
+                    amount: amount,
+                    note: note.isEmpty ? null : note,
+                    order: order,
+                  ),
+                );
+              },
+              child: Text(actionLabel),
+            ),
+          ],
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    return result;
+  }
+
+  Future<_SettlementNoteInput?> _confirmQuickFullSettlement({
+    required List<_CustomerLine> targets,
+    required String title,
+    required String okText,
+  }) async {
+    var noteText = '';
+    final result = await showDialog<_SettlementNoteInput>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ...targets.map((line) {
+                final item = _openCustomerItemForLine(line);
+                final ref = item.linkedTxnId == null
+                    ? ''
+                    : ' #${item.linkedTxnId}';
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    '${item.title}$ref - المتبقي: ${item.remainingAmount.toStringAsFixed(2)}',
+                  ),
+                );
+              }),
+              const SizedBox(height: 10),
+              TextField(
+                onChanged: (value) => noteText = value,
+                decoration: const InputDecoration(
+                  labelText: 'ملاحظة (اختياري)',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final note = noteText.trim();
+              FocusScope.of(ctx).unfocus();
+              Navigator.of(
+                ctx,
+              ).pop(_SettlementNoteInput(note: note.isEmpty ? null : note));
+            },
+            child: Text(okText),
+          ),
+        ],
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    return result;
+  }
+
+  List<_CustomerLine> _orderTotalSettlementTargets(
+    List<_CustomerLine> targets,
+    _TotalSettlementOrder order,
+  ) {
+    final ordered = [...targets];
+    int byOldest(_CustomerLine a, _CustomerLine b) {
+      final date = a.date.compareTo(b.date);
+      if (date != 0) return date;
+      return _simpleLedgerIdentity(a).compareTo(_simpleLedgerIdentity(b));
+    }
+
+    int byNewest(_CustomerLine a, _CustomerLine b) => -byOldest(a, b);
+
+    bool isClaim(_CustomerLine line) =>
+        line.lineType == _CustomerLineType.claimOpen;
+
+    switch (order) {
+      case _TotalSettlementOrder.oldestFirst:
+        ordered.sort(byOldest);
+        break;
+      case _TotalSettlementOrder.newestFirst:
+        ordered.sort(byNewest);
+        break;
+      case _TotalSettlementOrder.claimsFirst:
+        ordered.sort((a, b) {
+          final claim = (isClaim(b) ? 1 : 0).compareTo(isClaim(a) ? 1 : 0);
+          if (claim != 0) return claim;
+          return byOldest(a, b);
+        });
+        break;
+      case _TotalSettlementOrder.deferredFirst:
+        ordered.sort((a, b) {
+          final deferred = (isClaim(a) ? 1 : 0).compareTo(isClaim(b) ? 1 : 0);
+          if (deferred != 0) return deferred;
+          return byOldest(a, b);
+        });
+        break;
+    }
+    return ordered;
+  }
+
+  String _totalSettlementNote(String? userNote) {
+    final note = (userNote ?? '').trim();
+    if (note.isEmpty) return 'تسوية من الإجمالي';
+    return 'تسوية من الإجمالي - $note';
+  }
+
+  String _totalSettlementOrderLabel(_TotalSettlementOrder order) {
+    return switch (order) {
+      _TotalSettlementOrder.oldestFirst => 'الأقدم أولًا',
+      _TotalSettlementOrder.newestFirst => 'الأحدث أولًا',
+      _TotalSettlementOrder.claimsFirst => 'المستحقات أولًا',
+      _TotalSettlementOrder.deferredFirst => 'الآجل أولًا',
+    };
+  }
+
+  Future<_PartialOpenSettlementInput?> _promptPartialSettlementForItems({
+    required List<_CustomerLine> targets,
+    required String actionLabel,
+  }) async {
+    final rawAmounts = <String, String>{};
+    var noteText = '';
+    String? error;
+    final result = await showDialog<_PartialOpenSettlementInput>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) => AlertDialog(
+          title: Text('$actionLabel جزئي'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ...targets.map((line) {
+                  final item = _openCustomerItemForLine(line);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: TextField(
+                      onChanged: (value) => rawAmounts[item.itemId] = value,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      decoration: InputDecoration(
+                        labelText:
+                            '${item.title} - المتبقي ${item.remainingAmount.toStringAsFixed(2)}',
+                        border: const OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  );
+                }),
+                TextField(
+                  onChanged: (value) => noteText = value,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظة (اختياري)',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(error!, style: const TextStyle(color: Colors.red)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('إلغاء'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final values = <String, double>{};
+                for (final line in targets) {
+                  final item = _openCustomerItemForLine(line);
+                  final raw = (rawAmounts[item.itemId] ?? '').trim();
+                  if (raw.isEmpty) continue;
+                  final value = double.tryParse(raw);
+                  if (value == null || value <= 0) {
+                    setState(() => error = 'أدخل مبلغًا صحيحًا');
+                    return;
+                  }
+                  if (value > item.remainingAmount) {
+                    setState(() => error = 'المبلغ أكبر من المتبقي');
+                    return;
+                  }
+                  values[item.itemId] = value;
+                }
+                if (values.isEmpty) {
+                  setState(() => error = 'اختر مبلغًا لعملية واحدة على الأقل');
+                  return;
+                }
+                final note = noteText.trim();
+                FocusScope.of(ctx).unfocus();
+                Navigator.of(ctx).pop(
+                  _PartialOpenSettlementInput(
+                    amountsByItemId: values,
+                    note: note.isEmpty ? null : note,
+                  ),
+                );
+              },
+              child: Text(actionLabel),
+            ),
+          ],
+        ),
+      ),
+    );
+    await WidgetsBinding.instance.endOfFrame;
+    return result;
+  }
+
+  OpenCustomerItem _openCustomerItemForLine(_CustomerLine line) {
+    final sourceType = switch (line.lineType) {
+      _CustomerLineType.claimOpen =>
+        line.claimType == 'payable'
+            ? CustomerLedgerSourceType.claimPayable
+            : CustomerLedgerSourceType.claimReceivable,
+      _CustomerLineType.txn =>
+        line.txnKind == 'receive'
+            ? CustomerLedgerSourceType.deferredReceive
+            : CustomerLedgerSourceType.deferredTransfer,
+      _CustomerLineType.adjustment => CustomerLedgerSourceType.adjustment,
+    };
+    final id = switch (line.lineType) {
+      _CustomerLineType.claimOpen => 'claim:${line.claimId}',
+      _CustomerLineType.txn => 'pending:${line.txnId}',
+      _CustomerLineType.adjustment => 'adj:${line.ref.split('#').last}',
+    };
+    return OpenCustomerItem(
+      itemId: id,
+      sourceType: sourceType,
+      title: _lineChipLabel(line),
+      originalAmount: _lineDisplayAmount(line),
+      remainingAmount: line.remainingAfter ?? line.amount,
+      createdAt: line.date,
+      linkedTxnId: line.lineType == _CustomerLineType.txn
+          ? line.txnId
+          : line.storySourceTxnId,
+    );
+  }
+
+  String _shortDate(DateTime d) {
+    return '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
   }
 
   String _lineChipLabel(_CustomerLine line) {
     if (line.lineType == _CustomerLineType.claimOpen) {
-      return line.claimType == 'receivable' ? 'مستحق (عليه)' : 'مستحق (له)';
+      return 'مستحق';
     }
-    if (line.txnKind == 'claim_collect') {
-      return (line.remainingAfter ?? 0) > 0 ? 'تحصيل جزئي' : 'تحصيل كامل';
-    }
-    if (line.txnKind == 'claim_pay') {
-      return (line.remainingAfter ?? 0) > 0 ? 'سداد جزئي' : 'سداد كامل';
+    if (line.txnKind == 'claim_collect' || line.txnKind == 'claim_pay') {
+      if (_isOffsetLine(line)) {
+        return '🔄 مقاصة تسوية / إغلاق حساب';
+      }
+      if (line.txnKind == 'claim_collect') {
+        return (line.remainingAfter ?? 0) > 0 ? 'تحصيل جزئي' : 'تحصيل كلي';
+      }
+      return (line.remainingAfter ?? 0) > 0 ? 'سداد جزئي' : 'سداد كلي';
     }
     if (line.txnKind == 'transfer') {
       return line.txnStatus == 'pending' ? 'تحويل آجل' : 'تحويل';
@@ -2089,6 +3652,9 @@ class _CustomerSheetState extends State<_CustomerSheet> {
   }
 
   Color _lineChipColor(_CustomerLine line) {
+    if (_isOffsetLine(line)) {
+      return const Color(0xFF7C3AED);
+    }
     if (line.txnStatus == 'pending') {
       return const Color(0xFFB45309);
     }
@@ -2114,16 +3680,36 @@ class _CustomerSheetState extends State<_CustomerSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final netLabel = customer.net >= 0 ? 'الصافي عليه' : 'الصافي له';
-    final netValue = customer.net >= 0 ? customer.net : -customer.net;
-    final netColor = customer.net >= 0
-        ? const Color(0xFF047857)
-        : const Color(0xFFB91C1C);
+    final accountSummary = customer.account?.summary;
+    final totalForUs = accountSummary?.totalForUs ?? customer.receivableTotal;
+    final totalAgainstUs =
+        accountSummary?.totalAgainstUs ?? customer.payableTotal;
+    final openForUs = accountSummary == null
+        ? customer.receivableTotal
+        : accountSummary.openDeferredForUs + accountSummary.openClaimsForUs;
+    final openAgainstUs = accountSummary == null
+        ? customer.payableTotal
+        : accountSummary.openDeferredAgainstUs +
+              accountSummary.openClaimsAgainstUs;
+    final netBalance = totalForUs - totalAgainstUs;
+    final isClosed =
+        openForUs.abs() < 0.0001 &&
+        openAgainstUs.abs() < 0.0001 &&
+        netBalance.abs() < 0.0001;
+    final isBalanced = !isClosed && netBalance.abs() < 0.0001;
+    final netColor = isClosed
+        ? const Color(0xFF64748B)
+        : isBalanced
+            ? const Color(0xFF0369A1)
+            : netBalance >= 0
+                ? const Color(0xFF047857)
+                : const Color(0xFFB91C1C);
+    final ledgerLines = buildSimpleCustomerLedger(customer);
     final balances = _computeBalances(
-      lines: customer.lines,
-      currentNet: customer.net,
+      lines: ledgerLines,
+      currentNet: netBalance,
     );
-    final visibleLines = _applyFilter(customer.lines);
+    final visibleLines = _applyFilter(ledgerLines);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
@@ -2138,54 +3724,206 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
-              IconButton(
-                onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.close),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    onPressed: () async {
+                      if (customer.account == null) return;
+                      final messenger = ScaffoldMessenger.of(context);
+                      setState(() => _batchBusy = true);
+                      try {
+                        final path = await ReportExporter.exportCustomerPdf(
+                          account: customer.account!,
+                          range: DateRange(start: DateTime(2000), end: DateTime(2099)),
+                        );
+                        // ignore: deprecated_member_use
+                        await Share.shareXFiles([XFile(path)], text: 'كشف حساب: ${customer.name}');
+                      } catch (e) {
+                        messenger.showSnackBar(SnackBar(content: Text('خطأ أثناء تصدير الـ PDF: $e')));
+                      } finally {
+                        setState(() => _batchBusy = false);
+                      }
+                    },
+                    icon: const Icon(Icons.picture_as_pdf, color: Colors.redAccent),
+                    tooltip: 'تصدير كشف حساب PDF',
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
               ),
             ],
           ),
-          Text('الهاتف: ${customer.phone ?? 'غير مسجل'}'),
-          const SizedBox(height: 8),
           Row(
             children: [
-              _CustomerSummaryPill(
-                label: 'له',
-                value: customer.payableTotal,
-                color: const Color(0xFF047857),
-              ),
-              const SizedBox(width: 6),
-              _CustomerSummaryPill(
-                label: 'عليه',
-                value: customer.receivableTotal,
-                color: const Color(0xFFB91C1C),
-              ),
-              const SizedBox(width: 6),
-              _CustomerSummaryPill(
-                label: netLabel,
-                value: netValue,
-                color: netColor,
-              ),
+              Text('الهاتف: ${customer.phone ?? 'غير مسجل'}'),
+              if (customer.phone != null && customer.phone!.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                InkWell(
+                  onTap: () async {
+                    String cleanPhone = customer.phone ?? '';
+                    const arabicToEnglish = {'٠':'0','١':'1','٢':'2','٣':'3','٤':'4','٥':'5','٦':'6','٧':'7','٨':'8','٩':'9'};
+                    for (var e in arabicToEnglish.entries) {
+                      cleanPhone = cleanPhone.replaceAll(e.key, e.value);
+                    }
+                    cleanPhone = cleanPhone.replaceAll(RegExp(r'[^\d+]'), '');
+                    String phone = cleanPhone.startsWith('+') ? cleanPhone : '+2$cleanPhone';
+                    phone = phone.replaceAll('+', '');
+                    final url = Uri.parse('https://wa.me/$phone?text=${Uri.encodeComponent("مرحبا ${customer.name}، بخصوص حسابك:")}');
+                    try {
+                      await launchUrl(url, mode: LaunchMode.externalApplication);
+                    } catch (e) {
+                      debugPrint('Could not launch WhatsApp: $e');
+                    }
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.wechat, color: Colors.green, size: 16),
+                        SizedBox(width: 4),
+                        Text('واتساب', style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 6),
+          _CustomerCompactSummaryStrip(
+            netBalance: netBalance,
+            totalForUs: totalForUs,
+            totalAgainstUs: totalAgainstUs,
+            openForUs: openForUs,
+            openAgainstUs: openAgainstUs,
+            statusLabel: isClosed ? 'مغلق / صفر' : isBalanced ? 'متعادل' : 'مفتوح',
+            netColor: netColor,
+          ),
+          if (isBalanced) ...[
+            const SizedBox(height: 6),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF0369A1),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.check_circle_outline, size: 18),
+                label: const Text('إغلاق الحساب تلقائياً (الصافي = صفر)'),
+                onPressed: _batchBusy ? null : () => _closeBalancedAccount(),
+              ),
+            ),
+          ],
+          if (_openSettlementTargets(
+                _LineSide.receivable,
+                kind: _OpenSettlementTargetKind.deferred,
+              ).isNotEmpty ||
+              _openSettlementTargets(
+                _LineSide.payable,
+                kind: _OpenSettlementTargetKind.deferred,
+              ).isNotEmpty ||
+              _openSettlementTargets(
+                _LineSide.receivable,
+                kind: _OpenSettlementTargetKind.claim,
+              ).isNotEmpty ||
+              _openSettlementTargets(
+                _LineSide.payable,
+                kind: _OpenSettlementTargetKind.claim,
+              ).isNotEmpty) ...[
+            const SizedBox(height: 6),
+            _CustomerOpenSettlementActions(
+              canCollectDeferred: _openSettlementTargets(
+                _LineSide.receivable,
+                kind: _OpenSettlementTargetKind.deferred,
+              ).isNotEmpty,
+              canPayDeferred: _openSettlementTargets(
+                _LineSide.payable,
+                kind: _OpenSettlementTargetKind.deferred,
+              ).isNotEmpty,
+              canCollectClaim: _openSettlementTargets(
+                _LineSide.receivable,
+                kind: _OpenSettlementTargetKind.claim,
+              ).isNotEmpty,
+              canPayClaim: _openSettlementTargets(
+                _LineSide.payable,
+                kind: _OpenSettlementTargetKind.claim,
+              ).isNotEmpty,
+              onCollectDeferredPartial: () => _quickSettleOpenItem(
+                side: _LineSide.receivable,
+                full: false,
+                kind: _OpenSettlementTargetKind.deferred,
+              ),
+              onCollectDeferredFull: () => _quickSettleOpenItem(
+                side: _LineSide.receivable,
+                full: true,
+                kind: _OpenSettlementTargetKind.deferred,
+              ),
+              onPayDeferredPartial: () => _quickSettleOpenItem(
+                side: _LineSide.payable,
+                full: false,
+                kind: _OpenSettlementTargetKind.deferred,
+              ),
+              onPayDeferredFull: () => _quickSettleOpenItem(
+                side: _LineSide.payable,
+                full: true,
+                kind: _OpenSettlementTargetKind.deferred,
+              ),
+              onCollectClaimPartial: () => _quickSettleOpenItem(
+                side: _LineSide.receivable,
+                full: false,
+                kind: _OpenSettlementTargetKind.claim,
+              ),
+              onCollectClaimFull: () => _quickSettleOpenItem(
+                side: _LineSide.receivable,
+                full: true,
+                kind: _OpenSettlementTargetKind.claim,
+              ),
+              onPayClaimPartial: () => _quickSettleOpenItem(
+                side: _LineSide.payable,
+                full: false,
+                kind: _OpenSettlementTargetKind.claim,
+              ),
+              onPayClaimFull: () => _quickSettleOpenItem(
+                side: _LineSide.payable,
+                full: true,
+                kind: _OpenSettlementTargetKind.claim,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
           _CustomerQuickActionsSection(
             showActions: _showActions,
             batchBusy: _batchBusy,
             onToggle: () => setState(() => _showActions = !_showActions),
             onAddOperation: _openAddOperationMenu,
-            onSettleAllClaims: _settleAllClaims,
-            onSettlePartial: _settlePartialFromTotal,
+            onQuickCollect: () => _quickCollect(),
             onReport: onReport,
             onOpenAttachments: _openAttachments,
           ),
-          const SizedBox(height: 12),
-          _CustomerFilterChipsBar(
-            filter: _filter,
-            onFilterSelected: (value) {
+          const SizedBox(height: 8),
+          _CustomerLedgerFilters(
+            lineFilter: _filter,
+            accountFilter: _accountFilter,
+            showAdvanced: _showAdvancedFilters,
+            onLineFilterSelected: (value) {
               setState(() => _filter = value);
             },
+            onAccountFilterSelected: (value) {
+              setState(() => _accountFilter = value);
+            },
+            onToggleAdvanced: () {
+              setState(() => _showAdvancedFilters = !_showAdvancedFilters);
+            },
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Expanded(
             child: visibleLines.isEmpty
                 ? const Center(child: Text('لا توجد حركات مرتبطة لهذا العميل'))
@@ -2207,18 +3945,25 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                         final balance = _displayBalanceAmountForLine(
                           line,
                           balances,
-                          customer.net,
+                          netBalance,
                         );
                         final balanceSide = _displayBalanceSideForLine(
                           line,
                           balances,
-                          customer.net,
+                          netBalance,
                         );
-                        final balanceColor = balanceSide == _LineSide.receivable
-                            ? const Color(0xFFB91C1C)
-                            : const Color(0xFF047857);
+                        final isZero = balance.abs() < 0.001;
+                        final balanceColor = isZero
+                            ? const Color(0xFF0369A1)
+                            : (balanceSide == _LineSide.receivable
+                                ? const Color(0xFF047857)
+                                : const Color(0xFFB91C1C));
                         final balanceBg = balanceColor.withValues(alpha: 0.12);
-                        final balanceLabel = balance.toStringAsFixed(2);
+                        final balanceLabel = isZero
+                            ? '0.00'
+                            : (balanceSide == _LineSide.receivable
+                                ? '+${balance.toStringAsFixed(2)}'
+                                : '-${balance.toStringAsFixed(2)}');
 
                         final actions = <PopupMenuEntry<_LineAction>>[];
                         final isSettlement =
@@ -2226,13 +3971,17 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                             line.txnKind == 'claim_pay';
                         final chipLabel = _lineChipLabel(line);
                         final chipColor = _lineChipColor(line);
-                        final displayTitle = isSettlement
+                        final rawDisplayTitle = isSettlement
                             ? _lineChipLabel(line)
                             : line.title;
+                        final displayTitle = rawDisplayTitle == chipLabel
+                            ? ''
+                            : rawDisplayTitle;
                         final displayDetails = isSettlement
                             ? _buildSettlementDetails(line)
                             : _compactDetailsForLine(line);
-                        if (line.lineType == _CustomerLineType.claimOpen) {
+                        if (line.lineType == _CustomerLineType.claimOpen &&
+                            line.txnStatus != 'closed') {
                           final isReceivable = line.claimType == 'receivable';
                           actions.add(
                             PopupMenuItem(
@@ -2258,7 +4007,28 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                             isSettlement &&
                             line.txnStatus == 'posted') {
                           final isCollect = line.txnKind == 'claim_collect';
+                          
+                          if (line.remainingAfter != null && line.remainingAfter! > 0) {
+                            actions.add(
+                              PopupMenuItem(
+                                value: isCollect
+                                    ? _LineAction.collectPendingPartial
+                                    : _LineAction.payPendingPartial,
+                                child: Text(isCollect ? 'تحصيل جزء' : 'سداد جزء'),
+                              ),
+                            );
+                            actions.add(
+                              PopupMenuItem(
+                                value: isCollect
+                                    ? _LineAction.collectPendingFull
+                                    : _LineAction.payPendingFull,
+                                child: Text(isCollect ? 'تحصيل المتبقي' : 'سداد المتبقي'),
+                              ),
+                            );
+                          }
+
                           actions.add(
+
                             PopupMenuItem(
                               value: _LineAction.editSettlement,
                               child: Text(
@@ -2297,6 +4067,12 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                                 child: Text('تحصيل جزئي'),
                               ),
                             );
+                            actions.add(
+                              const PopupMenuItem(
+                                value: _LineAction.collectPendingFull,
+                                child: Text('تحصيل كلي'),
+                              ),
+                            );
                           } else if (line.txnKind == 'receive') {
                             actions.add(
                               const PopupMenuItem(
@@ -2304,17 +4080,17 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                                 child: Text('سداد جزئي'),
                               ),
                             );
+                            actions.add(
+                              const PopupMenuItem(
+                                value: _LineAction.payPendingFull,
+                                child: Text('سداد كلي'),
+                              ),
+                            );
                           }
                           actions.add(
                             const PopupMenuItem(
-                              value: _LineAction.confirmPending,
-                              child: Text('تنفيذ المعلّق'),
-                            ),
-                          );
-                          actions.add(
-                            const PopupMenuItem(
                               value: _LineAction.cancelPending,
-                              child: Text('إلغاء المعلّق'),
+                              child: Text('إلغاء الآجل'),
                             ),
                           );
                         }
@@ -2343,6 +4119,8 @@ class _CustomerSheetState extends State<_CustomerSheet> {
                           balanceBg: balanceBg,
                           balanceColor: balanceColor,
                           onTap: () => onShowDetails(line),
+                          walletName: line.walletName,
+                          walletPhone: line.walletPhone,
                         );
                       }),
                     ],
@@ -2353,48 +4131,302 @@ class _CustomerSheetState extends State<_CustomerSheet> {
       ),
     );
   }
-
 }
 
-class _CustomerSummaryPill extends StatelessWidget {
-  final String label;
-  final double value;
-  final Color color;
+class _CustomerCompactSummaryStrip extends StatelessWidget {
+  final double netBalance;
+  final double totalForUs;
+  final double totalAgainstUs;
+  final double openForUs;
+  final double openAgainstUs;
+  final String statusLabel;
+  final Color netColor;
 
-  const _CustomerSummaryPill({
-    required this.label,
-    required this.value,
-    required this.color,
+  const _CustomerCompactSummaryStrip({
+    required this.netBalance,
+    required this.totalForUs,
+    required this.totalAgainstUs,
+    required this.openForUs,
+    required this.openAgainstUs,
+    required this.statusLabel,
+    required this.netColor,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Column(
-          children: [
-            Text(
-              label,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: color,
-                fontWeight: FontWeight.w600,
-                fontSize: 12,
+    final textTheme = Theme.of(context).textTheme;
+    final netAbs = netBalance.abs();
+    final String netDisplay;
+    final Color effectiveNetColor;
+    if (netAbs < 0.001) {
+      netDisplay = 'خالص / متزن (0.00 ج.م)';
+      effectiveNetColor = const Color(0xFF0369A1);
+    } else if (netBalance > 0) {
+      netDisplay = 'لنا: +${netAbs.toStringAsFixed(2)} ج.م';
+      effectiveNetColor = const Color(0xFF047857);
+    } else {
+      netDisplay = 'علينا: -${netAbs.toStringAsFixed(2)} ج.م';
+      effectiveNetColor = const Color(0xFFB91C1C);
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'الصافي: $netDisplay',
+                  style: textTheme.titleMedium?.copyWith(
+                    color: effectiveNetColor,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: netColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  statusLabel,
+                  style: TextStyle(
+                    color: netColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(
+            'لنا: ${totalForUs.toStringAsFixed(2)} | علينا: ${totalAgainstUs.toStringAsFixed(2)}',
+            style: textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF475569),
             ),
-            const SizedBox(height: 2),
-            Text(
-              value.toStringAsFixed(2),
-              style: TextStyle(color: color, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'مفتوح لنا: ${openForUs.toStringAsFixed(2)} | مفتوح علينا: ${openAgainstUs.toStringAsFixed(2)}',
+            style: textTheme.bodySmall?.copyWith(
+              color: const Color(0xFF475569),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CustomerOpenSettlementActions extends StatelessWidget {
+  final bool canCollectDeferred;
+  final bool canPayDeferred;
+  final bool canCollectClaim;
+  final bool canPayClaim;
+  final Future<void> Function() onCollectDeferredPartial;
+  final Future<void> Function() onCollectDeferredFull;
+  final Future<void> Function() onPayDeferredPartial;
+  final Future<void> Function() onPayDeferredFull;
+  final Future<void> Function() onCollectClaimPartial;
+  final Future<void> Function() onCollectClaimFull;
+  final Future<void> Function() onPayClaimPartial;
+  final Future<void> Function() onPayClaimFull;
+
+  const _CustomerOpenSettlementActions({
+    required this.canCollectDeferred,
+    required this.canPayDeferred,
+    required this.canCollectClaim,
+    required this.canPayClaim,
+    required this.onCollectDeferredPartial,
+    required this.onCollectDeferredFull,
+    required this.onPayDeferredPartial,
+    required this.onPayDeferredFull,
+    required this.onCollectClaimPartial,
+    required this.onCollectClaimFull,
+    required this.onPayClaimPartial,
+    required this.onPayClaimFull,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // الأزرار السريعة للتحصيل/السداد تم حذفها — استخدم زر "إغلاق الحساب" بدلاً منها
+    return const SizedBox.shrink();
+  }
+}
+
+class _CustomerLedgerFilters extends StatelessWidget {
+  final _CustomerLineFilter lineFilter;
+  final _CustomerAccountFilter accountFilter;
+  final bool showAdvanced;
+  final ValueChanged<_CustomerLineFilter> onLineFilterSelected;
+  final ValueChanged<_CustomerAccountFilter> onAccountFilterSelected;
+  final VoidCallback onToggleAdvanced;
+
+  const _CustomerLedgerFilters({
+    required this.lineFilter,
+    required this.accountFilter,
+    required this.showAdvanced,
+    required this.onLineFilterSelected,
+    required this.onAccountFilterSelected,
+    required this.onToggleAdvanced,
+  });
+
+  Widget _chip({
+    required String label,
+    required bool selected,
+    required VoidCallback onSelected,
+  }) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      visualDensity: VisualDensity.compact,
+      onSelected: (value) {
+        if (value) onSelected();
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            _chip(
+              label: 'الكل',
+              selected:
+                  accountFilter == _CustomerAccountFilter.all &&
+                  lineFilter == _CustomerLineFilter.all,
+              onSelected: () {
+                onAccountFilterSelected(_CustomerAccountFilter.all);
+                onLineFilterSelected(_CustomerLineFilter.all);
+              },
+            ),
+            _chip(
+              label: 'لنا',
+              selected: accountFilter == _CustomerAccountFilter.forUs,
+              onSelected: () {
+                onAccountFilterSelected(_CustomerAccountFilter.forUs);
+                onLineFilterSelected(_CustomerLineFilter.all);
+              },
+            ),
+            _chip(
+              label: 'علينا',
+              selected: accountFilter == _CustomerAccountFilter.againstUs,
+              onSelected: () {
+                onAccountFilterSelected(_CustomerAccountFilter.againstUs);
+                onLineFilterSelected(_CustomerLineFilter.all);
+              },
+            ),
+            _chip(
+              label: 'المستحقات',
+              selected:
+                  accountFilter == _CustomerAccountFilter.claims ||
+                  lineFilter == _CustomerLineFilter.claims,
+              onSelected: () {
+                onAccountFilterSelected(_CustomerAccountFilter.claims);
+                onLineFilterSelected(_CustomerLineFilter.claims);
+              },
+            ),
+            ActionChip(
+              avatar: Icon(
+                showAdvanced ? Icons.expand_less : Icons.expand_more,
+                size: 18,
+              ),
+              label: const Text('المزيد'),
+              visualDensity: VisualDensity.compact,
+              onPressed: onToggleAdvanced,
             ),
           ],
         ),
-      ),
+        if (showAdvanced)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                _chip(
+                  label: 'التحويلات الآجلة',
+                  selected:
+                      accountFilter == _CustomerAccountFilter.deferredTransfers,
+                  onSelected: () {
+                    onAccountFilterSelected(
+                      _CustomerAccountFilter.deferredTransfers,
+                    );
+                    onLineFilterSelected(_CustomerLineFilter.all);
+                  },
+                ),
+                _chip(
+                  label: 'الاستلامات الآجلة',
+                  selected:
+                      accountFilter == _CustomerAccountFilter.deferredReceives,
+                  onSelected: () {
+                    onAccountFilterSelected(
+                      _CustomerAccountFilter.deferredReceives,
+                    );
+                    onLineFilterSelected(_CustomerLineFilter.all);
+                  },
+                ),
+                _chip(
+                  label: 'تسويات الحساب',
+                  selected: accountFilter == _CustomerAccountFilter.settlements,
+                  onSelected: () {
+                    onAccountFilterSelected(_CustomerAccountFilter.settlements);
+                    onLineFilterSelected(_CustomerLineFilter.all);
+                  },
+                ),
+                _chip(
+                  label: 'غير النشط/المغلق',
+                  selected:
+                      accountFilter == _CustomerAccountFilter.archivedClosed,
+                  onSelected: () {
+                    onAccountFilterSelected(
+                      _CustomerAccountFilter.archivedClosed,
+                    );
+                    onLineFilterSelected(_CustomerLineFilter.all);
+                  },
+                ),
+                _chip(
+                  label: 'آجل',
+                  selected:
+                      accountFilter ==
+                          _CustomerAccountFilter.deferredTransfers ||
+                      accountFilter == _CustomerAccountFilter.deferredReceives,
+                  onSelected: () {
+                    onAccountFilterSelected(
+                      _CustomerAccountFilter.deferredTransfers,
+                    );
+                    onLineFilterSelected(_CustomerLineFilter.all);
+                  },
+                ),
+                _chip(
+                  label: 'مغلق',
+                  selected:
+                      accountFilter == _CustomerAccountFilter.archivedClosed,
+                  onSelected: () {
+                    onAccountFilterSelected(
+                      _CustomerAccountFilter.archivedClosed,
+                    );
+                    onLineFilterSelected(_CustomerLineFilter.all);
+                  },
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }
@@ -2414,6 +4446,8 @@ class _CustomerLineRowPresentation extends StatelessWidget {
   final Color balanceBg;
   final Color balanceColor;
   final VoidCallback onTap;
+  final String? walletName;
+  final String? walletPhone;
 
   const _CustomerLineRowPresentation({
     required this.date,
@@ -2430,6 +4464,8 @@ class _CustomerLineRowPresentation extends StatelessWidget {
     required this.balanceBg,
     required this.balanceColor,
     required this.onTap,
+    this.walletName,
+    this.walletPhone,
   });
 
   @override
@@ -2487,14 +4523,37 @@ class _CustomerLineRowPresentation extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            displayTitle,
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
+                          if (displayTitle.trim().isNotEmpty)
+                            Text(
+                              displayTitle,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
                           if ((displayDetails ?? '').trim().isNotEmpty)
                             Text(
                               displayDetails!.trim(),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          if (walletName != null || walletPhone != null)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.account_balance_wallet, size: 12, color: Colors.blueGrey),
+                                  const SizedBox(width: 4),
+                                  Expanded(
+                                    child: Text(
+                                      [walletName, walletPhone].where((e) => e != null && e.trim().isNotEmpty).join(' - '),
+                                      style: const TextStyle(fontSize: 10, color: Colors.blueGrey),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           // تفاصيل فقط بدون مرجع/حالة لعرض مبسط
                         ],
@@ -2529,8 +4588,7 @@ class _CustomerQuickActionsSection extends StatelessWidget {
   final bool batchBusy;
   final VoidCallback onToggle;
   final VoidCallback onAddOperation;
-  final VoidCallback onSettleAllClaims;
-  final VoidCallback onSettlePartial;
+  final VoidCallback? onQuickCollect;
   final VoidCallback onReport;
   final VoidCallback onOpenAttachments;
 
@@ -2539,8 +4597,7 @@ class _CustomerQuickActionsSection extends StatelessWidget {
     required this.batchBusy,
     required this.onToggle,
     required this.onAddOperation,
-    required this.onSettleAllClaims,
-    required this.onSettlePartial,
+    this.onQuickCollect,
     required this.onReport,
     required this.onOpenAttachments,
   });
@@ -2571,20 +4628,19 @@ class _CustomerQuickActionsSection extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
+              if (onQuickCollect != null)
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF047857),
+                  ),
+                  onPressed: batchBusy ? null : onQuickCollect,
+                  icon: const Icon(Icons.payments_outlined),
+                  label: const Text('💰 حركة نقدية / تسوية سريعة'),
+                ),
               ElevatedButton.icon(
                 onPressed: batchBusy ? null : onAddOperation,
                 icon: const Icon(Icons.add_circle_outline),
                 label: const Text('إضافة عملية'),
-              ),
-              ElevatedButton.icon(
-                onPressed: batchBusy ? null : onSettleAllClaims,
-                icon: const Icon(Icons.done_all),
-                label: const Text('تسوية كل المستحقات'),
-              ),
-              ElevatedButton.icon(
-                onPressed: batchBusy ? null : onSettlePartial,
-                icon: const Icon(Icons.tune),
-                label: const Text('تسوية جزئية من الإجمالي'),
               ),
               ElevatedButton.icon(
                 onPressed: onReport,
@@ -2603,43 +4659,6 @@ class _CustomerQuickActionsSection extends StatelessWidget {
               : CrossFadeState.showFirst,
           duration: const Duration(milliseconds: 180),
         ),
-      ],
-    );
-  }
-}
-
-class _CustomerFilterChipsBar extends StatelessWidget {
-  final _CustomerLineFilter filter;
-  final ValueChanged<_CustomerLineFilter> onFilterSelected;
-
-  const _CustomerFilterChipsBar({
-    required this.filter,
-    required this.onFilterSelected,
-  });
-
-  Widget _filterChip(String label, _CustomerLineFilter value) {
-    final selected = filter == value;
-    return ChoiceChip(
-      label: Text(label),
-      selected: selected,
-      onSelected: (v) {
-        if (!v) return;
-        onFilterSelected(value);
-      },
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        _filterChip('الكل', _CustomerLineFilter.all),
-        _filterChip('المستحقات', _CustomerLineFilter.claims),
-        _filterChip('التحصيل/السداد', _CustomerLineFilter.settlements),
-        _filterChip('المعلّق', _CustomerLineFilter.pending),
-        _filterChip('المعتمد', _CustomerLineFilter.posted),
       ],
     );
   }
@@ -2951,7 +4970,7 @@ class _CustomerAttachmentsSheetState extends State<_CustomerAttachmentsSheet> {
 
 enum _LineSide { receivable, payable }
 
-enum _CustomerLineType { claimOpen, txn }
+enum _CustomerLineType { claimOpen, txn, adjustment }
 
 enum _LineAction {
   collectPartial,
@@ -2960,6 +4979,8 @@ enum _LineAction {
   payFull,
   collectPendingPartial,
   payPendingPartial,
+  collectPendingFull,
+  payPendingFull,
   confirmPending,
   cancelPending,
   editSettlement,
@@ -2984,6 +5005,11 @@ class _CustomerLine {
   final double? remainingAfter;
   final String? sourceKindLabel;
   final int? pendingTxnId;
+  final int? storySourceTxnId;
+  final DateTime? storyAnchorDate;
+  final int? walletId;
+  final String? walletName;
+  final String? walletPhone;
 
   const _CustomerLine({
     required this.date,
@@ -3002,6 +5028,11 @@ class _CustomerLine {
     this.remainingAfter,
     this.sourceKindLabel,
     this.pendingTxnId,
+    this.storySourceTxnId,
+    this.storyAnchorDate,
+    this.walletId,
+    this.walletName,
+    this.walletPhone,
   });
 }
 
@@ -3009,6 +5040,7 @@ class _CustomerBucket {
   final String key;
   final String name;
   final String? phone;
+  CustomerAccount? account;
 
   double receivableClaims = 0;
   double payableClaims = 0;
@@ -3019,13 +5051,32 @@ class _CustomerBucket {
 
   _CustomerBucket({required this.key, required this.name, this.phone});
 
-  double get receivableTotal => receivableClaims + receivablePending;
-  double get payableTotal => payableClaims + payablePending;
+  double get receivableTotal =>
+      account?.summary.totalForUs ?? (receivableClaims + receivablePending);
+  double get payableTotal =>
+      account?.summary.totalAgainstUs ?? (payableClaims + payablePending);
   double get net => receivableTotal - payableTotal;
   bool get isArchived {
-    if (receivableTotal.abs() >= 0.0001 || payableTotal.abs() >= 0.0001) {
+    final accountArchived = account?.summary.archived;
+    if (accountArchived != null) return accountArchived;
+    if (net.abs() >= 0.0001) {
       return false;
     }
     return true;
+  }
+
+  bool get hasOverdue {
+    if (account == null) return false;
+    final now = DateTime.now();
+    for (final row in account!.rows) {
+      if (row.status == CustomerLedgerRowStatus.open || row.status == CustomerLedgerRowStatus.partial) {
+        if (row.direction == CustomerLedgerDirection.forUs) {
+          if (now.difference(row.date).inDays >= 7) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 }

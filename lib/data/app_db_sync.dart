@@ -142,4 +142,89 @@ extension AppDbSync on AppDb {
     await file.writeAsString(jsonEncode(payload));
     return file.path;
   }
+  Future<int?> getWorkspaceResetEpoch() async {
+    final m = await _readSettingsMap();
+    final raw = m['workspaceResetEpoch'];
+    if (raw == null) return null;
+    return int.tryParse(raw.toString());
+  }
+
+  Future<void> recordWorkspaceResetEpoch([int? epochMs]) async {
+    final m = await _readSettingsMap();
+    m['workspaceResetEpoch'] = epochMs ?? DateTime.now().millisecondsSinceEpoch;
+    await _writeSettingsMap(m);
+  }
+
+  Future<void> applyCloudUpdates(String entity, List<Map<String, dynamic>> items) async {
+    await _ensureLoaded();
+    final resetEpoch = await getWorkspaceResetEpoch();
+    bool changed = false;
+
+    if (entity == 'wallet') {
+      for (final item in items) {
+        final w = Wallet.fromJson(item);
+        // Match existing wallet by ID first, then by name or phone to prevent duplicate phantom wallets
+        final idx = _wallets.indexWhere((e) {
+          if (e.id == w.id) return true;
+          if (e.name.trim().isNotEmpty &&
+              w.name.trim().isNotEmpty &&
+              e.name.trim().toLowerCase() == w.name.trim().toLowerCase()) {
+            return true;
+          }
+          if (e.phone.trim().isNotEmpty &&
+              w.phone.trim().isNotEmpty &&
+              e.phone.trim() == w.phone.trim()) {
+            return true;
+          }
+          return false;
+        });
+
+        if (idx >= 0) {
+          _wallets[idx] = w;
+        } else {
+          _wallets.add(w);
+        }
+        if (w.id >= _nextWalletId) _nextWalletId = w.id + 1;
+        changed = true;
+      }
+    } else if (entity == 'txn') {
+      for (final item in items) {
+        final t = Txn.fromJson(item);
+        // Guard against ghost re-sync of pre-reset transactions
+        if (resetEpoch != null && t.entryDate.millisecondsSinceEpoch < resetEpoch) {
+          continue;
+        }
+        final idx = _txns.indexWhere((e) => e.id == t.id);
+        if (idx >= 0) {
+          _txns[idx] = t;
+        } else {
+          _txns.add(t);
+        }
+        if (t.id >= _nextTxnId) _nextTxnId = t.id + 1;
+        changed = true;
+      }
+    } else if (entity == 'claim') {
+      for (final item in items) {
+        final c = Claim.fromJson(item);
+        // Guard against ghost re-sync of pre-reset claims
+        if (resetEpoch != null && c.entryDate.millisecondsSinceEpoch < resetEpoch) {
+          continue;
+        }
+        final idx = _claims.indexWhere((e) => e.id == c.id);
+        if (idx >= 0) {
+          _claims[idx] = c;
+        } else {
+          _claims.add(c);
+        }
+        if (c.id >= _nextClaimId) _nextClaimId = c.id + 1;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      _rebuildEngineFromTxns();
+      await _save(); // Saves without enqueueing to outbox!
+      NotificationService.show(title: 'مزامنة سحابية', body: 'تم استقبال بيانات جديدة من السحابة بنجاح');
+    }
+  }
 }

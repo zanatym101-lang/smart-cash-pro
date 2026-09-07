@@ -3,8 +3,12 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  cloud_firestore
+  firebase_auth
+  firebase_core
   local_auth_windows
   printing
+  share_plus
   sqlite3_flutter_libs
   url_launcher_windows
 )

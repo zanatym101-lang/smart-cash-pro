@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../data/app_db.dart';
 import '../data/report_exporter.dart';
+import '../data/sqlite/customer_adjustments_repository.dart';
 import '../data/reporting.dart';
 import '../models/claim.dart';
 import '../models/license_info.dart';
 import '../models/transaction.dart';
 import '../widgets/app_title.dart';
+import 'customer_account/customer_account_builder.dart';
+import 'customer_account/customer_account_models.dart';
 
 class CustomerReportScreen extends StatefulWidget {
   final String customerName;
@@ -217,7 +220,7 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
         return 'منفذ';
       case 'pending':
         return 'آجل';
-      case 'rolled_back':
+      case 'reversed': return 'معكوس'; case 'reverse_entry': return 'قيد عكسي'; case 'rolled_back':
         return 'ملغي';
       default:
         return status;
@@ -235,8 +238,17 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     if (t.kind == 'fawry_credit' && t.status == 'pending') {
       return 'فوري آجل';
     }
-    if (t.kind == 'claim_collect') return 'تحصيل مستحق';
-    if (t.kind == 'claim_pay') return 'سداد مستحق';
+    if (t.kind == 'claim_collect' || t.kind == 'claim_pay') {
+      final note = t.note ?? '';
+      final isOffset = note.contains('إغلاق تلقائي') ||
+          note.contains('مقاصة') ||
+          note.contains('إغلاق حساب') ||
+          note.contains('offset') ||
+          note.contains('تسوية / إغلاق');
+      if (isOffset) return '🔄 مقاصة تسوية / إغلاق حساب';
+      if (t.kind == 'claim_collect') return 'تحصيل مستحق';
+      return 'سداد مستحق';
+    }
     return _kindLabel(t);
   }
 
@@ -302,7 +314,9 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
       final bool isReceivable = linkedClaim != null
           ? linkedClaim.type == 'receivable'
           : t.kind == 'claim_collect';
-      title = isReceivable ? 'تحصيل مستحق' : 'سداد مستحق';
+      if (!title.contains('مقاصة')) {
+        title = isReceivable ? 'تحصيل مستحق' : 'سداد مستحق';
+      }
       delta = isReceivable ? -t.amount.abs() : t.amount.abs();
     } else if (t.kind == 'transfer' && t.status == 'pending') {
       delta = _transferDue(t).abs();
@@ -524,48 +538,29 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     );
   }
 
-  CustomerReportExportData _toExportData(_CustomerStats stats) {
-    return CustomerReportExportData(
-      customerName: widget.customerName,
-      customerPhone: widget.customerPhone ?? '',
-      range: stats.range,
-      receivable: stats.currentReceivable,
-      payable: stats.currentPayable,
-      net: stats.netCurrent,
-      postedCount: stats.postedCount,
-      pendingCount: stats.pendingCount,
-      postedVolume: stats.postedVolume,
-      pendingVolume: stats.pendingVolume,
-      postedProfit: stats.postedProfit,
-      transferCount: stats.transferCount,
-      receiveCount: stats.receiveCount,
-      fawryCount: stats.fawryCount,
-      openingNet: stats.openingNet,
-      closingNet: stats.closingNet,
-      latestTxns: stats.latestTxns
-          .map(
-            (t) => CustomerTxnExportRow(
-              date: t.entryDate,
-              kind: _kindLabel(t),
-              status: _statusLabel(t.status),
-              amount: _txnVolume(t),
-            ),
-          )
-          .toList(),
-      statementRows: stats.statementRows
-          .map(
-            (r) => CustomerStatementExportRow(
-              date: r.date,
-              title: r.title,
-              details: r.details,
-              status: r.statusLabel,
-              amountSigned: r.amountSigned,
-              runningNet: r.runningNet,
-              runningSideLabel: r.runningNet >= 0 ? 'لنا' : 'علينا',
-            ),
-          )
-          .toList(),
+  Future<CustomerAccount?> _buildAccountForExport(DateRange range) async {
+    final db = AppDb.instance;
+    final txns = await db.listTxns();
+    final claims = await db.listClaims();
+    final adjustments = await CustomerAdjustmentsRepository(db.sqlite).getAllAdjustments();
+    final wallets = await db.listWallets();
+    final accounts = CustomerAccountBuilder.fromAppDbData(
+      txns: txns,
+      claims: claims,
+      adjustments: adjustments,
+      wallets: wallets,
     );
+    final targetName = widget.customerName.trim().toLowerCase();
+    final targetPhone = widget.customerPhone?.trim() ?? '';
+    
+    for (final acc in accounts) {
+      if (acc.summary.customerName.trim().toLowerCase() == targetName) {
+        if (targetPhone.isEmpty || acc.summary.phone == targetPhone) {
+          return acc;
+        }
+      }
+    }
+    return null;
   }
 
   bool get _exportAllowed => (_license?.isActivated ?? true);
@@ -580,9 +575,18 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     }
     final stats = _stats;
     if (stats == null) return;
+    
     try {
+      final account = await _buildAccountForExport(stats.range);
+      if (account == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم العثور على حساب العميل')));
+        return;
+      }
+
       final path = await ReportExporter.exportCustomerPdf(
-        data: _toExportData(stats),
+        account: account,
+        range: stats.range,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -606,9 +610,18 @@ class _CustomerReportScreenState extends State<CustomerReportScreen> {
     }
     final stats = _stats;
     if (stats == null) return;
+    
     try {
+      final account = await _buildAccountForExport(stats.range);
+      if (account == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('لم يتم العثور على حساب العميل')));
+        return;
+      }
+
       final path = await ReportExporter.exportCustomerExcel(
-        data: _toExportData(stats),
+        account: account,
+        range: stats.range,
       );
       if (!mounted) return;
       ScaffoldMessenger.of(

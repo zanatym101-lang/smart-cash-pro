@@ -260,68 +260,145 @@ extension AppDbTransactions on AppDb {
   }
 
   Future<void> rollbackPosted(int txnId) async {
+    await reverseTransaction(txnId.toString());
+  }
+
+  Future<void> reverseTransaction(String txnId, {String? reason}) =>
+      _reverseTransaction(txnId, reason: reason);
+
+  Future<void> _reverseTransaction(String txnId, {String? reason}) async {
     await _ensureLoaded();
     _requireTxnAdmin();
 
-    final idx = _txns.indexWhere((t) => t.id == txnId);
+    final id = int.tryParse(txnId);
+    if (id == null) {
+      throw Exception('معرف المعاملة غير صالح: $txnId');
+    }
+
+    final idx = _txns.indexWhere((t) => t.id == id);
     if (idx < 0) {
       throw Exception('المعاملة غير موجودة.');
     }
     final t = _txns[idx];
-    if (t.status != 'posted') {
-      throw Exception('Rollback متاح للعمليات المنفذة فقط.');
+    if (t.status == 'reversed' || t.isReversed) {
+      throw Exception('لا يمكن عكس العملية: المعاملة معكوسة بالفعل.');
+    }
+    if (t.status == 'reverse_entry') {
+      throw Exception('لا يمكن عكس قيد عكسي.');
+    }
+    if (t.status == 'canceled' || t.status == 'rolled_back') {
+      throw Exception('لا يمكن عكس العملية لأنها ملغاة بالفعل.');
     }
     _ensureNotClosed(t.entryDate);
 
-    if (t.kind != 'fawry_cash' &&
-        t.kind != 'fawry_credit' &&
-        t.kind != 'transfer' &&
-        t.kind != 'receive') {
-      throw Exception('Rollback مدعوم فقط لخدمات فوري.');
+    // Prepare reverse txn candidate
+    final reverseTxn = t.copyWith(
+      id: _nextTxnId++,
+      entryDate: DateTime.now(),
+      amount: -t.amount,
+      clientFee: -t.clientFee,
+      networkFee: -t.networkFee,
+      reference: t.id.toString(),
+      status: 'reverse_entry',
+      note: reason != null && reason.trim().isNotEmpty
+          ? 'قيد عكسي لإلغاء عملية رقم ${t.id} ($reason)'
+          : 'قيد عكسي لإلغاء عملية رقم ${t.id}',
+    );
+
+    // Invariants: Ensure reversal cannot drive any wallet or drawer below zero (Non-Negative Invariant).
+    final reverseSpec = _specFromTxn(reverseTxn);
+    final entries = reverseSpec.buildEntries(_txId(reverseTxn.id));
+
+    int simDrawerQirsh = _state.drawerBalanceQirsh;
+    final simWalletsQirsh = Map<String, int>.from(_state.walletBalancesQirsh);
+
+    for (final e in entries) {
+      if (e.accountKey == 'drawer') {
+        simDrawerQirsh += e.deltaQirsh;
+      } else if (e.accountKey.startsWith('wallet:')) {
+        final wid = e.accountKey.split(':')[1];
+        simWalletsQirsh[wid] = (simWalletsQirsh[wid] ?? 0) + e.deltaQirsh;
+      }
     }
 
-    if (t.kind == 'transfer' || t.kind == 'receive') {
-      final linkedClaims = _claims.where((c) => c.sourceTxnId == t.id).toList();
-      if (linkedClaims.isNotEmpty) {
+    if (simDrawerQirsh < 0) {
+      final curDrawer = Money.toEgpDouble(
+        _state.drawerBalanceQirsh,
+      ).toStringAsFixed(2);
+      throw Exception(
+        'لا يمكن تنفيذ القيد العكسي: رصيد الخزينة/الدرج لا يكفي وسيصبح سالباً. الرصيد الحالي: $curDrawer ج.م',
+      );
+    }
+
+    for (final kv in simWalletsQirsh.entries) {
+      if (kv.value < 0) {
+        final wIdx = _wallets.indexWhere((w) => w.id.toString() == kv.key);
+        final wName = wIdx >= 0 ? _wallets[wIdx].name : '#${kv.key}';
+        final curWallet = Money.toEgpDouble(
+          _state.getWalletQirsh(kv.key),
+        ).toStringAsFixed(2);
         throw Exception(
-          'لا يمكن عمل Rollback لعملية مرتبطة بمطالبات. قم بإغلاق/تسوية المطالبة أولًا.',
+          'لا يمكن تنفيذ القيد العكسي: رصيد المحفظة ($wName) لا يكفي وسيصبح سالباً. الرصيد الحالي: $curWallet ج.م',
         );
       }
     }
 
-    if (t.kind == 'fawry_credit') {
-      final cIdx = _claims.indexWhere((c) => c.sourceTxnId == t.id);
-      if (cIdx < 0) {
-        throw Exception('تعذر إيجاد مطالبة فوري الآجل المرتبطة بالمعاملة.');
-      }
-      final claim = _claims[cIdx];
-      final totalDueQ = Money.fromEgpDouble(t.amount + t.clientFee);
-      final remainingQ = Money.fromEgpDouble(claim.amount);
-      final collectedAny = remainingQ < totalDueQ;
-      if (collectedAny ||
-          (claim.status == 'closed' && claim.settledTxnId != null)) {
-        throw Exception(
-          'لا يمكن عمل Rollback لأن مطالبة فوري الآجل تم تحصيلها كليًا أو جزئيًا.',
-        );
-      }
-      if (claim.status == 'open') {
-        _claims[cIdx] = claim.copyWith(
-          status: 'closed',
-          settledDate: DateTime.now(),
-          settledTxnId: null,
-        );
+    // Customer Claim / Deferred action:
+    // If attached to an open Customer Claim / Deferred action: mark original claim as cancelled/reversed.
+    final modifiedClaims = <Claim>[];
+    for (var i = 0; i < _claims.length; i++) {
+      final c = _claims[i];
+      if (c.sourceTxnId == t.id ||
+          (t.note != null && _extractClaimIdFromNote(t.note) == c.id)) {
+        if (c.status == 'closed' && c.settledTxnId != null) {
+          throw Exception(
+            'لا يمكن عكس العملية لأن المطالبة المرتبطة بها تم تحصيلها/سدادها بالفعل.',
+          );
+        }
+        if (c.status == 'open') {
+          _claims[i] = c.copyWith(
+            status: 'reversed',
+            settledDate: DateTime.now(),
+          );
+          modifiedClaims.add(_claims[i]);
+        }
       }
     }
 
-    _txns[idx] = t.copyWith(status: 'rolled_back');
+    // Flag original transaction as reversed
+    _txns[idx] = t.copyWith(status: 'reversed', isReversed: true);
+    _txns.add(reverseTxn);
+
     _rebuildEngineFromTxns();
     await _save();
+
     await enqueueOutbox(
       entity: 'txn',
       entityId: t.id.toString(),
       action: 'update',
       payload: _txns[idx].toJson(),
     );
-    await appendAudit(type: 'txn_rollback', txnId: t.id, note: t.kind);
+    await enqueueOutbox(
+      entity: 'txn',
+      entityId: reverseTxn.id.toString(),
+      action: 'insert',
+      payload: reverseTxn.toJson(),
+    );
+    for (final mc in modifiedClaims) {
+      await enqueueOutbox(
+        entity: 'claim',
+        entityId: mc.id.toString(),
+        action: 'update',
+        payload: mc.toJson(),
+      );
+    }
+    await appendAudit(
+      type: 'txn_reverse',
+      txnId: t.id,
+      note: reason != null && reason.trim().isNotEmpty
+          ? '${t.kind}: $reason'
+          : t.kind,
+      amount: t.amount,
+    );
   }
 }

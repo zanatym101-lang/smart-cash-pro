@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
@@ -109,16 +111,19 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   List<Txn> _filterExpenses(String period) {
     final monthStart = _monthStart();
     if (period == 'archive') {
-      return _expenses
-          .where((e) => e.entryDate.isBefore(monthStart))
-          .toList();
+      return _expenses.where((e) => e.entryDate.isBefore(monthStart)).toList();
     }
     final start = period == 'month' ? monthStart : _todayStart();
     final end = (period == 'month')
-        ? DateTime(monthStart.year, monthStart.month + 1, 1, _dayStartHour)
-            .subtract(const Duration(milliseconds: 1))
-        : start.add(const Duration(days: 1))
-            .subtract(const Duration(milliseconds: 1));
+        ? DateTime(
+            monthStart.year,
+            monthStart.month + 1,
+            1,
+            _dayStartHour,
+          ).subtract(const Duration(milliseconds: 1))
+        : start
+              .add(const Duration(days: 1))
+              .subtract(const Duration(milliseconds: 1));
     return _expenses.where((e) => _inRange(e.entryDate, start, end)).toList();
   }
 
@@ -146,17 +151,17 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   Future<void> _save() async {
     if (!AppSession.isAdmin) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('المصروفات للأدمن فقط')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('المصروفات للأدمن فقط')));
       return;
     }
 
     final amt = double.tryParse(_amountCtrl.text.trim());
     if (amt == null || amt <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('أدخل مبلغ صحيح')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('أدخل مبلغ صحيح')));
       return;
     }
 
@@ -167,29 +172,32 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
     setState(() => _saving = true);
     try {
-      await AppDb.instance.addExpense(
-        amount: amt,
-        category: _category,
-        note: _composeNote(
-          _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
-          partyPhone,
+      await CleanWriteGateway.appDbBridge().execute(
+        ExpenseIntent(
+          action: ExpenseIntentAction.create,
+          amount: amt,
+          category: _category,
+          note: _composeNote(
+            _noteCtrl.text.trim().isEmpty ? null : _noteCtrl.text.trim(),
+            partyPhone,
+          ),
+          party: partyName,
+          isPending: false,
         ),
-        party: partyName,
-        isPending: false,
       );
 
       if (!mounted) return;
       await _loadExpenses();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم تسجيل المصروف بنجاح')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم تسجيل المصروف بنجاح')));
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ: $e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -203,8 +211,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   String _stripPhoneFromNote(String? note) {
     if (note == null) return '';
-    var cleaned =
-        note.replaceAll(RegExp(r'رقم الطرف:\s*\d+'), '').trim();
+    var cleaned = note.replaceAll(RegExp(r'رقم الطرف:\s*\d+'), '').trim();
     cleaned = cleaned.replaceAll(RegExp(r'\s*\|\s*'), ' ').trim();
     cleaned = cleaned.replaceAll(RegExp(r'\s+-\s+'), ' ').trim();
     return cleaned;
@@ -214,8 +221,9 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     if (!AppSession.isAdmin) return;
     final amountCtrl = TextEditingController(text: e.amount.toStringAsFixed(2));
     final partyCtrl = TextEditingController(text: e.party ?? '');
-    final phoneCtrl =
-        TextEditingController(text: _extractPhoneFromNote(e.note) ?? '');
+    final phoneCtrl = TextEditingController(
+      text: _extractPhoneFromNote(e.note) ?? '',
+    );
     final noteCtrl = TextEditingController(text: _stripPhoneFromNote(e.note));
     String category = e.mode.isEmpty ? _category : e.mode;
 
@@ -309,28 +317,31 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       if (!mounted || ok != true) return;
       final amt = double.tryParse(amountCtrl.text.trim());
       if (amt == null || amt <= 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('أدخل مبلغًا صحيحًا')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('أدخل مبلغًا صحيحًا')));
         return;
       }
 
       final partyPhone = normalizePhone(phoneCtrl.text);
-      await AppDb.instance.updateExpense(
-        txnId: e.id,
-        amount: amt,
-        category: category,
-        note: _composeNote(
-          noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
-          partyPhone,
+      await CleanWriteGateway.appDbBridge().execute(
+        ExpenseIntent(
+          action: ExpenseIntentAction.update,
+          txnId: e.id,
+          amount: amt,
+          category: category,
+          note: _composeNote(
+            noteCtrl.text.trim().isEmpty ? null : noteCtrl.text.trim(),
+            partyPhone,
+          ),
+          party: partyCtrl.text.trim(),
         ),
-        party: partyCtrl.text.trim(),
       );
       await _loadExpenses();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم تعديل المصروف')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم تعديل المصروف')));
     } finally {
       amountCtrl.dispose();
       partyCtrl.dispose();
@@ -362,17 +373,19 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     );
     if (!mounted || ok != true) return;
     try {
-      await AppDb.instance.deleteExpense(e.id);
+      await CleanWriteGateway.appDbBridge().execute(
+        ExpenseIntent(action: ExpenseIntentAction.delete, txnId: e.id),
+      );
       await _loadExpenses();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم حذف المصروف')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تم حذف المصروف')));
     } catch (err) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ: $err')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('خطأ: $err')));
     }
   }
 
@@ -526,7 +539,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                         onSelected: (_) => setState(() => _period = 'month'),
                       ),
                       ChoiceChip(
-                        label: const Text('الأرشيف'),
+                        label: const Text('غير النشط'),
                         selected: _period == 'archive',
                         onSelected: (_) => setState(() => _period = 'archive'),
                       ),
@@ -539,7 +552,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                       const SizedBox(width: 8),
                       Expanded(child: _statChip('هذا الشهر', totalMonth)),
                       const SizedBox(width: 8),
-                      Expanded(child: _statChip('الأرشيف', totalArchive)),
+                      Expanded(child: _statChip('غير النشط', totalArchive)),
                     ],
                   ),
                   const SizedBox(height: 12),
@@ -585,10 +598,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                                       value: 1,
                                       child: Text('تعديل'),
                                     ),
-                                    PopupMenuItem(
-                                      value: 2,
-                                      child: Text('حذف'),
-                                    ),
+                                    PopupMenuItem(value: 2, child: Text('حذف')),
                                   ],
                                 ),
                             ],
@@ -615,7 +625,10 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 11, color: Colors.black54),
+          ),
           const SizedBox(height: 2),
           Text(
             value.toStringAsFixed(2),

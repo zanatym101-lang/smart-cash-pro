@@ -8,6 +8,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../models/wallet.dart';
 import '../models/transaction.dart';
@@ -22,11 +25,15 @@ import '../services/notification_service.dart';
 import '../services/license_cloud_service.dart';
 import '../services/license_rpc_service.dart';
 import 'app_session.dart';
+import '../ai_sms/customer_matching_service.dart';
+import '../application/ports/transaction_repository.dart';
 
 import '../accounting/engine.dart';
 import '../accounting/specs.dart';
 import '../accounting/money.dart';
 import 'reporting.dart';
+import '../screens/treasury_ledger/treasury_ledger_builder.dart';
+import '../screens/customer_account/customer_account_builder.dart';
 
 part 'app_db_internal.dart';
 part 'app_db_wallets.dart';
@@ -60,7 +67,8 @@ class TreasurySnapshot {
   final double pendingOutflow; // Pending transfer impact on wallets
   final double claimsReceivableOpen; // Open "mabalegh lana"
   final double claimsPayableOpen; // Open "mabalegh alayna"
-  final double pendingReceivableOpen; // Open deferred receivables before confirm
+  final double
+  pendingReceivableOpen; // Open deferred receivables before confirm
   final double pendingPayableOpen; // Open deferred payables before confirm
   final double profitApprovedTotal; // Posted-only cumulative profit
 
@@ -260,7 +268,7 @@ class SystemHealthSummary {
 /// - Pending txns impact available balances immediately.
 /// - Posted balances are still preserved for audit and reports.
 /// - Wallets cannot go negative (engine validates on approval).
-class AppDb {
+class AppDb implements TransactionRepository {
   final Set<int> _confirmingPendingTxnIds = <int>{};
   static final AppDb instance = AppDb._();
   AppDb._();
@@ -287,7 +295,7 @@ class AppDb {
   int? _cachedDayStartHour;
 
   AppDatabase? _sqlite;
-
+  AppDatabase get sqlite => _sqlite!;
   late final AccountingState _state = AccountingState(
     walletBalancesQirsh: <String, int>{},
     drawerBalanceQirsh: 0,
@@ -297,6 +305,12 @@ class AppDb {
   );
 
   late final AccountingEngine _engine = AccountingEngine(_state);
+
+  List<LedgerEntry> get ledgerEntries => _state.ledger;
+
+  @override
+  Future<void> reverseTransaction(String txnId, {String? reason}) =>
+      _reverseTransaction(txnId, reason: reason);
 
   String _actorName() => AppSession.actorName;
   String _actorRole() => AppSession.actorRole;

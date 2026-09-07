@@ -70,6 +70,27 @@ void main() {
     await db.addPendingSettlementForTxn(pendingTxnId: txnId, amount: 500);
   }
 
+  Future<void> seedConfirmedPendingTransferWithPartialSettlement() async {
+    final db = AppDb.instance;
+    final walletId = await db.addWallet(
+      name: 'Report Confirmed Pending Transfer Wallet',
+      phone: '01010000033',
+      openingBalance: 5000,
+    );
+    final txnId = await db.addTransfer(
+      walletId: walletId,
+      amount: 900,
+      clientFee: 5,
+      networkFee: 0,
+      transferType: 'type1',
+      isPending: true,
+      party: transferCustomer,
+      note: customerPhone,
+    );
+    await db.addPendingSettlementForTxn(pendingTxnId: txnId, amount: 500);
+    await db.confirmPending(txnId);
+  }
+
   Future<void> seedPendingReceiveWithPartialSettlement() async {
     final db = AppDb.instance;
     final walletId = await db.addWallet(
@@ -140,6 +161,33 @@ void main() {
 
       expect(find.text('تحصيل مستحق'), findsOneWidget);
       expect(find.text('-500.00'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'customer report keeps original deferred transfer row after confirmPending and shows remaining claim',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1080, 2200));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.runAsync(seedConfirmedPendingTransferWithPartialSettlement);
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: CustomerReportScreen(
+            customerName: transferCustomer,
+            customerPhone: customerPhone,
+          ),
+        ),
+      );
+      await pumpUntilFound(tester, find.byType(ChoiceChip));
+      await pumpFrames(tester, count: 10);
+
+      expect(find.textContaining('لنا: 405.00'), findsOneWidget);
+      expect(find.textContaining('علينا: 0.00'), findsOneWidget);
+      expect(find.text('تحويل: 1'), findsOneWidget);
+      expect(find.text('فتح مستحق (لنا)'), findsOneWidget);
+      expect(find.text('+405.00'), findsOneWidget);
     },
   );
 

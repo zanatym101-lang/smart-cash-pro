@@ -1,5 +1,6 @@
 part of 'admin_settings_screen.dart';
 
+
 extension _AdminSettingsScreenSections on _AdminSettingsScreenState {
   Future<void> _loadSettings() async {
     try {
@@ -95,4 +96,43 @@ extension _AdminSettingsScreenSections on _AdminSettingsScreenState {
   }
 
   String _hourLabel(int h) => '${h.toString().padLeft(2, '0')}:00';
+  Future<void> _watchAdToExtend() async {
+    if (!AppSession.isAdmin) return;
+    _setMountedState(() => _activating = true);
+    
+    await AdRewardService.instance.showRewardedAd(
+      onRewarded: () async {
+        try {
+          await AppDb.instance.extendByAd(days: 3);
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🎉 تم بنجاح تمديد فترتك التجريبية لمدة يوم إضافية!'),
+            ),
+          );
+          await _loadLicense();
+        } catch (e) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('خطأ: $e')),
+          );
+        } finally {
+          if (mounted) _setMountedState(() => _activating = false);
+        }
+      },
+      onError: (err) {
+        if (!mounted) return;
+        _setMountedState(() => _activating = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(err)),
+        );
+      },
+      onClosed: () {
+        if (mounted && _activating) {
+          _setMountedState(() => _activating = false);
+        }
+      },
+    );
+  }
+
 }

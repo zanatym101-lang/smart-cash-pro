@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../data/app_db.dart';
 import '../widgets/app_title.dart';
+import 'treasury_ledger/treasury_ledger_screen.dart';
 
 class TreasuryScreen extends StatefulWidget {
   const TreasuryScreen({super.key});
@@ -98,7 +101,11 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
 
     setState(() => _adjusting = true);
     try {
-      await AppDb.instance.drawerDeposit(amount: amt, note: note);
+      await CleanWriteGateway.appDbBridge().execute(
+        amt > 0
+            ? DrawerDepositIntent(amount: amt, note: note)
+            : DrawerWithdrawIntent(amount: -amt, note: note),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -269,6 +276,38 @@ class _TreasuryScreenState extends State<TreasuryScreen> {
                             : const Icon(Icons.edit_note),
                         label: const Text('تعديل رصيد الدرج (+/-)'),
                         onPressed: _adjusting ? null : _drawerAdjustDialog,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'كشف حساب الخزينة',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'سجل مفصل بجميع الحركات النقدية التي أثرت على الدرج (سحب، تمويل، مصروفات، استلام وتسليم).',
+                      ),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        icon: const Icon(Icons.list_alt),
+                        label: const Text('عرض السجل'),
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (ctx) => const TreasuryLedgerScreen(),
+                            ),
+                          );
+                        },
                       ),
                     ],
                   ),

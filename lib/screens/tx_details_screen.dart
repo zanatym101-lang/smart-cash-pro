@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../data/app_session.dart';
 import '../models/transaction.dart';
 import '../models/wallet.dart';
+import '../widgets/tx_reversal_sheet.dart';
 import 'package:king_wallet_accounting/utils/txn_reference.dart';
 
 class TxDetailsScreen extends StatefulWidget {
@@ -70,7 +73,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
 
   String _statusLabel(String s) {
     if (s == 'posted') return 'معتمد';
-    if (s == 'rolled_back') return 'ملغي (عكس التأثير)';
+    if (s == 'reversed') return 'معكوس'; if (s == 'reverse_entry') return 'قيد عكسي'; if (s == 'rolled_back') return 'ملغي (عكس التأثير)';
     if (s == 'pending') return 'آجل';
     return 'غير معروف';
   }
@@ -240,7 +243,13 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
   Future<void> _approve() async {
     setState(() => _working = true);
     try {
-      await AppDb.instance.confirmPending(_txn.id);
+      await CleanWriteGateway.appDbBridge().execute(
+        ConfirmPendingIntent(
+          pendingTxnId: _txn.id.toString(),
+          claimId:
+              'pending-${_txn.id}-claim-${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      );
       await _refreshTxn();
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -259,7 +268,9 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
   Future<void> _cancel() async {
     setState(() => _working = true);
     try {
-      await AppDb.instance.cancelPending(_txn.id);
+      await CleanWriteGateway.appDbBridge().execute(
+        CancelPendingIntent(pendingTxnId: _txn.id.toString()),
+      );
       await _refreshTxn();
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -275,22 +286,25 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
     }
   }
 
-  Future<void> _rollback() async {
-    setState(() => _working = true);
-    try {
-      await AppDb.instance.rollbackPosted(_txn.id);
+  Future<void> _openReversalSheet() async {
+    final reversed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => TxReversalSheet(
+        txn: _txn,
+        wallets: widget.wallets,
+      ),
+    );
+    if (reversed == true) {
       await _refreshTxn();
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('تم عكس التأثير ✅')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('فشل عكس التأثير: $e')));
-    } finally {
-      if (mounted) setState(() => _working = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم إلغاء وقيد العملية بنجاح ↩️'),
+          backgroundColor: Colors.green,
+        ),
+      );
     }
   }
 
@@ -303,10 +317,45 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
     final created = _dateTime(_txn.createdAt);
 
     final isPending = _txn.status == 'pending';
-    final isPosted = _txn.status == 'posted';
+    final isReversed = _txn.isReversed ||
+        _txn.status == 'reversed' ||
+        _txn.status == 'reverse_entry';
+    final canReverse = !isReversed &&
+        !isPending &&
+        _txn.status != 'rolled_back';
 
     return Scaffold(
-      appBar: AppBar(title: const AppTitle(subtitle: 'تفاصيل العملية')),
+      appBar: AppBar(
+        title: const AppTitle(subtitle: 'تفاصيل العملية'),
+        actions: [
+          if (canReverse)
+            PopupMenuButton<String>(
+              onSelected: (val) {
+                if (val == 'reverse') {
+                  _openReversalSheet();
+                }
+              },
+              itemBuilder: (ctx) => [
+                const PopupMenuItem(
+                  value: 'reverse',
+                  child: Row(
+                    children: [
+                      Icon(Icons.undo, color: Colors.orange, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        'إلغاء وقيد عكسي ↩️',
+                        style: TextStyle(
+                          color: Colors.orange,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
@@ -338,22 +387,23 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
                             icon: const Icon(Icons.close),
                             label: const Text('رفض'),
                           ),
-                        if (isPosted)
-                          ElevatedButton.icon(
-                            onPressed: _working ? null : _rollback,
-                            icon: const Icon(Icons.undo),
-                            label: const Text('عكس التأثير'),
+                        if (canReverse)
+                          OutlinedButton.icon(
+                            onPressed: _working ? null : _openReversalSheet,
+                            icon: const Icon(Icons.undo, color: Colors.orange),
+                            label: const Text(
+                              'إلغاء وقيد عكسي ↩️',
+                              style: TextStyle(
+                                color: Colors.orange,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Colors.orange),
+                            ),
                           ),
                       ],
                     ),
-                    if (isPosted)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 8),
-                        child: Text(
-                          'تنبيه: لا يُسمح بعكس التأثير إذا كانت المستحقات قد تم تحصيلها.',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                      ),
                   ],
                 ),
               ),
@@ -362,6 +412,7 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
           ],
           _headerCard(
             '${_kindLabel(_txn.kind)} • ${_statusLabel(_txn.status)}',
+            isReversed: isReversed,
           ),
           const SizedBox(height: 12),
           _sectionCard(
@@ -424,12 +475,14 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
     );
   }
 
-  Widget _headerCard(String title) {
+  Widget _headerCard(String title, {bool isReversed = false}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+        gradient: LinearGradient(
+          colors: isReversed
+              ? [const Color(0xFF7F1D1D), const Color(0xFF991B1B)]
+              : [const Color(0xFF0F172A), const Color(0xFF1E293B)],
           begin: Alignment.topRight,
           end: Alignment.bottomLeft,
         ),
@@ -437,15 +490,47 @@ class _TxDetailsScreenState extends State<TxDetailsScreen> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.receipt, color: Colors.white, size: 32),
+          Icon(
+            isReversed ? Icons.cancel_outlined : Icons.receipt,
+            color: Colors.white,
+            size: 32,
+          ),
           const SizedBox(width: 12),
           Expanded(
-            child: Text(
-              title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    decoration: isReversed ? TextDecoration.lineThrough : null,
+                    decorationColor: Colors.white70,
+                  ),
+                ),
+                if (isReversed) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Text(
+                      'ملغاة / معكوسة ↩️',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ],

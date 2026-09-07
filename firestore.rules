@@ -1,0 +1,54 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(workspaceId) {
+      return isAuthenticated() && request.auth.uid == workspaceId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.email == 'zanatym101@gmail.com';
+    }
+
+    // 1. مساحة عمل المستخدمين ومزامنة المحافظ والاشتراكات
+    match /workspaces/{workspaceId} {
+      allow read, write: if isOwner(workspaceId);
+
+      match /{allPaths=**} {
+        allow read, write: if isOwner(workspaceId);
+      }
+    }
+
+    // 2. نظام أكواد التفعيل وتوليد التراخيص (Multi-Device & Account Binding)
+    match /activation_codes/{codeId} {
+      // الأدمن (أنت) له كامل الصلاحيات
+      allow read, write: if isAdmin();
+
+      // العميل العادي: فحص كود واحد فقط
+      allow get: if isAuthenticated();
+      allow list: if false;
+      allow create, delete: if false;
+
+      // تفعيل وحرق الكود بالأجهزة المصرح بها
+      allow update: if isAuthenticated()
+        // إما أن الكود غير مرتبط بأحد أو مرتبط بنفس حساب العميل الحالي
+        && (resource.data.get('ownerUid', null) == null || resource.data.get('ownerUid', '') == request.auth.uid || resource.data.get('usedBy', '') == request.auth.uid)
+        && request.resource.data.get('ownerUid', '') == request.auth.uid
+        && request.resource.data.get('usedBy', '') == request.auth.uid
+        && request.resource.data.get('days', 0) == resource.data.get('days', 0)
+        && request.resource.data.get('maxDevices', 1) == resource.data.get('maxDevices', 1)
+        && request.resource.data.get('usedAt', null) is timestamp
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isUsed', 'usedAt', 'usedBy', 'ownerUid', 'usedDevices', 'usedCount', 'maxDevices']);
+    }
+
+    // 3. إغلاق أي مسار آخر
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

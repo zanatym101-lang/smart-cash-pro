@@ -1,8 +1,10 @@
-﻿// v10: Wallet Funding Screen (external funding to wallet).
+// v10: Wallet Funding Screen (external funding to wallet).
 // - No accounting math in UI.
 // - Funding affects wallet balance only (drawer unaffected) per rules.
-// - Calls AppDb.addExternalFunding().
+// - Writes through CleanWriteGateway.
 import 'package:flutter/material.dart';
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../widgets/app_title.dart';
 import '../data/app_db.dart';
 import '../models/wallet.dart';
@@ -70,9 +72,9 @@ class _WalletFundingScreenState extends State<WalletFundingScreen> {
     }
 
     if (_amountCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('أدخل المبلغ')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('أدخل المبلغ')));
       return;
     }
 
@@ -88,21 +90,20 @@ class _WalletFundingScreenState extends State<WalletFundingScreen> {
 
     setState(() => _saving = true);
     try {
-      final id = await AppDb.instance.addExternalFunding(
-        walletId: wid,
-        amount: amt,
-        note: note,
+      final result = await CleanWriteGateway.appDbBridge().execute(
+        WalletFundingIntent(walletId: wid, amount: amt, note: note),
       );
+      final id = result.legacyId;
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('تم تمويل المحفظة ✅ (ID=$id)')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('تم تمويل المحفظة ✅ (ID=$id)')));
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('فشل تمويل المحفظة: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('فشل تمويل المحفظة: $e')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -164,9 +165,16 @@ class _WalletFundingScreenState extends State<WalletFundingScreen> {
                       key: ValueKey(_walletId),
                       initialValue: _walletId,
                       items: _wallets
-                          .map((w) => DropdownMenuItem(value: w.id, child: Text(w.name)))
+                          .map(
+                            (w) => DropdownMenuItem(
+                              value: w.id,
+                              child: Text(w.name),
+                            ),
+                          )
                           .toList(),
-                      onChanged: _saving ? null : (v) => setState(() => _walletId = v),
+                      onChanged: _saving
+                          ? null
+                          : (v) => setState(() => _walletId = v),
                       decoration: const InputDecoration(labelText: 'المحفظة'),
                     ),
                     const SizedBox(height: 12),
@@ -174,13 +182,17 @@ class _WalletFundingScreenState extends State<WalletFundingScreen> {
                       controller: _amountCtrl,
                       keyboardType: TextInputType.number,
                       enabled: !_saving,
-                      decoration: const InputDecoration(labelText: 'المبلغ (EGP)'),
+                      decoration: const InputDecoration(
+                        labelText: 'المبلغ (EGP)',
+                      ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: _noteCtrl,
                       enabled: !_saving,
-                      decoration: const InputDecoration(labelText: 'ملاحظة (اختياري)'),
+                      decoration: const InputDecoration(
+                        labelText: 'ملاحظة (اختياري)',
+                      ),
                     ),
                   ],
                 ),

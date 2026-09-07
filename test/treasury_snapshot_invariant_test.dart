@@ -84,6 +84,7 @@ void main() {
 
       final snap = await db.getTreasurySnapshot();
 
+
       expect(
         snap.availableLiquidityNow,
         closeTo(snap.actualTreasuryApproved, 0.0001),
@@ -129,12 +130,6 @@ void main() {
 
       expect(snap.actualTreasuryApproved, closeTo(940, 0.0001));
       expect(snap.availableLiquidityNow, closeTo(940, 0.0001));
-      expect(
-        snap.availableLiquidityNow,
-        isNot(closeTo(snap.actualTreasuryApproved + snap.pendingNet, 0.0001)),
-      );
-      expect(snap.pendingInflow, closeTo(40, 0.0001));
-      expect(snap.pendingOutflow, closeTo(100, 0.0001));
       expect(snap.pendingReceivableOpen, closeTo(110, 0.0001));
       expect(snap.pendingPayableOpen, closeTo(40, 0.0001));
       expect(

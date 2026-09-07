@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../application/write_gateway/clean_write_gateway.dart';
+import '../application/write_gateway/write_intents.dart';
 import '../widgets/app_title.dart';
-import '../data/app_db.dart';
 import '../data/app_session.dart';
 import '../utils/phone_provider.dart';
 import '../utils/contact_picker.dart';
@@ -135,16 +136,19 @@ class _FawryScreenState extends State<FawryScreen> {
 
     setState(() => _saving = true);
     try {
-      final id = await AppDb.instance.addFawry(
-        serviceName: service,
-        reference: ref.isEmpty ? null : ref,
-        amount: amt,
-        fee: fee,
-        collectionMethod: _collection,
-        party: party.isEmpty ? null : party,
-        note: _composeNote(note.isEmpty ? null : note, partyPhone),
-        isPending: !_instantApprove,
+      final result = await CleanWriteGateway.appDbBridge().execute(
+        FawryIntent(
+          serviceName: service,
+          reference: ref.isEmpty ? null : ref,
+          amount: amt,
+          fee: fee,
+          collectionMethod: _collection,
+          party: party.isEmpty ? null : party,
+          note: _composeNote(note.isEmpty ? null : note, partyPhone),
+          isPending: !_instantApprove,
+        ),
       );
+      final id = result.legacyId;
 
       if (!mounted) return;
       if (_instantApprove) {
