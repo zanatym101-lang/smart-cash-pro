@@ -51,3 +51,54 @@
 ### 7. التواصل معنا
 إذا كانت لديك أي استفسارات أو أسئلة بخصوص سياسة الخصوصية أو إدارة بياناتك، يمكنك التواصل معنا عبر:
 * **البريد الإلكتروني:** `zanatym101@gmail.com`
+---
+---
+
+# Privacy Policy for Smart Cash Pro
+
+**Last Updated:** September 8, 2026
+
+**Smart Cash Pro** ("we", "our", or "the App") is committed to protecting your privacy. This Privacy Policy describes how your information is collected, used, and safeguarded when you use our POS and accounting application.
+
+---
+
+### 1. Financial & Business Data (Local Storage)
+All ledger transactions, customer debt records, drawer balances, and wallet information entered into the App are stored locally on your device using encrypted local storage. We do not access, sell, or disclose your business financial records to any third party.
+
+---
+
+### 2. Third-Party Services & Automated Data Collection
+To provide seamless licensing and in-app rewards, the App utilizes official Google services that may collect diagnostic and device identifiers:
+* **Google AdMob:** We utilize Google Mobile Ads SDK to serve rewarded ads for trial extensions. AdMob may collect and process device advertising IDs, crash diagnostics, and performance data pursuant to [Google's Privacy & Terms](https://policies.google.com/privacy).
+* **Firebase (Auth & Firestore):** Used exclusively for managing user accounts, cloud subscription statuses, and license verification.
+
+---
+
+### 3. Permissions Used
+* `android.permission.INTERNET`: Required for cloud license validation and ad fetching.
+* `android.permission.ACCESS_NETWORK_STATE`: Required to monitor network connectivity before attempting cloud synchronization.
+
+---
+
+### 4. Security
+We enforce strict application integrity mechanisms, including ProGuard/R8 code obfuscation and cryptographic signature validation, to prevent unauthorized tampering and protect local assets.
+
+---
+
+### 5. Contact Us
+For any inquiries regarding this Privacy Policy, contact us at:
+* **Email:** zanatym101@gmail.com
+
+
+
+
+
+
+
+
+
+
+
+
+
+
